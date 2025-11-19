@@ -1,0 +1,128 @@
+# Tennis Action Analysis Configuration
+
+# Paths
+paths:
+  input_video: "data/input/tennis_match.mp4"
+  output_dir: "data/output"
+  models_dir: "weights"
+  yolo_weights: "weights/yolo_tennis.pt"
+  action_classifier_weights: "weights/action_classifier.pth"
+  pose_weights: "weights/pose_estimator.pth"
+
+# YOLO Detection
+yolo:
+  model_version: "yolov8"  # yolov8 or yolov11
+  model_size: "m"  # n, s, m, l, x
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  device: "cuda"  # cuda or cpu
+  imgsz: 640
+  classes:
+    player: 0
+    ball: 1
+    racket: 2
+
+# Tracking
+tracking:
+  tracker_type: "ocsort"  # ocsort or botsort
+  track_high_thresh: 0.6
+  track_low_thresh: 0.1
+  new_track_thresh: 0.7
+  track_buffer: 30
+  match_thresh: 0.8
+  min_hits: 3
+  iou_threshold: 0.3
+
+# Action Recognition
+action_recognition:
+  model_type: "x3d"  # x3d or slowfast
+  model_size: "m"  # s, m, l
+  num_classes: 6
+  clip_duration: 32  # frames
+  clip_stride: 8  # frames between clips
+  temporal_window: 64  # frames to consider for action
+  conf_threshold: 0.6
+  classes:
+    - "forehand"
+    - "backhand"
+    - "slice"
+    - "serve"
+    - "smash"
+    - "volley"
+
+# Pose Estimation
+pose:
+  enabled: true
+  model_type: "hrnet"
+  conf_threshold: 0.3
+  keypoints: 17
+
+# Video Processing
+video:
+  fps: 30
+  resize_width: 1280
+  resize_height: 720
+  codec: "mp4v"
+  output_fps: 30
+
+# Clip Extraction
+clips:
+  enabled: true
+  margin_frames: 16  # frames before and after action
+  min_clip_length: 16
+  max_clip_length: 96
+  output_format: "mp4"
+
+# Visualization
+visualization:
+  show_bbox: true
+  show_track_id: true
+  show_action_label: true
+  show_confidence: true
+  show_pose: true
+  bbox_thickness: 2
+  font_scale: 0.6
+  font_thickness: 2
+  colors:
+    player: [0, 255, 0]
+    ball: [255, 255, 0]
+    racket: [255, 0, 255]
+    action_text: [255, 255, 255]
+
+# Training
+training:
+  batch_size: 8
+  num_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: "cosine"
+  warmup_epochs: 5
+  num_workers: 4
+  pin_memory: true
+  grad_clip: 1.0
+  save_interval: 5
+  val_interval: 1
+
+# Data Augmentation
+augmentation:
+  horizontal_flip: 0.5
+  rotation: 15
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.2
+  hue: 0.1
+
+# Output
+output:
+  save_video: true
+  save_json: true
+  save_csv: true
+  save_clips: true
+  video_codec: "mp4v"
+  json_indent: 2
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: "logs/tennis_analysis.log"
+  console_output: true

@@ -13,14 +13,14 @@ paths:
 yolo:
   model_version: "yolov8"  # yolov8 or yolov11
   model_size: "m"  # n, s, m, l, x
-  conf_threshold: 0.5
+  conf_threshold: 0.2  # Très bas pour détecter la petite balle
   iou_threshold: 0.45
-  device: "cuda"  # cuda or cpu
+  device: "cpu"  # cuda or cpu (use cpu for Mac)
   imgsz: 640
   classes:
-    player: 0
-    ball: 1
-    racket: 2
+    0: "person"  # Joueurs
+    32: "sports_ball"  # Balle de tennis
+    # Note: YOLO COCO n'a pas de classe raquette
 
 # Tracking
 tracking:
@@ -32,6 +32,9 @@ tracking:
   match_thresh: 0.8
   min_hits: 3
   iou_threshold: 0.3
+  filter_classes: [0, 32]  # Track joueurs et balle
+  min_track_length: 30  # Reduced to keep ball tracks
+  max_person_tracks: 2  # Maximum 2 joueurs
 
 # Action Recognition
 action_recognition:
@@ -41,7 +44,7 @@ action_recognition:
   clip_duration: 32  # frames
   clip_stride: 8  # frames between clips
   temporal_window: 64  # frames to consider for action
-  conf_threshold: 0.6
+  conf_threshold: 0.2  # Very low to get more detections in simulation mode
   classes:
     - "forehand"
     - "backhand"
@@ -52,7 +55,7 @@ action_recognition:
 
 # Pose Estimation
 pose:
-  enabled: true
+  enabled: false  # Disabled for speed
   model_type: "hrnet"
   conf_threshold: 0.3
   keypoints: 17
@@ -67,7 +70,7 @@ video:
 
 # Clip Extraction
 clips:
-  enabled: true
+  enabled: false  # Disabled to speed up processing
   margin_frames: 16  # frames before and after action
   min_clip_length: 16
   max_clip_length: 96
@@ -79,7 +82,7 @@ visualization:
   show_track_id: true
   show_action_label: true
   show_confidence: true
-  show_pose: true
+  show_pose: false
   bbox_thickness: 2
   font_scale: 0.6
   font_thickness: 2
@@ -117,7 +120,7 @@ output:
   save_video: true
   save_json: true
   save_csv: true
-  save_clips: true
+  save_clips: false
   video_codec: "mp4v"
   json_indent: 2
 

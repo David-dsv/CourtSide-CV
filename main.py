@@ -6,7 +6,7 @@ Complete end-to-end pipeline for tennis action recognition
 import sys
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 import torch
 from loguru import logger
 
@@ -21,7 +21,8 @@ from inference.extract_clips import extract_player_clips, extract_action_clips
 from inference.predict_actions import (
     predict_actions_from_video,
     predict_actions_from_tracked_clips,
-    non_maximum_suppression_temporal
+    non_maximum_suppression_temporal,
+    predict_actions_geometric
 )
 from inference.annotate_video import annotate_comprehensive
 
@@ -122,6 +123,100 @@ class TennisAnalysisPipeline:
         else:
             self.pose_estimator = None
 
+    def _filter_short_tracks(self, tracking_results: List[Dict], min_length: int) -> List[Dict]:
+        """
+        Filter out tracks that appear in fewer than min_length frames
+        and limit to max 2 person tracks
+
+        Args:
+            tracking_results: List of tracking results per frame
+            min_length: Minimum number of frames a track must appear in
+
+        Returns:
+            Filtered tracking results
+        """
+        # Count appearances of each track_id with their class
+        track_info = {}  # {track_id: {"count": N, "class_id": C, "avg_score": S}}
+
+        for frame_result in tracking_results:
+            tracks = frame_result.get("tracks", {})
+            track_ids = tracks.get("track_ids", [])
+            class_ids = tracks.get("class_ids", [])
+            scores = tracks.get("scores", [])
+
+            for i, tid in enumerate(track_ids):
+                if tid not in track_info:
+                    track_info[tid] = {
+                        "count": 0,
+                        "class_id": class_ids[i] if i < len(class_ids) else 0,
+                        "total_score": 0
+                    }
+                track_info[tid]["count"] += 1
+                track_info[tid]["total_score"] += scores[i] if i < len(scores) else 0
+
+        # Calculate average scores
+        for tid in track_info:
+            track_info[tid]["avg_score"] = track_info[tid]["total_score"] / track_info[tid]["count"]
+
+        # Separate person tracks from ball tracks
+        person_tracks = {tid: info for tid, info in track_info.items()
+                        if info["class_id"] == 0 and info["count"] >= min_length}
+        ball_tracks = {tid: info for tid, info in track_info.items()
+                      if info["class_id"] == 32 and info["count"] >= min_length // 2}  # Less strict for ball
+
+        # Keep only top 2 person tracks (by count and score)
+        sorted_persons = sorted(person_tracks.items(),
+                              key=lambda x: (x[1]["count"], x[1]["avg_score"]),
+                              reverse=True)[:2]
+
+        valid_person_ids = set(tid for tid, _ in sorted_persons)
+        valid_ball_ids = set(ball_tracks.keys())
+        valid_tracks = valid_person_ids | valid_ball_ids
+
+        logger.info(f"Track filtering: {len(track_info)} total tracks")
+        logger.info(f"  → {len(valid_person_ids)} person tracks (max 2)")
+        logger.info(f"  → {len(valid_ball_ids)} ball tracks")
+
+        # Filter results
+        filtered_results = []
+        for frame_result in tracking_results:
+            tracks = frame_result.get("tracks", {})
+            if "track_ids" in tracks and len(tracks["track_ids"]) > 0:
+                # Keep only valid tracks
+                keep_indices = [i for i, tid in enumerate(tracks["track_ids"]) if tid in valid_tracks]
+
+                if keep_indices:
+                    filtered_tracks = {
+                        "boxes": [tracks["boxes"][i] for i in keep_indices],
+                        "track_ids": [tracks["track_ids"][i] for i in keep_indices],
+                        "scores": [tracks["scores"][i] for i in keep_indices],
+                        "class_ids": [tracks["class_ids"][i] for i in keep_indices]
+                    }
+                else:
+                    # No tracks in this frame
+                    filtered_tracks = {
+                        "boxes": [],
+                        "track_ids": [],
+                        "scores": [],
+                        "class_ids": []
+                    }
+            else:
+                # No tracks in this frame
+                filtered_tracks = {
+                    "boxes": [],
+                    "track_ids": [],
+                    "scores": [],
+                    "class_ids": []
+                }
+
+            filtered_results.append({
+                "frame_id": frame_result["frame_id"],
+                "timestamp": frame_result["timestamp"],
+                "tracks": filtered_tracks
+            })
+
+        return filtered_results
+
     def run(
         self,
         video_path: Optional[str] = None,
@@ -178,12 +273,16 @@ class TennisAnalysisPipeline:
             logger.info(f"Processing video segment: {start_time:.1f}s to {end_time:.1f}s ({end_time - start_time:.1f}s)")
 
             # Extract segment using ffmpeg
+            # Use re-encoding instead of copy to avoid audio sync issues
             import subprocess
             cmd = [
-                'ffmpeg', '-i', self.input_video,
-                '-ss', str(start_time),
-                '-to', str(end_time),
-                '-c', 'copy',
+                'ffmpeg',
+                '-ss', str(start_time),  # Seek before input for faster processing
+                '-i', self.input_video,
+                '-to', str(end_time - start_time),  # Duration instead of absolute time
+                '-c:v', 'libx264',  # Re-encode video
+                '-c:a', 'aac',      # Re-encode audio
+                '-strict', 'experimental',
                 '-y',
                 temp_video
             ]
@@ -205,11 +304,16 @@ class TennisAnalysisPipeline:
         logger.info("=" * 60)
 
         detections_json = self.output_dir / "detections.json"
+
+        # Get class filter from config
+        class_filter = self.config["tracking"].get("filter_classes", None)
+
         detections_list = detect_video(
             self.input_video,
             self.detector,
             output_json=str(detections_json),
-            visualize=False
+            visualize=False,
+            classes_filter=class_filter
         )
 
         # Step 2: Tracking
@@ -224,6 +328,11 @@ class TennisAnalysisPipeline:
             output_json=str(tracking_json),
             visualize=False
         )
+
+        # Filter tracks by minimum length and limit to 2 players
+        min_track_length = self.config["tracking"].get("min_track_length", 0)
+        if min_track_length > 0:
+            tracking_results = self._filter_short_tracks(tracking_results, min_track_length)
 
         # Step 3: Extract clips (optional)
         if self.config["clips"]["enabled"]:
@@ -255,15 +364,22 @@ class TennisAnalysisPipeline:
         #     device=self.device
         # )
 
-        # Option B: Per-track analysis (better for tennis)
-        action_detections = predict_actions_from_tracked_clips(
-            self.input_video,
+        # Option B: Per-track analysis with ML model (requires trained model)
+        # action_detections = predict_actions_from_tracked_clips(
+        #     self.input_video,
+        #     tracking_results,
+        #     self.action_classifier,
+        #     clip_length=action_config["clip_duration"],
+        #     temporal_window=action_config["temporal_window"],
+        #     conf_threshold=action_config["conf_threshold"],
+        #     device=self.device
+        # )
+
+        # Option C: Geometric detection (no training needed!)
+        logger.info("Using geometric action detection (no ML model)")
+        action_detections = predict_actions_geometric(
             tracking_results,
-            self.action_classifier,
-            clip_length=action_config["clip_duration"],
-            temporal_window=action_config["temporal_window"],
-            conf_threshold=action_config["conf_threshold"],
-            device=self.device
+            conf_threshold=action_config["conf_threshold"]
         )
 
         # Apply temporal NMS
@@ -401,6 +517,12 @@ def main():
         type=float,
         help="Extract middle N seconds of video (e.g., --middle 300 for 5 minutes)"
     )
+    parser.add_argument(
+        "--yolo-version",
+        type=str,
+        choices=["yolov8", "yolov11", "yolov12"],
+        help="YOLO version to use (skip interactive prompt)"
+    )
     args = parser.parse_args()
 
     # Setup logging
@@ -411,8 +533,55 @@ def main():
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     )
 
-    # Initialize pipeline
-    pipeline = TennisAnalysisPipeline(args.config)
+    # Ask user for YOLO version (if not specified in args)
+    if args.yolo_version:
+        selected_version = args.yolo_version
+        logger.info(f"Using {selected_version.upper()} (from command line)")
+    else:
+        print("\n" + "="*60)
+        print("TENNIS ACTION ANALYSIS")
+        print("="*60)
+        print("\nQuelle version de YOLO voulez-vous utiliser ?")
+        print("  1. YOLOv8  (Recommandé - Plus rapide et stable)")
+        print("  2. YOLOv11 (Plus récent - Meilleure précision)")
+        print("  3. YOLOv12 (Expérimental - Peut nécessiter installation manuelle)")
+
+        while True:
+            choice = input("\nVotre choix (1/2/3) [défaut: 1]: ").strip()
+            if not choice:
+                choice = "1"
+
+            if choice in ["1", "2", "3"]:
+                yolo_versions = {"1": "yolov8", "2": "yolov11", "3": "yolov12"}
+                selected_version = yolo_versions[choice]
+                print(f"\n✓ {selected_version.upper()} sélectionné")
+                print("   Note: Les poids du modèle seront téléchargés automatiquement si nécessaire\n")
+                break
+            else:
+                print("Choix invalide. Veuillez entrer 1, 2 ou 3.")
+
+    # Load and modify config with selected YOLO version
+    from utils.file_utils import load_yaml
+    config = load_yaml(args.config)
+    config["yolo"]["model_version"] = selected_version
+
+    # Temporary save modified config
+    import tempfile
+    import yaml
+    temp_config = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+    yaml.dump(config, temp_config, default_flow_style=False)
+    temp_config_path = temp_config.name
+    temp_config.close()
+
+    # Initialize pipeline with modified config
+    pipeline = TennisAnalysisPipeline(temp_config_path)
+
+    # Clean up temp config
+    import os
+    try:
+        os.unlink(temp_config_path)
+    except:
+        pass
 
     # Override output dir if specified
     if args.output_dir:

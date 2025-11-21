@@ -58,7 +58,15 @@ class TennisYOLODetector:
             logger.info(f"Loading custom YOLO model from {model_path}")
             self.model = YOLO(model_path)
         else:
-            model_name = f"{model_version}{model_size}.pt"
+            # Handle YOLO naming conventions
+            # YOLOv8 uses 'v' (yolov8m.pt)
+            # YOLO11 and YOLO12 don't use 'v' (yolo11m.pt, yolo12m.pt)
+            if model_version == "yolov11":
+                model_name = f"yolo11{model_size}.pt"  # No 'v' for YOLO11
+            elif model_version == "yolov12":
+                model_name = f"yolo12{model_size}.pt"  # No 'v' for YOLO12
+            else:
+                model_name = f"{model_version}{model_size}.pt"  # YOLOv8 keeps the 'v'
             logger.info(f"Loading pretrained YOLO model: {model_name}")
             self.model = YOLO(model_name)
 

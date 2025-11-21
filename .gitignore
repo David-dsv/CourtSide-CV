@@ -49,9 +49,12 @@ weights/
 # Outputs
 runs/
 output/
+output_*/
 results/
 logs/
 *.log
+debug_crops/
+exp*/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -65,3 +68,18 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Training
+training/dataset/
+training/dataset_*/
+training/runs_*/
+hf_repos/
+
+# Test scripts
+test_*.py
+check_*.py
+detect_tennis_*.py
+
+# Config files (local)
+bytetrack_*.yaml
+training/*_subset.yaml

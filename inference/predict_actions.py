@@ -320,3 +320,79 @@ def non_maximum_suppression_temporal(
     logger.info(f"NMS: kept {len(keep)} detections")
 
     return keep
+
+
+
+def predict_actions_geometric(
+    tracking_results: List[Dict],
+    conf_threshold: float = 0.5
+) -> List[Dict]:
+    """
+    Prédit les actions en utilisant des règles géométriques
+    Sans modèle de deep learning
+
+    Args:
+        tracking_results: Résultats du tracking
+        conf_threshold: Seuil de confiance
+
+    Returns:
+        Liste des actions détectées
+    """
+    from inference.detect_tennis_actions import SimpleActionDetector
+
+    detector = SimpleActionDetector()
+    all_actions = []
+
+    # Stats pour debug
+    frames_with_players = 0
+    frames_with_ball = 0
+
+    for frame_data in tracking_results:
+        frame_id = frame_data["frame_id"]
+        tracks = frame_data.get("tracks", {})
+
+        # Séparer joueurs et balle
+        players = []
+        ball = None
+
+        if "track_ids" in tracks:
+            for i in range(len(tracks["track_ids"])):
+                box = tracks["boxes"][i] if i < len(tracks["boxes"]) else None
+                track_id = tracks["track_ids"][i] if i < len(tracks["track_ids"]) else 0
+                class_id = tracks["class_ids"][i] if i < len(tracks["class_ids"]) else 0
+                score = tracks["scores"][i] if i < len(tracks["scores"]) else 1.0
+
+                if class_id == 0:  # Joueur
+                    players.append({
+                        "box": box,
+                        "track_id": track_id,
+                        "score": score
+                    })
+                elif class_id == 32:  # Balle
+                    ball = {"box": box, "score": score}
+                    frames_with_ball += 1
+
+        if players:
+            frames_with_players += 1
+
+        # Détecter actions
+        actions = detector.update(players, ball, frame_id)
+
+        # Utiliser un seuil plus bas pour les actions simulées (sans balle)
+        threshold = conf_threshold * 0.7 if not ball else conf_threshold
+
+        # Filtrer par seuil de confiance
+        for action in actions:
+            if action.get("confidence", 0) >= threshold:
+                all_actions.append({
+                    "frame_id": frame_id,
+                    "timestamp": frame_data.get("timestamp", frame_id / 30.0),
+                    "action": action["action"],
+                    "confidence": action["confidence"],
+                    "track_id": action.get("track_id", 0)
+                })
+
+    logger.info(f"Détection géométrique: {frames_with_players} frames avec joueurs, {frames_with_ball} frames avec balle")
+    logger.info(f"Actions détectées: {len(all_actions)}")
+
+    return all_actions

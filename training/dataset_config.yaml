@@ -1,0 +1,112 @@
+# Configuration des datasets pour l'entraînement YOLOv11
+# Ce fichier centralise les paramètres de tous les datasets
+
+datasets:
+  raquette:
+    name: "Raquette Dataset"
+    type: "yolo"  # Format natif YOLO
+    path: "dataset/raquette"
+    num_classes: 1
+    class_names: ["racket"]
+    train_params:
+      epochs: 100
+      batch_size: 16
+      imgsz: 640
+      patience: 50
+      augmentation:
+        hsv_h: 0.015
+        hsv_s: 0.7
+        hsv_v: 0.4
+        translate: 0.1
+        scale: 0.5
+        fliplr: 0.5
+        mosaic: 1.0
+
+  tennis_ball:
+    name: "Tennis Ball Dataset"
+    type: "yolo"  # Format natif YOLO
+    path: "dataset/tennis ball"
+    num_classes: 1
+    class_names: ["tennis_ball"]
+    train_params:
+      epochs: 100
+      batch_size: 16
+      imgsz: 640
+      patience: 50
+      augmentation:
+        hsv_h: 0.015
+        hsv_s: 0.7
+        hsv_v: 0.4
+        translate: 0.1
+        scale: 0.5
+        fliplr: 0.5
+        mosaic: 1.0
+
+  tennis_court:
+    name: "Tennis Court ID Dataset"
+    type: "coco"  # Format COCO, nécessite conversion
+    path: "dataset/tennis_court_id"
+    converted_path: "dataset/tennis_court_id_yolo"  # Chemin après conversion
+    num_classes: 1
+    class_names: ["tennis_court"]
+    train_params:
+      epochs: 100
+      batch_size: 16
+      imgsz: 640
+      patience: 50
+      augmentation:
+        hsv_h: 0.015
+        hsv_s: 0.7
+        hsv_v: 0.4
+        translate: 0.1
+        scale: 0.5
+        fliplr: 0.5
+        mosaic: 1.0
+
+# Configuration globale pour l'entraînement
+training:
+  base_models:
+    nano: "yolo11n.pt"      # ~2.6M params, rapide
+    small: "yolo11s.pt"     # ~9.4M params
+    medium: "yolo11m.pt"    # ~20.1M params
+    large: "yolo11l.pt"     # ~25.3M params
+    xlarge: "yolo11x.pt"    # ~56.9M params
+
+  default_model: "yolo11n.pt"  # Modèle par défaut
+
+  optimizer:
+    type: "AdamW"
+    lr0: 0.001          # Learning rate initial
+    lrf: 0.01           # Learning rate final
+    momentum: 0.937
+    weight_decay: 0.0005
+
+  warmup:
+    epochs: 3.0
+    momentum: 0.8
+    bias_lr: 0.1
+
+  loss_weights:
+    box: 7.5            # Poids pour la loss de boîte
+    cls: 0.5            # Poids pour la loss de classification
+    dfl: 1.5            # Poids pour la distribution focale
+
+  validation:
+    conf: 0.001         # Confidence threshold
+    iou: 0.7           # IoU threshold pour NMS
+
+# Configuration pour l'inférence
+inference:
+  conf_thresholds:
+    raquette: 0.5
+    tennis_ball: 0.3
+    tennis_court: 0.6
+
+  iou_threshold: 0.45   # IoU threshold pour NMS
+  max_det: 300          # Nombre maximum de détections
+
+# Chemins de sortie
+output:
+  runs_dir: "runs"
+  models_dir: "models"
+  logs_dir: "logs"

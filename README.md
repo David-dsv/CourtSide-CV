@@ -1,4 +1,4 @@
-# Tennis Analysis
+# CourtSide-Computer Vision
 
 Deep learning pipeline for tennis video analysis with object detection, multi-object tracking, and action recognition.
 

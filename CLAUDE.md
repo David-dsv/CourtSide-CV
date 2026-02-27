@@ -118,6 +118,10 @@ All pipeline parameters are in `config.yaml`. Set `paths.yolo_weights` to a loca
 - **Zero hardcoding**: The pipeline must work on any tennis match video extract — any resolution, camera angle, broadcast style, court surface, or players. No magic numbers tied to a specific video. All thresholds must be derived from frame dimensions, fps, or detected features (court zones, player positions). When a detection model fails (e.g. no court zones found), use geometric fallbacks based on standard broadcast tennis proportions, not pixel values from a test video.
 - **Generalization over precision**: Prefer robust heuristics that work across many videos over precise values tuned to one clip. Every constant should be expressed as a ratio of frame size, fps, or detected geometry.
 
+## Workflow
+
+- **Push after every change**: After each commit, always push to GitHub immediately (`git push`). Never leave commits local-only.
+
 ## Important Conventions
 
 - The codebase is bilingual: comments and UI strings mix French and English.

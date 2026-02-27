@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Détection finale pour LinkedIn - Suivi fluide et continu de la balle
+CourtSide-CV - Suivi fluide et continu de la balle
 Combine ByteTrack + Interpolation + Smoothing
 """
 
@@ -15,6 +15,9 @@ from datetime import datetime
 from collections import deque, defaultdict
 import logging
 from scipy import interpolate
+from trackers import ByteTrackTracker
+import supervision as sv
+from huggingface_hub import hf_hub_download
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,12 +26,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class BallTrackerLinkedIn:
-    """Tracker optimisé pour post LinkedIn"""
+class BallTracker:
+    """Tracker de balle avec interpolation et lissage"""
 
     def __init__(self):
-        # Utiliser le modèle spécialisé balle de AI-Tennis
-        self.ball_model = YOLO("models/tennis_ball_aitennis.pt")
+        # Modèle YOLO26 fine-tuné pour tennis ball
+        yolo26_path = Path(__file__).parent / "training" / "yolo26_ball_best.pt"
+        if yolo26_path.exists():
+            logger.info(f"Chargement du modèle YOLO26 : {yolo26_path}")
+            self.ball_model = YOLO(str(yolo26_path))
+            self.is_yolo26 = True  # classe 0 = tennis_ball
+        else:
+            # Fallback: modèle HuggingFace
+            logger.info("YOLO26 non trouvé, fallback sur HuggingFace")
+            weights_path = hf_hub_download(
+                repo_id="Davidsv/CourtSide-Computer-Vision-v1",
+                filename="model.pt"
+            )
+            self.ball_model = YOLO(weights_path)
+            self.is_yolo26 = False  # classe 1 = tennis_ball
+
+        # ByteTrack tracker (roboflow/trackers 2.2.0)
+        self.byte_tracker = ByteTrackTracker(
+            lost_track_buffer=30,
+            track_activation_threshold=0.05,
+            minimum_consecutive_frames=1,
+            minimum_iou_threshold=0.1,
+            frame_rate=30
+        )
 
         # Tracking
         self.tracks = {}
@@ -47,34 +72,45 @@ class BallTrackerLinkedIn:
         for i, frame in enumerate(frames):
             self.frame_idx = i
 
-            # Détection avec ByteTrack
-            results = self.ball_model.track(
+            # Détection seule (sans tracker intégré ultralytics)
+            # YOLO26 fine-tuné : classe 0 = tennis_ball
+            # Modèle HuggingFace : classe 1 = tennis_ball
+            results = self.ball_model(
                 source=frame,
                 conf=self.conf_thresh,
-                classes=[0],  # tennis ball
+                classes=[0] if self.is_yolo26 else [1],
                 imgsz=640,
                 iou=0.5,
-                tracker="bytetrack_tennis_custom.yaml",
-                persist=True,
                 verbose=False
             )
 
-            # Extraire position
+            # Extraire position avec ByteTrack (trackers 2.2.0)
             ball_pos = None
             if results[0].boxes is not None and len(results[0].boxes) > 0:
-                # Prendre la détection avec meilleure confiance
-                best_idx = results[0].boxes.conf.argmax()
-                x1, y1, x2, y2 = results[0].boxes.xyxy[best_idx].tolist()
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-                conf = float(results[0].boxes.conf[best_idx])
-                ball_pos = (cx, cy, conf)
+                boxes = results[0].boxes.xyxy.cpu().numpy()
+                confs = results[0].boxes.conf.cpu().numpy()
+                cls_ids = results[0].boxes.cls.cpu().numpy().astype(int)
+
+                detections = sv.Detections(
+                    xyxy=boxes,
+                    confidence=confs,
+                    class_id=cls_ids
+                )
+                tracked = self.byte_tracker.update(detections)
+
+                if tracked.tracker_id is not None and len(tracked.tracker_id) > 0:
+                    best_idx = tracked.confidence.argmax()
+                    x1, y1, x2, y2 = tracked.xyxy[best_idx]
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+                    conf = float(tracked.confidence[best_idx])
+                    ball_pos = (cx, cy, conf)
 
             positions.append((i, ball_pos))
 
             if i % 100 == 0:
                 detected = sum(1 for _, p in positions if p is not None)
-                pct = (detected / len(positions)) * 100
+                pct = (detected / len(positions)) * 100 if positions else 0
                 logger.info(f"Batch progress: {i}/{len(frames)} | Detection rate: {pct:.1f}%")
 
         return positions
@@ -156,11 +192,11 @@ class BallTrackerLinkedIn:
         return smoothed
 
 
-class VideoProcessorLinkedIn:
-    """Processeur vidéo pour LinkedIn"""
+class VideoProcessor:
+    """Processeur vidéo avec tracking, pose et annotation"""
 
     def __init__(self):
-        self.tracker = BallTrackerLinkedIn()
+        self.tracker = BallTracker()
         self.person_model = YOLO('yolov8m.pt')
         self.pose_model = YOLO('yolov8m-pose.pt')  # Modèle de pose pour squelette
 
@@ -239,7 +275,7 @@ class VideoProcessorLinkedIn:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_sec * fps)
 
         logger.info(f"\n{'='*60}")
-        logger.info(f"PROCESSING FOR LINKEDIN")
+        logger.info(f"PROCESSING VIDEO")
         logger.info(f"Segment: {start_time} - {end_time} ({duration}s)")
         logger.info(f"FPS: {fps}, Resolution: {width}x{height}")
         logger.info(f"{'='*60}\n")
@@ -284,7 +320,7 @@ class VideoProcessorLinkedIn:
         logger.info("\nPhase 5: Rendering output video...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         temp_video = f"{output_dir}/temp_{timestamp}.mp4"
-        final_output = f"{output_dir}/linkedin_{timestamp}.mp4"
+        final_output = f"{output_dir}/courtside_{timestamp}.mp4"
 
         # mp4v fonctionne mieux avec OpenCV, ffmpeg convertira en H.264
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -506,7 +542,7 @@ class VideoProcessorLinkedIn:
 
         # Stats finales
         logger.info(f"\n{'='*60}")
-        logger.info(f"✅ VIDEO READY FOR LINKEDIN!")
+        logger.info(f"✅ VIDEO READY!")
         logger.info(f"Output: {final_output}")
         logger.info(f"Duration: {duration}s")
         logger.info(f"Coverage: {filled*100/len(positions):.1f}% frames with ball")
@@ -516,7 +552,7 @@ class VideoProcessorLinkedIn:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Tennis Tracking for LinkedIn')
+    parser = argparse.ArgumentParser(description='CourtSide-CV Tennis Tracking')
     parser.add_argument('--video', required=True, help='Input video path')
     parser.add_argument('--start', default='0:00', help='Start time (mm:ss)')
     parser.add_argument('--end', default='0:30', help='End time (mm:ss)')
@@ -528,42 +564,25 @@ def main():
 
     print("""
     ╔════════════════════════════════════════════════════════════════╗
-    ║           🎾 AI TENNIS TRACKING - LINKEDIN EDITION 🎾          ║
+    ║              CourtSide-CV  Tennis Tracking                    ║
     ╚════════════════════════════════════════════════════════════════╝
 
     Features:
-    ✓ ByteTrack object tracking for ball
-    ✓ Pose estimation with skeleton visualization
-    ✓ Intelligent interpolation for missing frames
-    ✓ Trajectory smoothing
-    ✓ Visual effects (glow, trail, skeleton)
-    ✓ Professional overlay
+    - ByteTrack object tracking for ball
+    - Pose estimation with skeleton visualization
+    - Intelligent interpolation for missing frames
+    - Trajectory smoothing
+    - Visual effects (glow, trail, skeleton)
 
     Processing...
     """)
 
-    processor = VideoProcessorLinkedIn()
+    processor = VideoProcessor()
     output = processor.process_video(args.video, args.start, args.end, args.output,
                                       player1_name=args.player1, player2_name=args.player2)
 
     print(f"""
-    ✅ SUCCESS! Your video is ready for LinkedIn!
-
-    📹 Output: {output}
-
-    Suggested LinkedIn post:
-    ---------------------------
-    🎾 AI-Powered Tennis Analysis: Ball Tracking + Pose Estimation!
-
-    Built a computer vision system that combines:
-    • Real-time tennis ball tracking with ByteTrack
-    • Player pose estimation with skeleton visualization
-    • Intelligent interpolation for smooth tracking
-    • Professional visual effects
-
-    Tech stack: YOLOv11, Pose Estimation, ByteTrack, OpenCV
-
-    #ComputerVision #AI #PoseEstimation #DeepLearning #SportsTech
+    Output: {output}
     """)
 
 

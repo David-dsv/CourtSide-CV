@@ -11,7 +11,7 @@ import torch
 from loguru import logger
 
 from models.yolo_detector import TennisYOLODetector
-from models.tracker import OCSort
+from models.tracker import ByteTrackWrapper
 from models.action_classifier import TennisActionClassifier, load_action_classifier
 from models.pose_estimator import SimplePoseEstimator, load_pose_estimator
 
@@ -78,13 +78,15 @@ class TennisAnalysisPipeline:
             class_names=yolo_config.get("classes", {0: "player", 1: "ball", 2: "racket"})
         )
 
-        # Tracker
+        # Tracker (ByteTrack via roboflow/trackers)
         tracking_config = self.config["tracking"]
-        self.tracker = OCSort(
-            det_thresh=tracking_config["track_high_thresh"],
-            max_age=tracking_config["track_buffer"],
-            min_hits=tracking_config["min_hits"],
-            iou_threshold=tracking_config["iou_threshold"]
+        self.tracker = ByteTrackWrapper(
+            lost_track_buffer=tracking_config.get("lost_track_buffer", 30),
+            frame_rate=float(self.config["video"].get("fps", 30)),
+            track_activation_threshold=tracking_config.get("track_activation_threshold", 0.7),
+            minimum_consecutive_frames=tracking_config.get("minimum_consecutive_frames", 2),
+            minimum_iou_threshold=tracking_config.get("minimum_iou_threshold", 0.1),
+            high_conf_det_threshold=tracking_config.get("high_conf_det_threshold", 0.6)
         )
 
         # Action classifier

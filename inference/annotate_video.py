@@ -20,7 +20,8 @@ from utils.drawing import (
     draw_keypoints,
     draw_skeleton,
     draw_action_label,
-    create_legend
+    create_legend,
+    generate_colors
 )
 import subprocess
 import tempfile

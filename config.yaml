@@ -5,36 +5,36 @@ paths:
   input_video: "data/input/tennis_match.mp4"
   output_dir: "data/output"
   models_dir: "weights"
-  yolo_weights: "weights/yolo_tennis.pt"
+  # Fine-tuned model loaded from HuggingFace: Davidsv/CourtSide-Computer-Vision-v1
+  # Set to a local .pt path to skip HuggingFace download
+  yolo_weights: null
   action_classifier_weights: "weights/action_classifier.pth"
   pose_weights: "weights/pose_estimator.pth"
 
 # YOLO Detection
+# Uses fine-tuned model (HuggingFace) for ball/racket + generic YOLO for players
 yolo:
-  model_version: "yolov8"  # yolov8 or yolov11
+  model_version: "yolov8"  # Version du modèle générique pour détection joueurs
   model_size: "m"  # n, s, m, l, x
-  conf_threshold: 0.2  # Très bas pour détecter la petite balle
+  conf_threshold: 0.2  # Bas pour détecter la petite balle
   iou_threshold: 0.45
   device: "cpu"  # cuda or cpu (use cpu for Mac)
   imgsz: 640
   classes:
-    0: "person"  # Joueurs
-    32: "sports_ball"  # Balle de tennis
-    # Note: YOLO COCO n'a pas de classe raquette
+    0: "person"  # Joueurs (YOLO générique COCO)
+    32: "sports_ball"  # Balle (modèle fine-tuné, mappé vers COCO ID)
 
-# Tracking
+# Tracking (ByteTrack via roboflow/trackers 2.2.0)
 tracking:
-  tracker_type: "ocsort"  # ocsort or botsort
-  track_high_thresh: 0.6
-  track_low_thresh: 0.1
-  new_track_thresh: 0.7
-  track_buffer: 30
-  match_thresh: 0.8
-  min_hits: 3
-  iou_threshold: 0.3
-  filter_classes: [0, 32]  # Track joueurs et balle
-  min_track_length: 30  # Reduced to keep ball tracks
-  max_person_tracks: 2  # Maximum 2 joueurs
+  tracker_type: "bytetrack"
+  lost_track_buffer: 30               # Frames to keep a lost track
+  track_activation_threshold: 0.5     # Min confidence to activate a new track
+  minimum_consecutive_frames: 2       # Min consecutive frames before track is confirmed
+  minimum_iou_threshold: 0.1          # Min IoU for matching
+  high_conf_det_threshold: 0.4        # Threshold for high-confidence detections
+  filter_classes: [0, 32]             # Track players and ball
+  min_track_length: 30                # Minimum frames for a valid track
+  max_person_tracks: 2                # Maximum 2 players
 
 # Action Recognition
 action_recognition:

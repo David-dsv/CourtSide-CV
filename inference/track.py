@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from tqdm import tqdm
 from loguru import logger
 
-from models.tracker import OCSort
+from models.tracker import ByteTrackWrapper
 from utils.video_utils import VideoReader, VideoWriter
 from utils.drawing import draw_tracks
 from utils.file_utils import save_json
@@ -20,7 +20,7 @@ from utils.file_utils import save_json
 
 def track_video(
     detections_list: List[Dict],
-    tracker: OCSort,
+    tracker: ByteTrackWrapper,
     video_path: Optional[str] = None,
     output_video: Optional[str] = None,
     output_json: Optional[str] = None,

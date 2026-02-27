@@ -19,6 +19,7 @@ def generate_colors(num_colors: int) -> List[Tuple[int, int, int]]:
     Returns:
         List of BGR color tuples
     """
+    num_colors = max(num_colors, 1)
     colors = []
     for i in range(num_colors):
         hue = i / num_colors
@@ -482,6 +483,113 @@ def create_legend(
         )
 
         current_y += line_height
+
+    return image
+
+
+def draw_player_bbox(
+    image: np.ndarray,
+    box: np.ndarray,
+    player_id: int,
+    color: Optional[Tuple[int, int, int]] = None,
+    thickness: int = 2
+) -> np.ndarray:
+    """
+    Draw a bounding box with 'Player N' label.
+    Default colors: amber for P1, blue for P2.
+    """
+    PLAYER_COLORS = {
+        1: (0, 191, 255),   # amber/gold (BGR)
+        2: (255, 160, 50),   # blue (BGR)
+    }
+    if color is None:
+        color = PLAYER_COLORS.get(player_id, (0, 255, 0))
+
+    x1, y1, x2, y2 = [int(v) for v in box]
+    cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+
+    label = f"Player {player_id}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.55
+    font_thick = 2
+    (tw, th), baseline = cv2.getTextSize(label, font, font_scale, font_thick)
+    cv2.rectangle(image, (x1, y1 - th - baseline - 5), (x1 + tw + 4, y1), color, -1)
+    cv2.putText(image, label, (x1 + 2, y1 - baseline - 2), font, font_scale,
+                (255, 255, 255), font_thick, cv2.LINE_AA)
+    return image
+
+
+def draw_bounce_marker(
+    image: np.ndarray,
+    x: int,
+    y: int,
+    depth: str = "mid",
+    radius: int = 14,
+    thickness: int = 2,
+    alpha: float = 1.0
+) -> np.ndarray:
+    """
+    Draw a circle + X marker at bounce location.
+    Color by depth: red=deep, orange=mid, yellow=short.
+    alpha (0-1) fades the marker over time.
+    """
+    DEPTH_COLORS = {
+        "deep": (0, 0, 255),     # red
+        "mid": (0, 140, 255),    # orange
+        "short": (0, 230, 255),  # yellow
+    }
+    base_color = DEPTH_COLORS.get(depth, (0, 140, 255))
+    color = tuple(int(c * alpha) for c in base_color)
+
+    cv2.circle(image, (x, y), radius, color, thickness, cv2.LINE_AA)
+    # X marker inside circle
+    d = int(radius * 0.5)
+    cv2.line(image, (x - d, y - d), (x + d, y + d), color, thickness, cv2.LINE_AA)
+    cv2.line(image, (x - d, y + d), (x + d, y - d), color, thickness, cv2.LINE_AA)
+
+    return image
+
+
+def draw_court_overlay(
+    image: np.ndarray,
+    court_zones: Dict[str, Dict],
+    alpha: float = 0.15,
+    draw_labels: bool = False
+) -> np.ndarray:
+    """
+    Draw semi-transparent colored rectangles for each court zone.
+    court_zones: {zone_name: {'box': [x1,y1,x2,y2], 'score': float}}
+    """
+    ZONE_COLORS = {
+        "bottom-dead-zone": (80, 80, 200),
+        "court": (80, 180, 80),
+        "left-doubles-alley": (200, 150, 50),
+        "left-service-box": (200, 200, 50),
+        "net": (100, 100, 255),
+        "right-doubles-alley": (50, 150, 200),
+        "right-service-box": (50, 200, 200),
+        "top-dead-zone": (200, 80, 80),
+    }
+
+    overlay = image.copy()
+    for zone_name, info in court_zones.items():
+        box = info["box"]
+        x1, y1, x2, y2 = [int(v) for v in box]
+        color = ZONE_COLORS.get(zone_name, (128, 128, 128))
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+
+    cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+
+    # Draw solid border lines and optional labels
+    for zone_name, info in court_zones.items():
+        box = info["box"]
+        x1, y1, x2, y2 = [int(v) for v in box]
+        color = ZONE_COLORS.get(zone_name, (128, 128, 128))
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+        if draw_labels:
+            label = zone_name.replace("-", " ").title()
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            cv2.putText(image, label, (x1 + 4, y1 + 16), font, 0.4, color, 1, cv2.LINE_AA)
 
     return image
 

@@ -46,7 +46,6 @@ class BallKalmanFilter:
     - update(x, y): correct state with a measurement
     - gating_distance(x, y): Mahalanobis-like distance to check if
       a detection is consistent with the predicted position
-    - check_bounce(): detect vertical velocity sign change (bounce)
     """
 
     def __init__(self, process_noise=100.0, measurement_noise=4.0):
@@ -68,16 +67,11 @@ class BallKalmanFilter:
         self.kf.errorCovPost = np.eye(4, dtype=np.float32) * 500
         self.initialized = False
         self.frames_since_update = 0
-        # Bounce detection state
-        self.prev_vy = 0.0
-        self.frames_since_last_bounce = 999
 
     def init_state(self, x, y):
         self.kf.statePost = np.array([[x], [y], [0], [0]], dtype=np.float32)
         self.initialized = True
         self.frames_since_update = 0
-        self.prev_vy = 0.0
-        self.frames_since_last_bounce = 999
 
     def predict(self):
         if not self.initialized:
@@ -99,36 +93,6 @@ class BallKalmanFilter:
             return 0.0
         pred = self.kf.statePost
         return float(np.hypot(x - pred[0][0], y - pred[1][0]))
-
-    def check_bounce(self, min_vy_threshold=2.0, min_frames_between=10,
-                     frame_height=None, min_y_ratio=0.45):
-        """
-        Check if a bounce occurred by detecting vertical velocity sign change.
-        A bounce is: prev_vy > threshold (going down) and current vy < -threshold (going up),
-        AND the ball must be in the lower portion of the frame (below min_y_ratio).
-        This avoids false bounces when a player hits the ball mid-air.
-
-        Returns (x, y) of bounce position or None.
-        """
-        if not self.initialized:
-            return None
-
-        self.frames_since_last_bounce += 1
-        vy = float(self.kf.statePost[3][0])
-
-        bounce = None
-        if (self.prev_vy > min_vy_threshold and
-                vy < -min_vy_threshold and
-                self.frames_since_last_bounce >= min_frames_between):
-            x = float(self.kf.statePost[0][0])
-            y = float(self.kf.statePost[1][0])
-            # Only count as bounce if ball is in lower portion of frame
-            if frame_height is None or y >= frame_height * min_y_ratio:
-                bounce = (int(x), int(y))
-                self.frames_since_last_bounce = 0
-
-        self.prev_vy = vy
-        return bounce
 
 
 class PlayerTracker:
@@ -257,19 +221,20 @@ def smooth_ball_trajectory(raw_centers, max_gap=10):
     return result
 
 
-def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_height):
+def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_height, frame_width=None):
     """
     Detect ball bounces from the smoothed trajectory.
 
-    A bounce is a local maximum of y (lowest point of the arc in image coords)
-    where the ball is on the court surface (lower portion of frame) and
-    horizontal direction is preserved (ruling out player hits).
+    Core idea: a bounce is when the ball changes vertical direction (going down
+    then back up) WITHOUT a significant speed increase. A player hit also
+    reverses vertical direction but comes with a sharp acceleration.
 
     Args:
         ball_centers: list of (x,y) or None per frame (smoothed trajectory)
         ball_speeds_px: list of speed in px/frame per frame
         fps: video frame rate
         frame_height: frame height in pixels
+        frame_width: frame width in pixels (unused, kept for API compat)
 
     Returns:
         list of (frame_idx, x, y)
@@ -278,99 +243,92 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
         return []
 
     # Parameters derived from fps/frame size
-    min_gap = int(fps * 0.4)          # minimum frames between bounces
-    half_window = max(3, int(fps * 0.15))  # window to check local max (~150ms)
-    # Court surface zone: bounces happen in the lower portion of the frame
-    # but not at the very bottom (that's below the court)
-    min_y_ratio = 0.35   # ball must be below 35% of frame (excludes sky/stands)
-    max_y_ratio = 0.92   # ball must be above 92% (excludes below-court area)
-    speed_window = max(3, int(fps * 0.2))  # window to measure speed change
+    min_gap = int(fps * 0.25)         # minimum frames between bounces (~250ms)
+    half_window = max(3, int(fps * 0.12))  # ~120ms window for slope estimation
+    # Court surface zone: includes both near court and far court
+    min_y_ratio = 0.12   # above this = on the court (far baseline ~18%)
+    max_y_ratio = 0.93   # below this = not below the court
+    # Speed spike threshold: hits accelerate the ball, bounces don't
+    speed_spike_threshold = 1.8  # after/before speed ratio above this = hit
+
+    # Compute per-frame vertical velocity (smoothed)
+    vy = np.full(len(ball_centers), np.nan)
+    for i in range(1, len(ball_centers)):
+        if ball_centers[i] is not None and ball_centers[i - 1] is not None:
+            vy[i] = ball_centers[i][1] - ball_centers[i - 1][1]
+
+    # Smooth vy with a small rolling average to reduce noise
+    kernel = max(3, int(fps * 0.06))
+    if kernel % 2 == 0:
+        kernel += 1
+    vy_smooth = np.copy(vy)
+    half_k = kernel // 2
+    for i in range(half_k, len(vy) - half_k):
+        window = vy[i - half_k:i + half_k + 1]
+        valid = window[~np.isnan(window)]
+        if len(valid) >= 2:
+            vy_smooth[i] = np.mean(valid)
 
     bounces = []
     last_bounce_frame = -min_gap
 
-    for i in range(half_window, len(ball_centers) - half_window):
+    for i in range(half_window + 1, len(ball_centers) - half_window):
         if ball_centers[i] is None:
             continue
 
         cx, cy = ball_centers[i]
         y_ratio = cy / frame_height
 
-        # Must be on the court surface area
+        # Must be on the court surface
         if y_ratio < min_y_ratio or y_ratio > max_y_ratio:
-            continue
-
-        # Check if this is a local maximum of y (= lowest point physically)
-        is_local_max = True
-        for j in range(i - half_window, i + half_window + 1):
-            if j == i:
-                continue
-            if ball_centers[j] is None:
-                continue
-            if ball_centers[j][1] > cy:
-                is_local_max = False
-                break
-
-        if not is_local_max:
             continue
 
         # Minimum gap between bounces
         if (i - last_bounce_frame) < min_gap:
             continue
 
-        # Check that ball was coming down before and going up after
-        # (y increasing then decreasing in image coords)
-        before_y = []
-        for j in range(max(0, i - half_window * 2), i):
-            if ball_centers[j] is not None:
-                before_y.append(ball_centers[j][1])
-        after_y = []
-        for j in range(i + 1, min(len(ball_centers), i + half_window * 2 + 1)):
-            if ball_centers[j] is not None:
-                after_y.append(ball_centers[j][1])
+        # Look for vertical direction change: vy goes from positive (descending
+        # in image coords = ball falling) to negative (ascending = ball rising)
+        # Check a small neighbourhood around frame i for the sign change
+        vy_before = np.nan
+        vy_after = np.nan
+        for k in range(i, max(i - half_window - 1, 0), -1):
+            if not np.isnan(vy_smooth[k]) and vy_smooth[k] > 0:
+                vy_before = vy_smooth[k]
+                break
+        for k in range(i, min(i + half_window + 1, len(vy_smooth))):
+            if not np.isnan(vy_smooth[k]) and vy_smooth[k] < 0:
+                vy_after = vy_smooth[k]
+                break
 
-        if len(before_y) < 2 or len(after_y) < 2:
+        if np.isnan(vy_before) or np.isnan(vy_after):
             continue
 
-        # Ball should be descending before (y increasing) and ascending after (y decreasing)
-        coming_down = before_y[-1] > before_y[0]  # y increases = ball descending
-        going_up = after_y[-1] < after_y[0]        # y decreases = ball ascending
+        # Confirmed: ball was going down then going up → direction reversal
+        # Now distinguish bounce vs hit using speed change
+        # Measure average speed before and after the reversal point
+        speed_win = max(3, int(fps * 0.15))
+        speeds_before = [ball_speeds_px[j]
+                         for j in range(max(0, i - speed_win), i)
+                         if ball_speeds_px[j] > 0]
+        speeds_after = [ball_speeds_px[j]
+                        for j in range(i, min(len(ball_speeds_px), i + speed_win))
+                        if ball_speeds_px[j] > 0]
 
-        if not (coming_down and going_up):
+        avg_before = np.mean(speeds_before) if speeds_before else 0
+        avg_after = np.mean(speeds_after) if speeds_after else 0
+
+        # A bounce preserves or loses speed; a hit gains speed sharply
+        speed_ratio = avg_after / max(avg_before, 0.1)
+        if speed_ratio > speed_spike_threshold:
+            logger.debug(f"Rejected hit at frame {i}: speed_ratio={speed_ratio:.1f} "
+                         f"({avg_before:.1f} → {avg_after:.1f} px/f)")
             continue
-
-        # Filter out player hits: check horizontal direction
-        # At a bounce, horizontal direction is preserved
-        # At a hit, horizontal direction reverses
-        before_x = []
-        for j in range(max(0, i - half_window), i):
-            if ball_centers[j] is not None:
-                before_x.append(ball_centers[j][0])
-        after_x = []
-        for j in range(i + 1, min(len(ball_centers), i + half_window + 1)):
-            if ball_centers[j] is not None:
-                after_x.append(ball_centers[j][0])
-
-        if len(before_x) >= 2 and len(after_x) >= 2:
-            vx_before = before_x[-1] - before_x[0]
-            vx_after = after_x[-1] - after_x[0]
-            # If horizontal direction reverses with significant magnitude, it's a hit
-            if (vx_before * vx_after) < 0 and abs(vx_before) > 2 and abs(vx_after) > 2:
-                # Also check speed spike — hits cause sharp acceleration
-                speed_before = np.mean([ball_speeds_px[j]
-                                        for j in range(max(0, i - speed_window), i)
-                                        if ball_speeds_px[j] > 0]) if i > 0 else 0
-                speed_after = np.mean([ball_speeds_px[j]
-                                       for j in range(i, min(len(ball_speeds_px), i + speed_window))
-                                       if ball_speeds_px[j] > 0]) if i < len(ball_speeds_px) else 0
-                speed_ratio = speed_after / max(speed_before, 0.1)
-                if speed_ratio > 1.5:
-                    logger.debug(f"Rejected hit at frame {i}: vx reversal + speed_ratio={speed_ratio:.1f}")
-                    continue
 
         bounces.append((i, cx, cy))
         last_bounce_frame = i
-        logger.debug(f"Bounce detected at frame {i}: ({cx}, {cy}), y_ratio={y_ratio:.2f}")
+        logger.debug(f"Bounce at frame {i}: ({cx:.0f}, {cy:.0f}), y_ratio={y_ratio:.2f}, "
+                     f"speed_ratio={speed_ratio:.2f}")
 
     logger.info(f"Trajectory bounce detection: {len(bounces)} bounces found")
     return bounces
@@ -801,7 +759,7 @@ def main():
     bounce_events = []
     if not args.no_bounces:
         bounce_events = detect_bounces_from_trajectory(
-            all_ball_centers, ball_speeds_px, fps, frame_height)
+            all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
 
     # ─── Classify bounces ───
     classified_bounces = []

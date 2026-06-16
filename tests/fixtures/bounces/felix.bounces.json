@@ -1,0 +1,105 @@
+{
+  "video": "/Users/vuong/Documents/CourtSide-CV/felix.mp4",
+  "fps": 60.0,
+  "frame_offset": 0,
+  "annotator": "",
+  "notes": "",
+  "bounces": [
+    {
+      "frame": 53,
+      "x": 1140,
+      "y": 543,
+      "depth": "short"
+    },
+    {
+      "frame": 161,
+      "x": 661,
+      "y": 638,
+      "depth": "mid"
+    },
+    {
+      "frame": 246,
+      "x": 1385,
+      "y": 544,
+      "depth": "mid"
+    },
+    {
+      "frame": 329,
+      "x": 827,
+      "y": 596,
+      "depth": "short"
+    },
+    {
+      "frame": 424,
+      "x": 1555,
+      "y": 550,
+      "depth": "deep"
+    },
+    {
+      "frame": 547,
+      "x": 1151,
+      "y": 545,
+      "depth": "short"
+    },
+    {
+      "frame": 721,
+      "x": 1437,
+      "y": 606,
+      "depth": "short"
+    },
+    {
+      "frame": 884,
+      "x": 1478,
+      "y": 590,
+      "depth": "mid"
+    },
+    {
+      "frame": 978,
+      "x": 1187,
+      "y": 569,
+      "depth": "short"
+    },
+    {
+      "frame": 1142,
+      "x": 1213,
+      "y": 541,
+      "depth": "short"
+    },
+    {
+      "frame": 1253,
+      "x": 345,
+      "y": 690,
+      "depth": "deep"
+    },
+    {
+      "frame": 1346,
+      "x": 1331,
+      "y": 565,
+      "depth": "short"
+    },
+    {
+      "frame": 1441,
+      "x": 587,
+      "y": 645,
+      "depth": "mid"
+    },
+    {
+      "frame": 1519,
+      "x": 1656,
+      "y": 557,
+      "depth": "deep"
+    },
+    {
+      "frame": 1667,
+      "x": 1260,
+      "y": 550,
+      "depth": "mid"
+    },
+    {
+      "frame": 1795,
+      "x": 927,
+      "y": 620,
+      "depth": "short"
+    }
+  ]
+}

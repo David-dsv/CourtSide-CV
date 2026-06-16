@@ -10,11 +10,20 @@ Usage
 -----
     python tools/bounce_eval/annotate_bounces.py data/clips/match1.mp4
 
+    # only a slice of the video — e.g. the first 30 seconds
+    python tools/bounce_eval/annotate_bounces.py data/clips/match1.mp4 -s 0 -d 30
+
+    # a window in the middle (10s -> 40s), via duration or explicit end
+    python tools/bounce_eval/annotate_bounces.py data/clips/match1.mp4 -s 10 -d 30
+    python tools/bounce_eval/annotate_bounces.py data/clips/match1.mp4 -s 10 -e 40
+
     # custom output path (default: tests/fixtures/bounces/<clip>.bounces.json)
     python tools/bounce_eval/annotate_bounces.py data/clips/match1.mp4 \\
         -o tests/fixtures/bounces/match1.bounces.json
 
 Re-running with an existing output file loads it so you can resume / edit.
+Frame numbers in the JSON are ABSOLUTE in the source video regardless of the
+window; frame_offset records the window start.
 
 Controls (also drawn on-screen)
 -------------------------------
@@ -55,8 +64,12 @@ def parse_args():
     p.add_argument("-o", "--output", default=None,
                    help="Output JSON (default: tests/fixtures/bounces/<clip>.bounces.json)")
     p.add_argument("--annotator", default="", help="Annotator name to record")
-    p.add_argument("--frame-offset", type=int, default=0,
-                   help="Absolute frame in the source video of this clip's frame 0")
+    p.add_argument("-s", "--start", type=float, default=0.0,
+                   help="Start time in seconds (annotate only from here)")
+    p.add_argument("-d", "--duration", type=float, default=None,
+                   help="Window length in seconds from --start (default: to end of video)")
+    p.add_argument("-e", "--end", type=float, default=None,
+                   help="End time in seconds (alternative to --duration)")
     return p.parse_args()
 
 
@@ -73,7 +86,8 @@ def nearest_mark(marks: dict, frame: int):
     return min(marks, key=lambda f: abs(f - frame))
 
 
-def draw_hud(frame, idx, total, marks, status):
+def draw_hud(frame, idx, window, marks, status):
+    start_frame, last_frame = window
     h, w = frame.shape[:2]
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 88), (0, 0, 0), -1)
@@ -82,7 +96,7 @@ def draw_hud(frame, idx, total, marks, status):
 
     marked_here = idx in marks
     head_color = (0, 255, 0) if marked_here else (255, 255, 255)
-    cv2.putText(frame, f"frame {idx}/{total - 1}   bounces: {len(marks)}",
+    cv2.putText(frame, f"frame {idx}  [{start_frame}-{last_frame}]   bounces: {len(marks)}",
                 (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, head_color, 2, cv2.LINE_AA)
 
     if marked_here:
@@ -119,22 +133,41 @@ def main():
     total = reader.frame_count
     fps = reader.fps
 
+    # ─── Window: bound navigation to [start_frame, end_frame). Frame numbers
+    #     written to the JSON stay ABSOLUTE in the source video; frame_offset
+    #     records where the window starts so predictions align directly. ───
+    start_frame = max(0, min(int(args.start * fps), total - 1))
+    if args.duration is not None:
+        end_frame = min(start_frame + int(args.duration * fps), total)
+    elif args.end is not None:
+        end_frame = min(int(args.end * fps), total)
+    else:
+        end_frame = total
+    end_frame = max(end_frame, start_frame + 1)  # always at least one frame
+    last_frame = end_frame - 1                    # last navigable index (inclusive)
+
     # marks: {absolute_frame: bounce_record}
     marks = {}
-    frame_offset = args.frame_offset
+    frame_offset = start_frame
     annotator = args.annotator
     if Path(out_path).exists():
         doc = load_bounce_file(out_path)
-        frame_offset = doc.get("frame_offset", frame_offset)
         annotator = annotator or doc.get("annotator", "")
         for b in doc["bounces"]:
             marks[b["frame"]] = dict(b)
+        prev_off = doc.get("frame_offset", 0)
         print(f"Loaded {len(marks)} existing bounces from {out_path}")
+        if prev_off != frame_offset:
+            print(f"  note: existing file frame_offset={prev_off}, this session uses "
+                  f"{frame_offset} (--start {args.start:g}s). Frames stay absolute; "
+                  f"offset will be rewritten on save.")
 
     add_history = []   # frames added this session, for undo
     dirty = False
-    idx = 0
-    pending_pos_frame = None  # frame awaiting a click to set x,y
+    idx = start_frame
+    if args.start or args.duration is not None or args.end is not None:
+        print(f"Window: frames {start_frame}..{last_frame} "
+              f"({args.start:g}s -> {end_frame/fps:.1f}s @ {fps:.0f}fps)")
 
     win = "Bounce annotator — press q to quit"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
@@ -158,7 +191,7 @@ def main():
         ret, frame = reader.read_frame()
         if not ret:
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        frame = draw_hud(frame, idx, total, marks, status)
+        frame = draw_hud(frame, idx, (start_frame, last_frame), marks, status)
         cv2.imshow(win, frame)
 
     status = "ready"
@@ -176,17 +209,17 @@ def main():
             break
 
         elif key in (ord("d"), 83):   # next  (83 = right arrow on many builds)
-            idx = min(total - 1, idx + 1); status = ""
+            idx = min(last_frame, idx + 1); status = ""
         elif key in (ord("a"), 81):   # prev  (81 = left arrow)
-            idx = max(0, idx - 1); status = ""
+            idx = max(start_frame, idx - 1); status = ""
         elif key == ord("f"):
-            idx = min(total - 1, idx + 10); status = "+10"
+            idx = min(last_frame, idx + 10); status = "+10"
         elif key == ord("b"):
-            idx = max(0, idx - 10); status = "-10"
+            idx = max(start_frame, idx - 10); status = "-10"
         elif key == ord("g"):
             try:
-                target = int(input(f"Jump to frame [0-{total-1}]: ").strip())
-                idx = max(0, min(total - 1, target)); status = f"jumped to {idx}"
+                target = int(input(f"Jump to frame [{start_frame}-{last_frame}]: ").strip())
+                idx = max(start_frame, min(last_frame, target)); status = f"jumped to {idx}"
             except (ValueError, EOFError):
                 status = "bad frame number"
 

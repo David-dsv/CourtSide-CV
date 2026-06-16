@@ -27,6 +27,14 @@ import subprocess
 import tempfile
 import shutil
 
+# Couleurs génériques des deux joueurs (BGR) — ambre pour P1, bleu pour P2.
+# Même convention que run_pipeline_8s.py. Pas de nom de joueur ni d'ID codé en
+# dur : les couleurs sont attribuées par ordre des tracks (joueurs persistants).
+PLAYER_COLORS = [
+    (0, 200, 255),   # P1 — ambre
+    (255, 130, 0),   # P2 — bleu
+]
+
 
 def _draw_player_stats(frame, action_detections, tracking_results, current_frame):
     """
@@ -69,20 +77,17 @@ def _draw_player_stats(frame, action_detections, tracking_results, current_frame
     y_pos = 120  # Start below legend
     x_pos = frame.shape[1] - 200  # Right side
 
-    # Noms et couleurs des joueurs
-    player_names = {
-        4: "Alcaraz",  # Track 4
-        5: "Sinner"    # Track 5
-    }
-    player_colors = {
-        4: (0, 255, 255),    # Jaune pour Alcaraz
-        5: (60, 20, 220),    # Bordeaux pour Sinner
+    # Couleurs par ordre des tracks (pas de nom ni d'ID codé en dur) : le
+    # premier joueur rencontré prend P1, le second P2, les suivants en blanc.
+    color_by_track = {
+        track_id: PLAYER_COLORS[slot] if slot < len(PLAYER_COLORS) else (255, 255, 255)
+        for slot, track_id in enumerate(sorted(player_stats))
     }
 
     for track_id, stats in player_stats.items():
         # Get player color
-        player_color = player_colors.get(track_id, (255, 255, 255))
-        player_name = player_names.get(track_id, f"Player {track_id}")
+        player_color = color_by_track.get(track_id, (255, 255, 255))
+        player_name = f"Player {track_id}"
 
         # Draw background box
         cv2.rectangle(frame,
@@ -454,21 +459,16 @@ def annotate_comprehensive(
 
                         tracks = np.array(tracks)
 
-                        # Couleurs personnalisées pour les joueurs
-                        # Track 4 et 5 sont les deux joueurs principaux
-                        custom_colors = {
-                            4: (0, 255, 255),    # Jaune pour Alcaraz (track 4)
-                            5: (60, 20, 220),    # Bordeaux/Rouge foncé pour Sinner (track 5)
-                        }
-
-                        # Générer des couleurs pour les autres tracks
+                        # Générer des couleurs pour tous les tracks
                         max_id = int(tracks[:, 4].max()) if len(tracks) > 0 else 10
                         colors_list = generate_colors(max_id + 1)
 
-                        # Remplacer avec les couleurs personnalisées
-                        for track_id, color in custom_colors.items():
+                        # Attribuer les couleurs P1/P2 aux deux joueurs persistants
+                        # (les plus petits IDs), par ordre — pas d'ID codé en dur.
+                        present_ids = sorted({int(tid) for tid in tracks[:, 4]})
+                        for slot, track_id in enumerate(present_ids[:len(PLAYER_COLORS)]):
                             if track_id < len(colors_list):
-                                colors_list[track_id] = color
+                                colors_list[track_id] = PLAYER_COLORS[slot]
 
                         frame = draw_tracks(frame, tracks, colors=colors_list)
 

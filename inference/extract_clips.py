@@ -204,7 +204,8 @@ def extract_temporal_clips(
     frames: List[np.ndarray],
     clip_length: int,
     clip_stride: int,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    fps: float = 30.0
 ) -> List[np.ndarray]:
     """
     Extract overlapping temporal clips from frames
@@ -214,6 +215,8 @@ def extract_temporal_clips(
         clip_length: Frames per clip
         clip_stride: Stride between clips
         output_dir: Optional directory to save clips as videos
+        fps: Frame rate for saved clips — pass the source video's fps so clips
+             play at the right speed (default 30.0 only as a last-resort fallback)
 
     Returns:
         List of clips (each clip is list of frames)
@@ -232,7 +235,7 @@ def extract_temporal_clips(
 
         for i, clip in enumerate(clips):
             output_path = output_dir / f"clip_{i:04d}.mp4"
-            with VideoWriter(str(output_path), fps=30) as writer:
+            with VideoWriter(str(output_path), fps=fps) as writer:
                 for frame in clip:
                     writer.write_frame(frame)
 

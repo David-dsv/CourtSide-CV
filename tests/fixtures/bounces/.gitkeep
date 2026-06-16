@@ -1,0 +1,3 @@
+# Ground-truth bounce annotations are committed here (one JSON per clip).
+# See tools/bounce_eval/README.md. This keepfile makes the location visible
+# in the tree before the first annotation lands.

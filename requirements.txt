@@ -31,6 +31,7 @@ pillow>=10.0.0
 # Utilities
 tqdm>=4.65.0
 loguru>=0.7.0
+python-dotenv>=1.0.0  # charge .env (ROBOFLOW_API_KEY pour les scripts d'entraînement)
 
 # Optional: Pose estimation (install separately if needed)
 # mmpose>=1.0.0

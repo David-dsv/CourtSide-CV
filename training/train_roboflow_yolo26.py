@@ -19,6 +19,14 @@ import argparse
 import logging
 from pathlib import Path
 
+# Charge un éventuel fichier .env (clés API, etc.). No-op si python-dotenv
+# n'est pas installé ou s'il n'y a pas de .env.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -49,7 +57,14 @@ def download_dataset(target_dir: Path) -> Path:
     logger.info("TÉLÉCHARGEMENT DU DATASET ROBOFLOW")
     logger.info("=" * 60)
 
-    rf = Roboflow(api_key="9Dho4KSn6P7slwKtjMN4")
+    api_key = os.getenv("ROBOFLOW_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "ROBOFLOW_API_KEY non défini. Copiez .env.example vers .env et "
+            "renseignez votre clé (https://app.roboflow.com → Settings → API), "
+            "ou exportez la variable d'environnement avant de lancer le script."
+        )
+    rf = Roboflow(api_key=api_key)
     project = rf.workspace("nathan-4tlqa").project("tennis-ball-detection-vksde")
     version = project.version(3)
 

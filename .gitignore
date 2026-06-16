@@ -83,3 +83,8 @@ detect_tennis_*.py
 # Config files (local)
 bytetrack_*.yaml
 training/*_subset.yaml
+
+# Secrets / environment (never commit real keys — .env.example is the tracked template)
+.env
+.env.*
+!.env.example

@@ -353,6 +353,12 @@ def parse_args():
                              "scale when the court can't be reliably localized (oblique/partial).")
     parser.add_argument("--court-model", default="training/court/tennis_court_det.pt",
                         help="Path to the court-keypoint model weights (for --homography).")
+    parser.add_argument("--ball-tracker", choices=["kalman", "wasb"], default="kalman",
+                        help="Ball tracker. 'kalman' = YOLO26 + Kalman (default). 'wasb' = "
+                             "WASB heatmap-temporal tracker (denser/cleaner trajectory, higher "
+                             "bounce recall on broadcast; needs --wasb-weights).")
+    parser.add_argument("--wasb-weights", default="training/wasb/wasb_tennis.pth.tar",
+                        help="Path to WASB tennis weights (for --ball-tracker wasb).")
     return parser.parse_args()
 
 
@@ -461,143 +467,174 @@ def main():
     logger.info("=== PASS 1: Detect ball ===")
     ball_conf_thresh = 0.15  # low threshold — we filter by motion, not confidence
 
-    # Step 1a: Collect ALL ball candidates per frame
-    raw_detections = []  # list of list of (cx, cy, score)
-    frame_count = 0
-    for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 1a: detect"):
-        if frame_count >= max_frames:
-            break
-        det = detector.detect(frame, classes=[32])
-        ball_mask = det["class_ids"] == 32
-        candidates = []
-        if ball_mask.any():
-            boxes = det["boxes"][ball_mask]
-            scores = det["scores"][ball_mask]
-            for i in range(len(boxes)):
-                if scores[i] >= ball_conf_thresh:
-                    bx = boxes[i]
-                    cx, cy = int((bx[0]+bx[2])/2), int((bx[1]+bx[3])/2)
-                    candidates.append((cx, cy, float(scores[i])))
-        raw_detections.append(candidates)
-        frame_count += 1
-    reader.release()
+    # ─── WASB heatmap tracker path (--ball-tracker wasb) ───
+    # A heatmap-temporal tracker (WASB) produces a far denser, cleaner trajectory
+    # than YOLO+Kalman (no static-FP/reinit jitter), which is the real lever for
+    # bounce recall. We buffer frames, run the tracker, and feed all_ball_centers
+    # straight into the (robust) bounce detector, skipping static-FP + Kalman.
+    wasb_path = (args.ball_tracker == "wasb")
+    if wasb_path:
+        try:
+            from models.wasb_ball_tracker import HeatmapBallTracker
+            wasb_frames = []
+            for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 1a: read"):
+                if len(wasb_frames) >= max_frames:
+                    break
+                wasb_frames.append(frame)
+            reader.release()
+            tracker = HeatmapBallTracker(args.wasb_weights, device=device)
+            logger.info("Tracking ball with WASB heatmap model...")
+            raw_ball_centers = tracker.track_ball(wasb_frames)
+            ball_speeds_px = [0.0] * len(raw_ball_centers)  # filled below
+            raw_detections = None
+        except Exception as e:
+            logger.warning(f"WASB tracker failed ({e}) → falling back to YOLO+Kalman")
+            wasb_path = False
+            reader = VideoReader(video_path)
+            if start_frame > 0:
+                reader.seek(start_frame)
 
-    # Step 1b: Identify static false positives (logos, court marks)
-    # A point that appears at ~same location in >8% of frames is static
-    from collections import Counter
-    static_radius = 20  # pixels — detections within this radius are "same spot"
-    all_points = []
-    for candidates in raw_detections:
-        for cx, cy, _ in candidates:
-            # Quantize to grid
-            all_points.append((cx // static_radius, cy // static_radius))
+    # Step 1a: Collect ALL ball candidates per frame (YOLO+Kalman path)
+    if not wasb_path:
+        raw_detections = []  # list of list of (cx, cy, score)
+        frame_count = 0
+        for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 1a: detect"):
+            if frame_count >= max_frames:
+                break
+            det = detector.detect(frame, classes=[32])
+            ball_mask = det["class_ids"] == 32
+            candidates = []
+            if ball_mask.any():
+                boxes = det["boxes"][ball_mask]
+                scores = det["scores"][ball_mask]
+                for i in range(len(boxes)):
+                    if scores[i] >= ball_conf_thresh:
+                        bx = boxes[i]
+                        cx, cy = int((bx[0]+bx[2])/2), int((bx[1]+bx[3])/2)
+                        candidates.append((cx, cy, float(scores[i])))
+            raw_detections.append(candidates)
+            frame_count += 1
+        reader.release()
 
-    point_counts = Counter(all_points)
-    static_threshold = max(10, int(max_frames * 0.08))  # 8% of frames
-    static_zones = set()
-    for (gx, gy), count in point_counts.items():
-        if count >= static_threshold:
-            static_zones.add((gx, gy))
+    # The static-FP filter + Kalman tracking only run on the YOLO path; WASB
+    # already produced raw_ball_centers directly.
+    if not wasb_path:
+        # Step 1b: Identify static false positives (logos, court marks)
+        # A point that appears at ~same location in >8% of frames is static
+        from collections import Counter
+        static_radius = 20  # pixels — detections within this radius are "same spot"
+        all_points = []
+        for candidates in raw_detections:
+            for cx, cy, _ in candidates:
+                # Quantize to grid
+                all_points.append((cx // static_radius, cy // static_radius))
 
-    if static_zones:
-        logger.info(f"Filtered {len(static_zones)} static false positive zones")
+        point_counts = Counter(all_points)
+        static_threshold = max(10, int(max_frames * 0.08))  # 8% of frames
+        static_zones = set()
+        for (gx, gy), count in point_counts.items():
+            if count >= static_threshold:
+                static_zones.add((gx, gy))
 
-    def is_static(cx, cy):
-        gx, gy = cx // static_radius, cy // static_radius
-        # Check the cell and neighbors
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if (gx + dx, gy + dy) in static_zones:
-                    return True
-        return False
+        if static_zones:
+            logger.info(f"Filtered {len(static_zones)} static false positive zones")
 
-    # Step 1c: Kalman filter on cleaned detections
-    raw_ball_centers = []
-    ball_speeds_px = []  # speed in pixels/frame from Kalman state
+        def is_static(cx, cy):
+            gx, gy = cx // static_radius, cy // static_radius
+            # Check the cell and neighbors
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if (gx + dx, gy + dy) in static_zones:
+                        return True
+            return False
 
-    ball_kf = BallKalmanFilter(
-        process_noise=200.0,
-        measurement_noise=8.0
-    )
-    # Gate grows with frames_since_update: ball moves further when we miss frames.
-    # Tuned against the felix.mp4 bounce ground truth: the looser reinit + wider
-    # gate + shorter coast recover the trajectory through direction reversals
-    # (raising GT-window coverage to 16/16 and bounce recall from 0.25 to ~0.75).
-    kf_gate_base = 150.0              # base gate in pixels for 1-frame gap
-    kf_gate_growth = 80.0            # extra pixels per missed frame
-    kf_gate_max = frame_diag * 0.35   # never exceed 35% of diagonal
-    kf_max_coast = int(fps * 0.12)    # coast ~0.12s then attempt reinit
-    last_known_pos = None              # last accepted ball position for reinit check
+        # Step 1c: Kalman filter on cleaned detections
+        raw_ball_centers = []
+        ball_speeds_px = []  # speed in pixels/frame from Kalman state
 
-    for frame_idx in tqdm(range(len(raw_detections)), desc="Pass 1b: track"):
-        candidates = raw_detections[frame_idx]
+        ball_kf = BallKalmanFilter(
+            process_noise=200.0,
+            measurement_noise=8.0
+        )
+        # Gate grows with frames_since_update: ball moves further when we miss frames.
+        # Tuned against the felix.mp4 bounce ground truth: the looser reinit + wider
+        # gate + shorter coast recover the trajectory through direction reversals
+        # (raising GT-window coverage to 16/16 and bounce recall from 0.25 to ~0.75).
+        kf_gate_base = 150.0              # base gate in pixels for 1-frame gap
+        kf_gate_growth = 80.0            # extra pixels per missed frame
+        kf_gate_max = frame_diag * 0.35   # never exceed 35% of diagonal
+        kf_max_coast = int(fps * 0.12)    # coast ~0.12s then attempt reinit
+        last_known_pos = None              # last accepted ball position for reinit check
 
-        # Filter out static false positives
-        moving = [(cx, cy, sc) for cx, cy, sc in candidates if not is_static(cx, cy)]
+        for frame_idx in tqdm(range(len(raw_detections)), desc="Pass 1b: track"):
+            candidates = raw_detections[frame_idx]
 
-        ball_center = None
-        predicted = ball_kf.predict()
+            # Filter out static false positives
+            moving = [(cx, cy, sc) for cx, cy, sc in candidates if not is_static(cx, cy)]
 
-        # Adaptive gate: wider when we've been missing frames
-        current_gate = min(kf_gate_max,
-                           kf_gate_base + kf_gate_growth * ball_kf.frames_since_update)
+            ball_center = None
+            predicted = ball_kf.predict()
 
-        if moving:
-            if not ball_kf.initialized:
-                # Pick highest confidence moving detection to init
-                best = max(moving, key=lambda c: c[2])
-                ball_kf.init_state(best[0], best[1])
-                ball_center = (best[0], best[1])
-            else:
-                # Pick the moving detection closest to Kalman prediction
-                best_det = None
-                best_dist = float('inf')
-                for cx, cy, sc in moving:
-                    dist = ball_kf.gating_distance(cx, cy)
-                    if dist < current_gate and dist < best_dist:
-                        best_dist = dist
-                        best_det = (cx, cy)
+            # Adaptive gate: wider when we've been missing frames
+            current_gate = min(kf_gate_max,
+                               kf_gate_base + kf_gate_growth * ball_kf.frames_since_update)
 
-                if best_det is not None:
-                    # Good match — update Kalman
-                    ball_kf.update(best_det[0], best_det[1])
-                    state = ball_kf.kf.statePost
-                    ball_center = (int(state[0][0]), int(state[1][0]))
-                elif ball_kf.frames_since_update <= kf_max_coast and predicted:
-                    # No match but still coasting — use prediction
-                    ball_center = (int(predicted[0]), int(predicted[1]))
-                elif last_known_pos is not None:
-                    # Coast expired — only reinit if a detection is near last known pos
-                    nearest = None
-                    nearest_dist = float('inf')
-                    reinit_gate = frame_diag * 0.50
+            if moving:
+                if not ball_kf.initialized:
+                    # Pick highest confidence moving detection to init
+                    best = max(moving, key=lambda c: c[2])
+                    ball_kf.init_state(best[0], best[1])
+                    ball_center = (best[0], best[1])
+                else:
+                    # Pick the moving detection closest to Kalman prediction
+                    best_det = None
+                    best_dist = float('inf')
                     for cx, cy, sc in moving:
-                        d = np.hypot(cx - last_known_pos[0], cy - last_known_pos[1])
-                        if d < reinit_gate and d < nearest_dist:
-                            nearest_dist = d
-                            nearest = (cx, cy)
-                    if nearest is not None:
-                        ball_kf.init_state(nearest[0], nearest[1])
-                        ball_center = nearest
-                    # else: no valid reinit — skip frame
+                        dist = ball_kf.gating_distance(cx, cy)
+                        if dist < current_gate and dist < best_dist:
+                            best_dist = dist
+                            best_det = (cx, cy)
 
-        if ball_center is None and ball_kf.initialized:
-            if ball_kf.frames_since_update <= kf_max_coast and predicted:
-                ball_center = (int(predicted[0]), int(predicted[1]))
+                    if best_det is not None:
+                        # Good match — update Kalman
+                        ball_kf.update(best_det[0], best_det[1])
+                        state = ball_kf.kf.statePost
+                        ball_center = (int(state[0][0]), int(state[1][0]))
+                    elif ball_kf.frames_since_update <= kf_max_coast and predicted:
+                        # No match but still coasting — use prediction
+                        ball_center = (int(predicted[0]), int(predicted[1]))
+                    elif last_known_pos is not None:
+                        # Coast expired — only reinit if a detection is near last known pos
+                        nearest = None
+                        nearest_dist = float('inf')
+                        reinit_gate = frame_diag * 0.50
+                        for cx, cy, sc in moving:
+                            d = np.hypot(cx - last_known_pos[0], cy - last_known_pos[1])
+                            if d < reinit_gate and d < nearest_dist:
+                                nearest_dist = d
+                                nearest = (cx, cy)
+                        if nearest is not None:
+                            ball_kf.init_state(nearest[0], nearest[1])
+                            ball_center = nearest
+                        # else: no valid reinit — skip frame
 
-        if ball_center is not None:
-            last_known_pos = ball_center
+            if ball_center is None and ball_kf.initialized:
+                if ball_kf.frames_since_update <= kf_max_coast and predicted:
+                    ball_center = (int(predicted[0]), int(predicted[1]))
 
-        # Extract speed from Kalman state (pixels/frame)
-        if ball_kf.initialized:
-            vx = float(ball_kf.kf.statePost[2][0])
-            vy = float(ball_kf.kf.statePost[3][0])
-            speed_px = np.hypot(vx, vy)
-        else:
-            speed_px = 0.0
-        ball_speeds_px.append(speed_px)
+            if ball_center is not None:
+                last_known_pos = ball_center
 
-        raw_ball_centers.append(ball_center)
+            # Extract speed from Kalman state (pixels/frame)
+            if ball_kf.initialized:
+                vx = float(ball_kf.kf.statePost[2][0])
+                vy = float(ball_kf.kf.statePost[3][0])
+                speed_px = np.hypot(vx, vy)
+            else:
+                speed_px = 0.0
+            ball_speeds_px.append(speed_px)
+
+            raw_ball_centers.append(ball_center)
 
     # ─── Post-process ball: cubic spline interpolation ───
     interp_gap = int(fps * 0.4)  # interpolate gaps up to 0.4s
@@ -654,10 +691,19 @@ def main():
                     f"min={np.min(valid_speeds):.0f} km/h")
 
     # ─── Detect bounces from smoothed trajectory ───
+    # On the WASB (dense heatmap) trajectory, use the robust detector: it despikes
+    # outliers and uses IRLS fits + an energy hit-vs-bounce test, which gives the
+    # best recall on a dense trajectory (felix: F1 0.865 vs 0.79). On the sparser
+    # YOLO+Kalman trajectory the curve-fit detector is the tuned default.
     bounce_events = []
     if not args.no_bounces:
-        bounce_events = detect_bounces_from_trajectory(
-            all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
+        if wasb_path:
+            from vision.bounce import detect_bounces_robust
+            bounce_events, all_ball_centers, _ = detect_bounces_robust(
+                all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
+        else:
+            bounce_events = detect_bounces_from_trajectory(
+                all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
 
     # ─── Optional: export bounce predictions for offline evaluation ───
     # Additive, gated, read-only w.r.t. the pipeline: reads the already-computed

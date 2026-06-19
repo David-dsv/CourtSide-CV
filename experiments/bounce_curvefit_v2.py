@@ -52,7 +52,8 @@ def detect_bounces_curvefit_v2(ball_centers, fps, frame_height, frame_width=None
                                min_y_ratio=0.12, max_y_ratio=0.95,
                                max_side_rmse=None, min_slope=None,
                                restitution_max=2.2,
-                               player_feet=None, player_gate_frac=0.0):
+                               player_feet=None, player_gate_frac=0.0,
+                               max_xjump_frac=0.0):
     """
     Returns list of (frame_idx, x, y).
 
@@ -118,6 +119,17 @@ def detect_bounces_curvefit_v2(ball_centers, fps, frame_height, frame_width=None
         # energy-restitution gate: player hit injects energy (steep rebound)
         if abs(a_r) > restitution_max * abs(a_l):
             continue
+
+        # x-continuity gate: a real bounce keeps x continuous (ball near-vertical
+        # at the apex); a large horizontal jump => stitched/teleported track
+        # (Kalman reinit joining two different flights) => false positive.
+        if max_xjump_frac > 0 and frame_width:
+            wx = max(3, int(fps * 0.07))
+            jumps = [abs(xs[k] - xs[k - 1])
+                     for k in range(i - wx, i + wx + 1)
+                     if 0 < k < n and not np.isnan(xs[k]) and not np.isnan(xs[k - 1])]
+            if jumps and max(jumps) > max_xjump_frac * frame_width:
+                continue
 
         # refine via line intersection, clamp near candidate
         if abs(a_l - a_r) > 1e-6:

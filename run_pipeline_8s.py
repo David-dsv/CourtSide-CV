@@ -291,6 +291,7 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
     max_side_rmse = frame_height * 0.030     # max line-fit residual each side
     min_slope = frame_height * 0.0008        # min |slope| px/frame
     restitution_max = 1.8                    # reject |asc slope| > k*|desc| (hit)
+    max_xjump_frac = 0.04                    # reject if |dx| jumps >4% width (stitched track)
     min_y_ratio = 0.12                       # on-court band (far baseline ~18%)
     max_y_ratio = 0.95
 
@@ -338,6 +339,18 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
         # energy-restitution gate: a player hit injects energy (steep rebound)
         if abs(a_r) > restitution_max * abs(a_l):
             continue
+
+        # x-continuity gate: a real bounce keeps x continuous (ball near-vertical
+        # at the apex). A large horizontal jump means the descending and ascending
+        # sides belong to different flights stitched by a Kalman reinit → a false
+        # positive, not a physical bounce.
+        if frame_width:
+            wx = max(3, int(fps * 0.07))
+            jumps = [abs(xs[k] - xs[k - 1])
+                     for k in range(i - wx, i + wx + 1)
+                     if 0 < k < n and not np.isnan(xs[k]) and not np.isnan(xs[k - 1])]
+            if jumps and max(jumps) > max_xjump_frac * frame_width:
+                continue
 
         # refine bounce frame as the intersection of the two fitted lines
         if abs(a_l - a_r) > 1e-6:

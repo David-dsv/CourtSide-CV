@@ -89,3 +89,6 @@ training/*_subset.yaml
 .env.*
 !.env.example
 experiments/cache/
+
+# WASB heatmap tracker weights (download via experiments, MIT, gdrive 14AeyIOCQ2UaQmbZLNQJa1H_eSwxUXk7z)
+training/wasb/

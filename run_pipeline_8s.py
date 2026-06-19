@@ -164,6 +164,7 @@ class PlayerTracker:
 # module (PROJET.md 'moteur propre'), imported here so the pipeline and the
 # test suite exercise the identical algorithm.
 from vision.bounce import smooth_ball_trajectory, detect_bounces_from_trajectory  # noqa: E402
+from vision.pose import estimate_players_pose  # noqa: E402
 
 
 def estimate_px_per_meter(court_zones, frame_height):
@@ -800,85 +801,18 @@ def main():
             out = draw_court_overlay(out, court_zones, alpha=0.15,
                                      draw_labels=args.court_labels)
 
-        # 2. Pose — detect persons, pick the 2 most likely players, draw skeletons + boxes
-        pose_res = pose_model(frame, conf=args.pose_conf, device=device,
-                              imgsz=pose_imgsz, verbose=False)
-
-        person_boxes = []
-        pose_player_boxes = []  # boxes from pose model (may have skeletons)
-
-        if (pose_res[0].keypoints is not None and
-                pose_res[0].boxes is not None and len(pose_res[0].boxes) > 0):
-            pose_kps = pose_res[0].keypoints
-            pboxes = pose_res[0].boxes.xyxy.cpu().numpy()
-
-            # Score each person to find the 2 actual players:
-            # In broadcast tennis, players are in the central horizontal band.
-            # Ball boys, umpire, spectators are on the edges.
-            cx_frame = frame_width / 2
-            scores = []
-            for i in range(len(pboxes)):
-                bx = pboxes[i]
-                box_cx = (bx[0] + bx[2]) / 2
-                box_w = bx[2] - bx[0]
-                box_h = bx[3] - bx[1]
-                area = box_w * box_h
-
-                x_ratio = box_cx / frame_width
-
-                # Hard reject: outside the central 20%-80% horizontal band
-                if x_ratio < 0.20 or x_ratio > 0.80:
-                    scores.append(-1.0)
-                    continue
-
-                # Horizontal centrality (0-1, 1=center)
-                h_dist = abs(box_cx - cx_frame) / cx_frame
-                h_score = max(0.0, 1.0 - h_dist)
-
-                # Area score — players are usually the largest persons on court
-                area_norm = area / (frame_width * frame_height)
-
-                # Combined: centrality dominates, area is secondary
-                score = h_score * 0.7 + area_norm * 30.0
-                scores.append(score)
-
-            scores = np.array(scores)
-            # Take top 2 by score, reject anyone with score <= 0 (outside central band)
-            valid_idx = np.where(scores > 0)[0]
-            if len(valid_idx) > 0:
-                sorted_valid = valid_idx[np.argsort(-scores[valid_idx])]
-                top2_idx = sorted_valid[:2]
-                for pi in top2_idx:
-                    kps = pose_kps.xy[pi].cpu().numpy()
-                    kp_c = pose_kps.conf[pi].cpu().numpy()
-                    out = draw_skeleton(out, kps, kp_c, skeleton_color)
-                    pose_player_boxes.append(pboxes[pi])
-
-        # Fallback: if pose model found <2 players, use generic YOLO person detector
-        # The far player is often too small for pose estimation but detectable by YOLO
-        if len(pose_player_boxes) < 2:
-            det = detector.detect(frame, classes=[0])  # class 0 = person
-            person_mask = det["class_ids"] == 0
-            if person_mask.any():
-                yolo_pboxes = det["boxes"][person_mask]
-                cx_frame = frame_width / 2
-                for i in range(len(yolo_pboxes)):
-                    bx = yolo_pboxes[i]
-                    box_cx = (bx[0] + bx[2]) / 2
-                    x_ratio = box_cx / frame_width
-                    if x_ratio < 0.20 or x_ratio > 0.80:
-                        continue
-                    # Check this box doesn't overlap with already-found pose players
-                    overlaps = False
-                    for pb in pose_player_boxes:
-                        iou = PlayerTracker._iou(bx, pb)
-                        if iou > 0.3:
-                            overlaps = True
-                            break
-                    if not overlaps:
-                        pose_player_boxes.append(bx)
-                        if len(pose_player_boxes) >= 2:
-                            break
+        # 2. Pose — top-down: generic-YOLO person detection → pick the 2 players →
+        # crop + high-res pose per player (recovers the far player; robust on
+        # oblique angles). See vision/pose.py.
+        ball_xy = all_ball_centers[frame_idx]
+        players = estimate_players_pose(
+            detector.person_model, pose_model, frame, device,
+            ball_xy=ball_xy, court_zones=court_zones if court_zones else None)
+        pose_player_boxes = []
+        for p in players:
+            if p["kps_xy"] is not None:
+                out = draw_skeleton(out, p["kps_xy"], p["kps_conf"], skeleton_color)
+            pose_player_boxes.append(p["box"])
 
         person_boxes = list(pose_player_boxes)
 

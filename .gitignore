@@ -88,3 +88,4 @@ training/*_subset.yaml
 .env
 .env.*
 !.env.example
+experiments/cache/

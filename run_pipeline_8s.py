@@ -681,9 +681,23 @@ def main():
             sm = np.convolve(ball_speeds_kmh, np.ones(k) / k, mode="same")
             ball_speeds_kmh = list(sm)
     else:
-        for spx in ball_speeds_px:
-            speed_m_per_s = (spx / px_per_m) * fps
-            ball_speeds_kmh.append(speed_m_per_s * 3.6)
+        # Scalar px→m fallback. Compute per-frame speed from the TRAJECTORY pixel
+        # displacement (works for both WASB and Kalman trackers; ball_speeds_px is
+        # only populated on the Kalman path). Perspective makes this approximate,
+        # but it's the honest fallback when no homography is available.
+        raw_kmh = [0.0]
+        for i in range(1, len(all_ball_centers)):
+            a, b = all_ball_centers[i - 1], all_ball_centers[i]
+            if a is not None and b is not None:
+                dpx = np.hypot(b[0] - a[0], b[1] - a[1])
+                raw_kmh.append((dpx / px_per_m) * fps * 3.6)
+            else:
+                raw_kmh.append(0.0)
+        MAX_PLAUSIBLE_KMH = 280.0
+        raw_kmh = [s if s <= MAX_PLAUSIBLE_KMH else 0.0 for s in raw_kmh]
+        if len(raw_kmh) >= 5:
+            raw_kmh = list(np.convolve(raw_kmh, np.ones(5) / 5, mode="same"))
+        ball_speeds_kmh = raw_kmh
     logger.info(f"Speed source: {speed_source}")
     valid_speeds = [s for s in ball_speeds_kmh if s > 5.0]
     if valid_speeds:
@@ -765,6 +779,70 @@ def main():
 
         bounce_by_frame[fidx] = (bx, by, depth, avg_speed, quality)
         logger.debug(f"Bounce frame {fidx}: depth={depth}, speed={avg_speed:.0f}km/h, Q={quality}")
+
+    # ─── Shot pre-pass: detect hits, attribute to player, classify FH/BH, score ───
+    # A hit is a ball vertical-direction reversal near a player. We compute pose
+    # only at candidate frames (cheap), attribute + classify, then link each hit to
+    # the next bounce for a multi-factor quality score (speed + depth + placement).
+    shot_by_frame = {}      # frame -> dict(side, fhb, quality, speed)
+    if not args.no_bounces and all_ball_centers:
+        from vision.shots import detect_hits, classify_forehand_backhand, shot_quality
+        ys_arr = np.array([c[1] if c is not None else np.nan for c in all_ball_centers])
+        vy_arr = np.full(len(all_ball_centers), np.nan)
+        for i in range(1, len(all_ball_centers)):
+            if not np.isnan(ys_arr[i]) and not np.isnan(ys_arr[i - 1]):
+                vy_arr[i] = ys_arr[i] - ys_arr[i - 1]
+        hw = max(3, int(fps * 0.07))
+        bguard = int(fps * 0.12)
+        bset = list(bounce_by_frame.keys())
+        cand_frames = []
+        for i in range(hw, len(all_ball_centers) - hw):
+            if all_ball_centers[i] is None:
+                continue
+            a = np.nanmean(vy_arr[max(0, i - hw):i])
+            b = np.nanmean(vy_arr[i:i + hw + 1])
+            if np.isnan(a) or np.isnan(b):
+                continue
+            if a > 1.0 and b < -1.0 and not any(abs(i - bf) <= bguard for bf in bset):
+                cand_frames.append(i)
+
+        # pose at candidate frames only
+        players_per_frame = [None] * max_frames
+        if cand_frames:
+            want = set(cand_frames)
+            rdr = VideoReader(video_path)
+            if start_frame > 0:
+                rdr.seek(start_frame)
+            for i, frame in enumerate(rdr.iter_frames()):
+                if i >= max_frames:
+                    break
+                if i in want:
+                    players_per_frame[i] = estimate_players_pose(
+                        detector.person_model, pose_model, frame, device,
+                        ball_xy=all_ball_centers[i],
+                        court_zones=court_zones if court_zones else None)
+            rdr.release()
+
+        hits = detect_hits(all_ball_centers, players_per_frame, fps,
+                           frame_height, frame_width, bounce_frames=bset)
+        sorted_bounces = sorted(bounce_by_frame.keys())
+        for h in hits:
+            fhb = classify_forehand_backhand(h, players_per_frame)
+            # link to the next bounce after this hit for depth/placement/speed
+            nb = next((b for b in sorted_bounces if b > h["frame"]), None)
+            if nb is not None:
+                bx, by, depth, b_speed, _ = bounce_by_frame[nb]
+                q = shot_quality(b_speed, depth, (bx, by), court_zones,
+                                 frame_width, frame_height,
+                                 homography=court_homography, speed_ref=speed_ref)
+            else:
+                b_speed, q = 0.0, 0
+            shot_by_frame[h["frame"]] = {
+                "side": h["player_side"], "fhb": fhb, "quality": q,
+                "speed": b_speed, "x": h["x"], "y": h["y"]}
+        logger.info(f"Shots: {len(shot_by_frame)} detected "
+                    f"({sum(1 for s in shot_by_frame.values() if s['fhb']=='forehand')} FH, "
+                    f"{sum(1 for s in shot_by_frame.values() if s['fhb']=='backhand')} BH)")
 
     # ─── Pass 2: Annotate ───
     logger.info("=== PASS 2: Annotate ===")
@@ -873,6 +951,27 @@ def main():
                     cv2.putText(out, f"Q:{b_quality}", (lx, ly + 34), font, 0.45,
                                 q_color, 2, cv2.LINE_AA)
 
+        # 5b. Shot markers (forehand/backhand + quality at the contact frame)
+        if shot_by_frame:
+            for sfi in range(max(0, frame_idx - bounce_display_frames), frame_idx + 1):
+                if sfi in shot_by_frame:
+                    s = shot_by_frame[sfi]
+                    age = frame_idx - sfi
+                    if age > bounce_display_frames:
+                        continue
+                    sx, sy = s["x"], s["y"]
+                    fhb = s["fhb"]
+                    tag = {"forehand": "FOREHAND", "backhand": "BACKHAND"}.get(fhb, "SHOT")
+                    fcol = (0, 200, 255) if fhb == "forehand" else (255, 150, 0)
+                    cv2.circle(out, (sx, sy), 14, fcol, 2, cv2.LINE_AA)
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    cv2.putText(out, tag, (sx + 16, sy - 6), font, 0.55, fcol, 2, cv2.LINE_AA)
+                    if s["quality"] > 0:
+                        qc = (0, 200, 0) if s["quality"] >= 70 else (
+                            (0, 220, 220) if s["quality"] >= 40 else (0, 0, 220))
+                        cv2.putText(out, f"Q:{s['quality']}", (sx + 16, sy + 14),
+                                    font, 0.5, qc, 2, cv2.LINE_AA)
+
         # 6. Legend
         out = create_legend(out, legend_items, position="top-right")
 
@@ -909,6 +1008,46 @@ def main():
                     f"max={np.max(quals_arr):.0f}, "
                     f"min={np.min(quals_arr):.0f}, "
                     f"high (>=70): {high_q}/{n} ({100*high_q/n:.0f}%)")
+
+        # Shot-type stats
+        if shot_by_frame:
+            fh = sum(1 for s in shot_by_frame.values() if s["fhb"] == "forehand")
+            bh = sum(1 for s in shot_by_frame.values() if s["fhb"] == "backhand")
+            logger.info(f"Strokes: {len(shot_by_frame)} hits — forehand={fh}, backhand={bh}")
+
+        # ─── Structured stats JSON (the actionable data output) ───
+        stats = {
+            "video": video_path,
+            "fps": fps,
+            "frame_range": [start_frame, end_frame],
+            "speed_source": speed_source,
+            "homography_confidence": (court_homography.get("confidence")
+                                      if court_homography else "none"),
+            "summary": {
+                "total_bounces": n,
+                "depth": {"deep": deep_n, "mid": mid_n, "short": short_n},
+                "speed_kmh": {"avg": float(np.mean(speeds_arr)),
+                              "max": float(np.max(speeds_arr)),
+                              "min": float(np.min(speeds_arr))},
+                "quality": {"avg": float(np.mean(quals_arr)),
+                            "max": int(np.max(quals_arr)),
+                            "high_count": int(high_q)},
+                "strokes": ({"forehand": sum(1 for s in shot_by_frame.values() if s["fhb"] == "forehand"),
+                             "backhand": sum(1 for s in shot_by_frame.values() if s["fhb"] == "backhand")}
+                            if shot_by_frame else {}),
+            },
+            "bounces": [{"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
+                         "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
+                        for f, v in sorted(bounce_by_frame.items())],
+            "shots": [{"frame": int(start_frame + f), "x": s["x"], "y": s["y"],
+                       "player_side": s["side"], "stroke": s["fhb"],
+                       "quality": s["quality"], "speed_kmh": round(s["speed"], 1)}
+                      for f, s in sorted(shot_by_frame.items())],
+        }
+        stats_path = str(Path(output_path).with_suffix("")) + "_stats.json"
+        with open(stats_path, "w") as f:
+            json.dump(stats, f, indent=2)
+        logger.info(f"Stats written to: {stats_path}")
 
     logger.info(f"Done! Video saved to: {output_path}")
 

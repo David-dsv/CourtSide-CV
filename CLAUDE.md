@@ -35,13 +35,16 @@ Each feature of the canonical pipeline (`run_pipeline_8s.py`) and its current st
 | Court zone detection | ✅ Done | HuggingFace model, 8 zone classes |
 | Court zone overlay | ✅ Done | Semi-transparent colored rectangles |
 | Court homography (px↔m) | ✅ Done (broadcast) | `models/court_detector.py`: 14 keypoints → ITF meters → `cv2.findHomography`. High confidence on standard broadcast (felix-style oblique angles fall back, see Known Debt). |
-| **Bounce detection** | ✅ Done (broadcast) | Curve-fit: local-y-max + 2-segment LSQ fit + intersection, with slope/RMSE/swing/restitution/x-continuity gates (`vision/bounce.py`). felix GT F1 0.67 end-to-end / 0.80 cached (was 0.30). Regression-tested. |
+| Ball tracking (WASB heatmap) | ✅ Done (broadcast) | `--ball-tracker wasb`: WASB heatmap-temporal tracker (`models/wasb_ball_tracker.py`, MIT). Dense trajectory (84% coverage vs Kalman's collapse). **Needs ImageNet normalization** in preprocessing. Default stays `kalman`. |
+| **Bounce detection** | ✅ Done (broadcast) | Two detectors in `vision/bounce.py`: curve-fit (kalman path) + robust (WASB path: despike + IRLS + energy hit/bounce test). felix GT F1 **0.83 end-to-end (WASB) / 0.67 (Kalman)**, was 0.30. Both regression-tested. |
 | Bounce depth classification | 🔧 In progress | deep/mid/short — accurate via homography meters when available; geometric fallback otherwise. |
 | Shot quality score | ⏸️ Later | Q = speed_norm + depth_norm — revisit after bounce detection is solid |
 | Forehand/backhand classification | ⏸️ Later | Geometric detector exists but rudimentary, ML model not trained |
 
 ### Current Priority
-**Generalization to oblique / amateur angles.** Bounce detection and the court homography both now work on standard broadcast footage (curve-fit bounces in `vision/bounce.py`; keypoint homography in `models/court_detector.py`). The open problem is the product's actual target: **low / court-level / partial-court angles** (e.g. `felix.mp4`), where the pre-trained court-keypoint model fires on too few keypoints (3/14) → homography falls back to the scalar scale, and ball-tracking noise caps bounce F1 around 0.67. The two SOTA levers to raise this — a heatmap ball tracker (WASB) and an angle-robust court detector — both need **fine-tuning on a GPU** (pre-trained weights underperform on oblique angles; measured, see `experiments/`). 
+**Generalization to oblique / amateur angles.** On standard broadcast footage, the pipeline now works well: WASB heatmap ball tracking (`--ball-tracker wasb`) + robust bounce detection reach **F1 0.83 on felix** (the ball tracker even works on felix's oblique angle — heatmap trackers are far more angle-robust than the court-keypoint model). The **court homography** is the remaining oblique-angle gap: the pre-trained court-keypoint model fires on too few keypoints on low/court-level framings (felix: 3/14; standard broadcast: 14/14) → homography falls back to the scalar scale + flags low confidence. Closing this (an angle-robust / fine-tuned court detector, e.g. arXiv 2404.06977's amateur-court method) is the #1 remaining item, and it needs **GPU fine-tuning** (no local GPU; Mac/MPS only).
+
+> ⚠️ WASB lesson (important): pretrained WASB weights need **ImageNet mean/std normalization** in preprocessing. Without it the model returns almost no detections — an easy bug that can make WASB look like a no-go when it actually reaches F1 0.83–0.87 on felix.
 
 > ✅ A bounce ground truth now exists: `tests/fixtures/bounces/felix.bounces.json` (16 bounces) + the evaluator `tools/bounce_eval/eval_bounces.py` + a fast regression test `tests/test_bounce_regression.py` (asserts F1 ≥ 0.72 on a committed detection cache, no GPU/video). Every bounce-algorithm change is now measurable objectively.
 
@@ -60,6 +63,9 @@ python run_pipeline_8s.py path/to/video.mp4 -s 60 -d 8 --device cpu
 
 # With perspective-correct speed/depth via court homography (broadcast angles):
 python run_pipeline_8s.py path/to/video.mp4 -s 60 -d 8 --device mps --homography
+
+# With the WASB heatmap ball tracker (best bounce recall; needs the WASB weights):
+python run_pipeline_8s.py path/to/video.mp4 -s 60 -d 8 --device mps --ball-tracker wasb
 
 # Export bounce predictions to score against ground truth:
 python run_pipeline_8s.py path/to/video.mp4 -s 0 -d 31 --dump-bounces preds.json

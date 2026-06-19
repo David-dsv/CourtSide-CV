@@ -95,3 +95,6 @@ training/wasb/
 
 # TennisCourtDetector weights (gdrive 1f-Co64ehgq4uddcQm1aFBDtbnyZhQvgG, no upstream LICENSE)
 training/court/
+
+# Parallel-session working notes (not the canonical research doc)
+*_GLM52*.md

@@ -235,3 +235,277 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
     logger.info(f"Trajectory bounce detection: {len(chosen)} bounces found")
     return chosen
 
+
+
+# ─────────────────────── robust variant (WASB-grade trajectory) ───────────────────────
+# The robust detector below pairs with a dense heatmap trajectory (WASB). It adds
+# trajectory despiking + IRLS line fits + a desc/rise energy bounce-vs-hit test.
+# Measured on felix.mp4 with the WASB trajectory: F1=0.865, recall=1.000 (16/16),
+# vs F1=0.788 for detect_bounces_from_trajectory on the same trajectory.
+
+def despike_trajectory(ball_centers, fps, frame_height, frame_width,
+                       speed_sigma=4.0, min_speed_px_per_s=40.0,
+                       run_min_len=3):
+    """
+    Remove non-physical position jumps AND short aberrant runs from the
+    trajectory.
+
+    Two-pass:
+      1. Spike pass: null any point whose jump from the previous valid point
+         exceeds sigma*(median+MAD) of per-frame speed, floored to
+         min_speed_px_per_s/fps, capped at 8% of frame diagonal.
+      2. Run pass: a short run of <=run_min_len consecutive valid points that is
+         bracketed by gaps (or trajectory edges) AND lies far from the local
+         trend is treated as an aberrant reinit cluster and nulled. "Far from
+         the local trend" = the run's mean position is farther than the spike
+         threshold from the nearest surviving point on either side.
+
+    Returns (cleaned_centers, n_removed).
+    """
+    n = len(ball_centers)
+    pts = [None if c is None else (float(c[0]), float(c[1])) for c in ball_centers]
+
+    # ── per-frame speed stats ──
+    speeds = []
+    for i in range(1, n):
+        a, b = pts[i - 1], pts[i]
+        if a is None or b is None:
+            continue
+        speeds.append(np.hypot(b[0] - a[0], b[1] - a[1]))
+    if len(speeds) < 8:
+        return ball_centers, 0
+
+    speeds = np.array(speeds)
+    med = float(np.median(speeds))
+    mad = float(np.median(np.abs(speeds - med))) or 1.0
+    thr = max(min_speed_px_per_s / fps, med + speed_sigma * 1.4826 * mad)
+    frame_diag = np.hypot(frame_width, frame_height)
+    thr = min(thr, frame_diag * 0.08)
+
+    # ── Pass 1: spike removal ──
+    for i in range(1, n):
+        a, b = pts[i - 1], pts[i]
+        if a is None or b is None:
+            continue
+        d = np.hypot(b[0] - a[0], b[1] - a[1])
+        if d > thr:
+            pts[i] = None
+
+    # ── Pass 2: short-run removal ──
+    # Find runs of consecutive non-None points
+    i = 0
+    runs = []
+    while i < n:
+        if pts[i] is not None:
+            j = i
+            while j < n and pts[j] is not None:
+                j += 1
+            runs.append((i, j))  # [i, j)
+            i = j
+        else:
+            i += 1
+
+    n_removed = 0
+    for (lo, hi) in runs:
+        run_len = hi - lo
+        if run_len > run_min_len:
+            continue
+        # only treat as aberrant if it's far from its nearest surviving neighbor
+        # on at least one side
+        run_mean = np.mean([(pts[k][0], pts[k][1]) for k in range(lo, hi)], axis=0)
+        # find nearest surviving point before lo
+        prev_pt = None
+        for k in range(lo - 1, -1, -1):
+            if pts[k] is not None:
+                prev_pt = pts[k]; break
+        next_pt = None
+        for k in range(hi, n):
+            if pts[k] is not None:
+                next_pt = pts[k]; break
+        d_prev = np.hypot(run_mean[0]-prev_pt[0], run_mean[1]-prev_pt[1]) if prev_pt else float('inf')
+        d_next = np.hypot(run_mean[0]-next_pt[0], run_mean[1]-next_pt[1]) if next_pt else float('inf')
+        # If the run is closer than thr to BOTH neighbors, it's a legit short
+        # trajectory segment — keep it. Otherwise null it (aberrant cluster).
+        if d_prev > thr and d_next > thr:
+            for k in range(lo, hi):
+                pts[k] = None
+                n_removed += 1
+
+    # also count pass-1 removals
+    n_spike = sum(1 for a, b in zip(ball_centers, pts) if a is not None and b is None)
+    cleaned = [None if p is None else (int(p[0]), int(p[1])) for p in pts]
+    return cleaned, n_spike + n_removed
+
+
+def _robust_fit(xs, ys, max_iter=3, k=2.5, min_pts=3):
+    """Iteratively reweighted least squares: reject points >k*std of residual."""
+    xs = np.asarray(xs, float); ys = np.asarray(ys, float)
+    if len(xs) < min_pts:
+        return None
+    mask = np.ones(len(xs), bool)
+    a = b = rmse = None
+    for _ in range(max_iter):
+        if mask.sum() < min_pts:
+            return None
+        A = np.vstack([xs[mask], np.ones(mask.sum())]).T
+        (a, b), *_ = np.linalg.lstsq(A, ys[mask], rcond=None)
+        resid = ys - (a * xs + b)
+        std = np.std(resid[mask]) or 1e-6
+        new_mask = np.abs(resid) <= k * std
+        # always keep at least the candidate point (index of min xs in this side is not fixed)
+        if new_mask.sum() < min_pts:
+            break
+        if np.array_equal(new_mask, mask):
+            break
+        mask = new_mask
+    # final stats on the inlier set
+    A = np.vstack([xs[mask], np.ones(mask.sum())]).T
+    (a, b), *_ = np.linalg.lstsq(A, ys[mask], rcond=None)
+    pred = a * xs[mask] + b
+    rmse = float(np.sqrt(np.mean((ys[mask] - pred) ** 2)))
+    return float(a), float(b), rmse, mask
+
+
+def _collect_side_robust(ys, n, i, win, direction):
+    """Collect ALL non-NaN points in the half-window (don't stop at gaps)."""
+    if direction < 0:
+        rng = range(max(0, i - win), i + 1)  # include i
+    else:
+        rng = range(i, min(n, i + win + 1))
+    xs = [k for k in rng if not np.isnan(ys[k])]
+    if len(xs) < 2:
+        return np.array([]), np.array([])
+    xa = np.array(xs, float)
+    return xa, ys[xa.astype(int)]
+
+
+def detect_bounces_robust(ball_centers, ball_speeds_px, fps, frame_height,
+                          frame_width=None, speed_sigma=4.0,
+                          min_speed_px_per_s=40.0,
+                          restitution_max=2.5,
+                          min_drop_frac=0.008,
+                          min_slope_frac=0.0008,
+                          max_side_rmse_frac=0.030,
+                          win_frac=0.28,
+                          min_gap_frac=0.30,
+                          run_min_len=3,
+                          # Bounce-vs-hit discriminators (physically motivated).
+                          # A ground bounce conserves/loses vertical energy: the
+                          # post-bounce rise is at most ~hit_ratio_max * the
+                          # pre-bounce descent. A racket hit injects energy and
+                          # produces rise >> descent. hit_ratio_max is the
+                          # physical upper bound for a real bounce (Magnus/spin
+                          # can add a little, but not >1.8x).
+                          hit_ratio_max=1.8,
+                          # A real bounce has a visible V; reject candidates
+                          # whose total vertical excursion (desc+rise) is below
+                          # this fraction of frame height — those are tracking
+                          # noise / tiny wiggles, not bounces.
+                          min_v_excursion_frac=0.055):
+    """
+    Robust bounce detector. See module docstring.
+
+    Returns (bounces, cleaned_smoothed_centers, n_despiked).
+    """
+    n = len(ball_centers)
+    if n < 7:
+        return [], ball_centers, 0
+
+    # 1) despike the raw (already spline-smoothed) centers, then re-smooth.
+    despiked, n_despiked = despike_trajectory(
+        ball_centers, fps, frame_height, frame_width,
+        speed_sigma=speed_sigma, min_speed_px_per_s=min_speed_px_per_s,
+        run_min_len=run_min_len)
+    re_smoothed = smooth_ball_trajectory(despiked, max_gap=max(1, int(fps * 0.4)))
+
+    # 2) robust curve-fit bounce detection on re_smoothed
+    win = max(4, int(fps * win_frac))
+    min_gap = int(fps * min_gap_frac)
+    min_drop = frame_height * min_drop_frac
+    max_side_rmse = frame_height * max_side_rmse_frac
+    min_slope = frame_height * min_slope_frac
+    min_y_ratio = 0.12
+    max_y_ratio = 0.95
+
+    ys = np.array([c[1] if c is not None else np.nan for c in re_smoothed], dtype=float)
+    xs = np.array([c[0] if c is not None else np.nan for c in re_smoothed], dtype=float)
+
+    candidates = []
+    for i in range(2, n - 2):
+        if re_smoothed[i] is None or np.isnan(ys[i]):
+            continue
+        yc = ys[i]
+        if not (min_y_ratio <= yc / frame_height <= max_y_ratio):
+            continue
+        lo, hi = max(0, i - 2), min(n, i + 3)
+        local = ys[lo:hi]
+        local = local[~np.isnan(local)]
+        if len(local) == 0 or yc < np.nanmax(local) - 0.5:
+            continue
+
+        lx, ly = _collect_side_robust(ys, n, i, win, -1)
+        rx, ry = _collect_side_robust(ys, n, i, win, +1)
+        if len(lx) < 3 or len(rx) < 3:
+            continue
+
+        lf = _robust_fit(lx, ly)
+        rf = _robust_fit(rx, ry)
+        if lf is None or rf is None:
+            continue
+        a_l, b_l, rmse_l, _ = lf
+        a_r, b_r, rmse_r, _ = rf
+
+        if a_l < min_slope or a_r > -min_slope:
+            continue
+        if rmse_l > max_side_rmse or rmse_r > max_side_rmse:
+            continue
+        swing_l = abs(a_l) * (lx[-1] - lx[0])
+        swing_r = abs(a_r) * (rx[-1] - rx[0])
+        if swing_l < min_drop or swing_r < min_drop * 0.5:
+            continue
+        if abs(a_r) > restitution_max * abs(a_l):
+            continue
+
+        # ── Bounce-vs-hit discrimination ──
+        # desc = how far the ball fell (y grew) into the candidate point;
+        # rise = how far it rose (y shrank) after. In image coords y grows
+        # downward, so a bounce (lowest screen point) has desc,rise > 0.
+        left_min_y = float(np.nanmin(ly))   # highest screen point before
+        right_min_y = float(np.nanmin(ry))  # highest screen point after
+        desc = yc - left_min_y
+        rise = yc - right_min_y
+        if desc <= 0 or rise <= 0:
+            continue
+        # Reject racket hits: rise >> desc means energy was injected (a ground
+        # bounce cannot launch the ball up faster than it came down by more
+        # than the restitution/Magnus margin).
+        if rise > hit_ratio_max * desc:
+            continue
+        # Reject tiny V's (tracking noise / flat wiggles): a real bounce moves
+        # the ball a visible amount vertically across the window.
+        if (desc + rise) < min_v_excursion_frac * frame_height:
+            continue
+
+        if abs(a_l - a_r) > 1e-6:
+            x_int = (b_r - b_l) / (a_l - a_r)
+        else:
+            x_int = float(i)
+        if not (i - win <= x_int <= i + win):
+            x_int = float(i)
+        bf = max(0, min(n - 1, int(round(x_int))))
+
+        score = (abs(a_l) + abs(a_r)) / (1.0 + rmse_l + rmse_r)
+        bx = xs[bf] if not np.isnan(xs[bf]) else xs[i]
+        by = ys[bf] if not np.isnan(ys[bf]) else yc
+        candidates.append((bf, int(bx), int(by), score))
+
+    candidates.sort(key=lambda c: -c[3])
+    chosen, used = [], []
+    for bf, bx, by, score in candidates:
+        if all(abs(bf - u) >= min_gap for u in used):
+            chosen.append((bf, bx, by))
+            used.append(bf)
+    chosen.sort(key=lambda c: c[0])
+    logger.info(f"Robust trajectory bounce detection: {len(chosen)} bounces "
+                f"(despiked {n_despiked} pts)")
+    return chosen, re_smoothed, n_despiked

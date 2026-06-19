@@ -65,6 +65,8 @@ WASB_CFG = {
 
 INP_W, INP_H = 512, 288
 FRAMES_IN = 3
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 class _AttrDict(dict):
@@ -100,14 +102,21 @@ class HeatmapBallTracker:
 
     @staticmethod
     def _preprocess_stack(frames3):
-        """frames3: list of 3 BGR native-res frames -> (1,9,288,512) float tensor."""
+        """frames3: list of 3 BGR native-res frames -> (1,9,288,512) float tensor.
+
+        Preprocessing matches WASB's training dataloader (this is what makes the
+        pretrained tennis weights actually fire): BGR→RGB, /255, then ImageNet
+        mean/std normalization. Without the ImageNet normalization the model
+        returns almost no detections (the bug that made an earlier integration
+        wrongly conclude WASB was a no-go on this footage)."""
         chans = []
         for f in frames3:
             r = cv2.resize(f, (INP_W, INP_H), interpolation=cv2.INTER_LINEAR)
             r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            r = (r - IMAGENET_MEAN) / IMAGENET_STD
             chans.append(r)
         stacked = np.concatenate(chans, axis=2)              # H,W,9
-        t = torch.from_numpy(stacked).permute(2, 0, 1).unsqueeze(0)  # 1,9,H,W
+        t = torch.from_numpy(stacked).permute(2, 0, 1).unsqueeze(0).float()  # 1,9,H,W
         return t
 
     def _peak(self, hm, scale_x, scale_y):

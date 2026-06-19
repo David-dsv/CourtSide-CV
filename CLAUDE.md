@@ -31,18 +31,19 @@ Each feature of the canonical pipeline (`run_pipeline_8s.py`) and its current st
 | Skeleton drawing (pose) | ✅ Done | YOLOv8-pose, high-res up to 1920px |
 | Player bounding boxes | ✅ Done | Color-coded P1/P2, centrality scoring |
 | Ball trail visualization | ✅ Done | Fading trail with configurable length |
-| Ball speed (km/h) | ✅ Done | Kalman velocity → px/m scale → km/h HUD. Accuracy depends on homography (see Known Debt). |
+| Ball speed (km/h) | ✅ Done | Court-homography → real meters (perspective-correct) when court is localizable, scalar px/m fallback otherwise. `--homography`. Spikes >280 km/h clamped. |
 | Court zone detection | ✅ Done | HuggingFace model, 8 zone classes |
 | Court zone overlay | ✅ Done | Semi-transparent colored rectangles |
-| **Bounce detection** | 🔧 In progress | Vertical velocity sign change — **needs accuracy work, current priority** |
-| Bounce depth classification | 🔧 In progress | deep/mid/short — depends on bounce detection accuracy |
+| Court homography (px↔m) | ✅ Done (broadcast) | `models/court_detector.py`: 14 keypoints → ITF meters → `cv2.findHomography`. High confidence on standard broadcast (felix-style oblique angles fall back, see Known Debt). |
+| **Bounce detection** | ✅ Done (broadcast) | Curve-fit: local-y-max + 2-segment LSQ fit + intersection, with slope/RMSE/swing/restitution/x-continuity gates (`vision/bounce.py`). felix GT F1 0.67 end-to-end / 0.80 cached (was 0.30). Regression-tested. |
+| Bounce depth classification | 🔧 In progress | deep/mid/short — accurate via homography meters when available; geometric fallback otherwise. |
 | Shot quality score | ⏸️ Later | Q = speed_norm + depth_norm — revisit after bounce detection is solid |
 | Forehand/backhand classification | ⏸️ Later | Geometric detector exists but rudimentary, ML model not trained |
 
 ### Current Priority
-**Bounce detection accuracy** in `run_pipeline_8s.py` — the `detect_bounces_from_trajectory()` function. It detects vertical velocity sign changes but produces false positives (player hits misidentified as bounces) and misses real bounces. It must be reliable before any downstream feature (depth, quality, stats) can work.
+**Generalization to oblique / amateur angles.** Bounce detection and the court homography both now work on standard broadcast footage (curve-fit bounces in `vision/bounce.py`; keypoint homography in `models/court_detector.py`). The open problem is the product's actual target: **low / court-level / partial-court angles** (e.g. `felix.mp4`), where the pre-trained court-keypoint model fires on too few keypoints (3/14) → homography falls back to the scalar scale, and ball-tracking noise caps bounce F1 around 0.67. The two SOTA levers to raise this — a heatmap ball tracker (WASB) and an angle-robust court detector — both need **fine-tuning on a GPU** (pre-trained weights underperform on oblique angles; measured, see `experiments/`). 
 
-> ⚠️ Before tuning the bounce algorithm: there is no ground-truth set to measure against, so changes can't currently be judged objectively. Establishing a bounce ground truth (videos with manually-annotated bounce frames/positions) is a prerequisite for this work.
+> ✅ A bounce ground truth now exists: `tests/fixtures/bounces/felix.bounces.json` (16 bounces) + the evaluator `tools/bounce_eval/eval_bounces.py` + a fast regression test `tests/test_bounce_regression.py` (asserts F1 ≥ 0.72 on a committed detection cache, no GPU/video). Every bounce-algorithm change is now measurable objectively.
 
 ### Out of scope (parking)
 These were considered but are **not on the current roadmap** — don't implement unless explicitly reprioritized: per-player shot attribution, winners detection, unforced-error detection, per-player stats aggregation. Kept here only so the intent isn't lost.
@@ -56,6 +57,20 @@ pip install -r requirements.txt
 # Run the annotated pipeline (canonical entry point)
 python run_pipeline_8s.py path/to/video.mp4 -s 60 -d 8 --device cpu
 # (on Apple Silicon, --device mps is available; CUDA is not)
+
+# With perspective-correct speed/depth via court homography (broadcast angles):
+python run_pipeline_8s.py path/to/video.mp4 -s 60 -d 8 --device mps --homography
+
+# Export bounce predictions to score against ground truth:
+python run_pipeline_8s.py path/to/video.mp4 -s 0 -d 31 --dump-bounces preds.json
+python tools/bounce_eval/eval_bounces.py --pred preds.json --truth tests/fixtures/bounces/felix.bounces.json
+```
+
+### Tests
+
+```bash
+# Fast bounce-accuracy regression (no GPU / no video decode; ~seconds)
+python tests/test_bounce_regression.py        # asserts felix bounce F1 >= 0.72
 ```
 
 There are no automated tests in this repository.
@@ -109,11 +124,12 @@ Pipeline parameters live in `config.yaml` (primarily used by the legacy `main.py
 
 Concrete items to fix; these contradict the design principles above or block reliability.
 
-- 🔴 **Exposed secret:** a Roboflow API key was committed in clear in `training/train_roboflow_yolo26.py`. Revoke it and move to an environment variable; ensure `.env` is gitignored.
-- 🟠 **Hardcoded values (violate "zero hardcoding"):** player names ("Alcaraz"/"Sinner") mapped to track IDs in `inference/annotate_video.py`; FPS hardcoded to 30 in `inference/predict_actions.py` and `inference/extract_clips.py`. The canonical `run_pipeline_8s.py` correctly uses `reader.fps` — align the rest.
-- 🟠 **Homography is the reliability bottleneck:** all metric stats (km/h, depth) rely on a px→meter scale from court lines. The current geometric fallback ("court = 58% of frame height") won't hold on varied amateur framings. This is the #1 risk per `PROJET.md`.
-- 🟡 **Fragile environment:** Python 3.14, no lockfile, `install.sh` references absent files (`requirements-minimal.txt`, `QUICKSTART.md`). Reproducibility is weak.
-- 🟡 **No automated tests** — risky for a geometric algorithm tuned continuously (bounces). See the ground-truth note above.
+- ✅ **(resolved) Exposed secret:** the Roboflow API key is now read from `os.getenv("ROBOFLOW_API_KEY")` in `training/train_roboflow_yolo26.py`. (Rotate the old key if not already done.)
+- 🟠 **Hardcoded values (violate "zero hardcoding"):** player names ("Alcaraz"/"Sinner") mapped to track IDs in `inference/annotate_video.py`; FPS hardcoded to 30 in `inference/predict_actions.py` and `inference/extract_clips.py`. The canonical `run_pipeline_8s.py` correctly uses `reader.fps` — align the rest. (These are in legacy/`inference/` paths, not the canonical pipeline.)
+- 🟠 **Homography works on broadcast, not yet on oblique/amateur angles:** `--homography` gives perspective-correct meters when ≥4 court keypoints are reliably localized (standard broadcast: validated to ~1% of ITF dims). On low/court-level/partial framings the keypoint model fires on <4 points → it **falls back to the scalar `58%` scale and flags `speed_source=scalar`** (no silent lie). Closing this for amateur angles is the #1 remaining reliability item (needs an angle-robust / fine-tuned court detector).
+- ⚠️ **Court-keypoint model license:** `yastrebksv/TennisCourtDetector` ships no LICENSE. Used here for internal evaluation; clarify before redistribution. (WASB, by contrast, is MIT — `vendor/wasb/LICENSE.md`.)
+- 🟡 **Fragile environment:** Python 3.14 (beta — `pyexpat`/`gdown`/matplotlib break), no lockfile, `install.sh` references absent files (`requirements-minimal.txt`, `QUICKSTART.md`). Reproducibility is weak.
+- ✅ **(resolved) First automated test:** `tests/test_bounce_regression.py` asserts bounce F1 ≥ 0.72 on a committed detection-cache fixture (fast, no GPU/video). A bounce ground truth + evaluator now exist (`tests/fixtures/bounces/`, `tools/bounce_eval/`).
 - 🟡 **Stray files:** pip-redirect artifacts (`=0.25.0`, `=2.2.0`, `=8.5`) at the repo root, to delete.
 
 ## Workflow

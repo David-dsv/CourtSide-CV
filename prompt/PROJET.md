@@ -63,7 +63,7 @@ Le moteur de vision est **identique** aux trois paliers ; seul l'habillage chang
 > Seule section à mettre à jour régulièrement. Trois lignes par champ maximum. Décrire l'état, pas l'historique.
 
 - **Palier actif :** 1 (CLI local).
-- **En cours :** passe sécurité/hygiène terminée (clé Roboflow → variable d'env + `.env`, noms de joueurs et FPS codés en dur retirés). Prochain chantier : refonte du pipeline en moteur propre (vidéo → JSON + vidéo annotée, sans CLI/affichage mêlés).
-- **Prochain jalon :** isoler le moteur de vision de `run_pipeline_8s.py`, puis établir une vérité terrain rebonds avant de toucher à la détection de rebonds.
-- **Bloqueurs :** aucun bloqueur technique. Pré-requis avant de tuner les rebonds : vérité terrain rebonds inexistante (rebonds annotés à la main).
-- **Dernière décision prise :** 2026-06-16 — ne pas toucher aux rebonds tant qu'il n'y a pas de vérité terrain ; prioriser sécurité + moteur propre.
+- **En cours :** chantier précision terminé sur angle broadcast — rebonds refondus (curve-fit, F1 0.30 → 0.67 end-to-end / 0.80 mesuré sur cache, vs vérité terrain `felix`), vraie homographie keypoints→mètres ITF pour vitesse/profondeur (`--homography`, fallback scalaire si court non localisable), 1er test de non-régression, début d'extraction du moteur (`vision/bounce.py`).
+- **Prochain jalon :** généralisation aux angles obliques/amateurs — le cœur du produit. Les modèles pré-entraînés (balle heatmap WASB, court keypoints) marchent en broadcast mais décrochent sur angle court-level (felix : 3/14 keypoints). Lever = détecteur de court angle-robuste + tracker balle heatmap, tous deux à **fine-tuner sur GPU**. Puis finir le moteur propre vidéo→JSON de stats.
+- **Bloqueurs :** pas de bloqueur sur broadcast. Pour l'angle amateur : pas de GPU local pour fine-tuner (Mac/MPS) ; les poids pré-entraînés publics ne suffisent pas hors broadcast (mesuré).
+- **Dernière décision prise :** 2026-06-19 — adopter le curve-fit + l'homographie keypoints comme socle précision (broadcast OK) ; WASB et court-detector pré-entraînés = NO-GO sur angle oblique sans fine-tuning (scaffolding conservé). Garder YOLO+Kalman comme tracker de production.

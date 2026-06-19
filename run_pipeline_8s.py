@@ -560,6 +560,12 @@ def parse_args():
                         help="Also write detected bounces to PATH as a predictions JSON "
                              "(eval_bounces.py format) for scoring against ground truth. "
                              "Off by default; does not affect the annotated video.")
+    parser.add_argument("--homography", action="store_true",
+                        help="Compute a court homography (px↔meters) from court keypoints "
+                             "for perspective-correct speed/depth. Falls back to the scalar "
+                             "scale when the court can't be reliably localized (oblique/partial).")
+    parser.add_argument("--court-model", default="training/court/tennis_court_det.pt",
+                        help="Path to the court-keypoint model weights (for --homography).")
     return parser.parse_args()
 
 
@@ -642,6 +648,27 @@ def main():
             logger.info(f"Detected {len(court_zones)} court zones: {list(court_zones.keys())}")
         else:
             logger.warning("No court zones detected")
+
+    # ─── Court homography (px ↔ meters) via keypoints, for perspective-correct
+    # speed & depth. Only used when it solves with high/low confidence; otherwise
+    # the pipeline falls back to the scalar px-per-meter scale. ───
+    court_homography = None
+    if args.homography and 'first_frame' in locals():
+        try:
+            from models.court_detector import CourtKeypointDetector
+            court_det = CourtKeypointDetector(args.court_model, device=device)
+            court_homography = court_det.compute_homography(first_frame, frame_diag)
+            logger.info(f"Court homography: confidence={court_homography['confidence']}, "
+                        f"{court_homography['n_used']}/14 keypoints"
+                        + (f", rms={court_homography['rms_px']:.1f}px"
+                           if court_homography['rms_px'] else ""))
+            if court_homography['confidence'] == 'fallback':
+                logger.warning("Court homography unreliable on this framing "
+                               "(oblique/partial court) → using scalar scale fallback")
+                court_homography = None
+        except Exception as e:
+            logger.warning(f"Court homography failed ({e}) → scalar scale fallback")
+            court_homography = None
 
     # ─── Pass 1: Detect ball positions + bounces ───
     logger.info("=== PASS 1: Detect ball ===")
@@ -794,13 +821,45 @@ def main():
                 f"{filled} interpolated, "
                 f"{sum(1 for c in all_ball_centers if c is not None)}/{len(all_ball_centers)} total")
 
-    # ─── Estimate scale and convert speeds to km/h ───
+    # ─── Convert speeds to km/h ───
+    # Primary path: a court homography maps ball positions to real court METERS,
+    # which is perspective-correct (a single px-per-meter scalar is geometrically
+    # wrong everywhere except one depth). Fallback: the scalar scale.
     px_per_m = estimate_px_per_meter(court_zones, frame_height)
     ball_speeds_kmh = []
-    for spx in ball_speeds_px:
-        speed_m_per_s = (spx / px_per_m) * fps
-        speed_kmh = speed_m_per_s * 3.6
-        ball_speeds_kmh.append(speed_kmh)
+    speed_source = "scalar"
+    if court_homography is not None and court_homography.get("H") is not None:
+        from models.court_detector import img_to_world
+        H = court_homography["H"]
+        speed_source = f"homography({court_homography['confidence']})"
+        # speed at frame i from the metric displacement between consecutive centers
+        prev_world = None
+        world_pts = []
+        for c in all_ball_centers:
+            world_pts.append(img_to_world(H, c[0], c[1]) if c is not None else None)
+        for i in range(len(all_ball_centers)):
+            if (i > 0 and world_pts[i] is not None and world_pts[i - 1] is not None):
+                dx = world_pts[i][0] - world_pts[i - 1][0]
+                dy = world_pts[i][1] - world_pts[i - 1][1]
+                dist_m = np.hypot(dx, dy)
+                ball_speeds_kmh.append(dist_m * fps * 3.6)
+            else:
+                ball_speeds_kmh.append(0.0)
+        # reject physically-impossible spikes from tracking jitter (a tennis ball
+        # tops out ~260 km/h on a pro serve); clamp before smoothing so one bad
+        # metric jump doesn't poison the HUD/stats.
+        MAX_PLAUSIBLE_KMH = 280.0
+        ball_speeds_kmh = [s if s <= MAX_PLAUSIBLE_KMH else 0.0 for s in ball_speeds_kmh]
+        # light smoothing to tame per-frame jitter
+        if len(ball_speeds_kmh) >= 5:
+            k = 5
+            sm = np.convolve(ball_speeds_kmh, np.ones(k) / k, mode="same")
+            ball_speeds_kmh = list(sm)
+    else:
+        for spx in ball_speeds_px:
+            speed_m_per_s = (spx / px_per_m) * fps
+            ball_speeds_kmh.append(speed_m_per_s * 3.6)
+    logger.info(f"Speed source: {speed_source}")
     valid_speeds = [s for s in ball_speeds_kmh if s > 5.0]
     if valid_speeds:
         logger.info(f"Ball speed stats: avg={np.mean(valid_speeds):.0f} km/h, "

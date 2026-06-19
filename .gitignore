@@ -92,3 +92,6 @@ experiments/cache/
 
 # WASB heatmap tracker weights (download via experiments, MIT, gdrive 14AeyIOCQ2UaQmbZLNQJa1H_eSwxUXk7z)
 training/wasb/
+
+# TennisCourtDetector weights (gdrive 1f-Co64ehgq4uddcQm1aFBDtbnyZhQvgG, no upstream LICENSE)
+training/court/

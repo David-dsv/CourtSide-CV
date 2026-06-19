@@ -7,6 +7,7 @@ Works on any tennis match video regardless of resolution, camera angle, or playe
 """
 import sys
 import argparse
+import json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -511,6 +512,10 @@ def parse_args():
     parser.add_argument("--no-bounces", action="store_true", help="Disable bounce detection markers")
     parser.add_argument("--no-player-boxes", action="store_true", help="Disable player bounding boxes")
     parser.add_argument("--court-labels", action="store_true", help="Show court zone labels")
+    parser.add_argument("--dump-bounces", metavar="PATH", default=None,
+                        help="Also write detected bounces to PATH as a predictions JSON "
+                             "(eval_bounces.py format) for scoring against ground truth. "
+                             "Off by default; does not affect the annotated video.")
     return parser.parse_args()
 
 
@@ -760,6 +765,29 @@ def main():
     if not args.no_bounces:
         bounce_events = detect_bounces_from_trajectory(
             all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
+
+    # ─── Optional: export bounce predictions for offline evaluation ───
+    # Additive, gated, read-only w.r.t. the pipeline: reads the already-computed
+    # bounce_events and writes the eval_bounces.py schema. frame_idx is 0-based
+    # within the processed window, so absolute frame = start_frame + frame_idx
+    # (matches the annotator's convention -> aligns with ground truth).
+    if args.dump_bounces:
+        pred_doc = {
+            "video": video_path,
+            "fps": fps,
+            "frame_offset": start_frame,
+            "annotator": "run_pipeline_8s.py:detect_bounces_from_trajectory",
+            "notes": "auto-exported bounce predictions",
+            "bounces": [
+                {"frame": int(start_frame + idx), "x": int(x), "y": int(y)}
+                for (idx, x, y) in bounce_events
+            ],
+        }
+        Path(args.dump_bounces).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.dump_bounces, "w") as f:
+            json.dump(pred_doc, f, indent=2)
+            f.write("\n")
+        logger.info(f"Dumped {len(bounce_events)} bounce predictions -> {args.dump_bounces}")
 
     # ─── Classify bounces ───
     classified_bounces = []

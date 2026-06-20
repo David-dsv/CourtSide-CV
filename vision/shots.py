@@ -84,8 +84,12 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
     for i in range(win, n - win):
         if ball_centers[i] is None:
             continue
-        a = np.nanmean(vy[max(0, i - win):i])
-        b = np.nanmean(vy[i:i + win + 1])
+        pre, post = vy[max(0, i - win):i], vy[i:i + win + 1]
+        # skip windows with no valid samples (all-NaN → nanmean warns and is useless)
+        if not np.any(~np.isnan(pre)) or not np.any(~np.isnan(post)):
+            continue
+        a = np.nanmean(pre)
+        b = np.nanmean(post)
         # contact: ball was coming DOWN (vy>0) then goes UP (vy<0)
         if np.isnan(a) or np.isnan(b):
             continue

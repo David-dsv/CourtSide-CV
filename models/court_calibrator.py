@@ -108,8 +108,14 @@ def homography_from_points(image_points: dict):
     # convex, non-degenerate, in-frame-ish quad spanning a reasonable area.
     confidence = _assess_conditioning(H_inv, world_pts, img_arr, n, rms)
 
+    # named landmark → image pixel (used by the minimap's geometric fallback to
+    # anchor the depth band on the real far/near baseline rows)
+    landmark_px = {name: (float(px), float(py))
+                   for name, (px, py) in zip(names, img_pts)}
+
     return {"H": H, "H_inv": H_inv, "rms_px": rms, "n_used": n,
-            "landmarks": names, "source": "manual4pt", "confidence": confidence}
+            "landmarks": names, "landmark_px": landmark_px,
+            "source": "manual4pt", "confidence": confidence}
 
 
 def _assess_conditioning(H_inv, world_pts, img_arr, n, rms):

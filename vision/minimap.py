@@ -148,26 +148,58 @@ def render_court_base(w, h):
 
 
 def project_to_court(x, y, frame_w, frame_h, homography=None):
-    """Image pixel (x,y) → court meters (Xm, Ym). Uses homography if available,
-    else a geometric fallback. Returns (Xm, Ym)."""
-    if homography is not None and homography.get("H") is not None:
-        from models.court_detector import img_to_world
-        Xm, Ym = img_to_world(homography["H"], x, y)
-        return Xm, Ym
-    # ── geometric fallback (no homography) ──
-    # Map the ball's vertical frame position to court depth (top of band = far
-    # baseline) and horizontal position to court width, with a mild perspective
-    # correction (objects higher in the frame = farther = compressed horizontally).
+    """Image pixel (x,y) → court meters (Xm, Ym), or None if unprojectable.
+
+    Uses the homography ONLY when it is trustworthy AND the point lies in front of
+    the homography's horizon (on a grazing oblique angle the horizon line cuts
+    THROUGH the court — points behind it project to infinity / flip to the wrong
+    side, which collapsed everything onto one half of the radar). When the
+    homography is low-confidence or the point is past the horizon, fall back to a
+    geometric image-Y → court-depth map, calibrated on the real baseline pixel
+    rows when a calibration is available (far more accurate than a fixed band)."""
+    H = homography.get("H") if homography is not None else None
+    conf = homography.get("confidence") if homography is not None else None
+    if H is not None and conf in ("high", "medium"):
+        # horizon guard: w = H[2]·[x,y,1] must be safely positive (same side as the
+        # control points). Near/behind the horizon the projection is unstable.
+        w = float(H[2, 0] * x + H[2, 1] * y + H[2, 2])
+        if w > 1e-3:
+            from models.court_detector import img_to_world
+            Xm, Ym = img_to_world(H, x, y)
+            if abs(Ym) <= HALF_LEN + 2.0 and abs(Xm) <= DOUBLES_HALF_W + 2.0:
+                return Xm, Ym
+        # else fall through to the geometric map (don't trust a flipped point)
+
+    # ── geometric fallback ──
+    # Map image-Y to court depth. Anchor on the calibration's known baseline rows
+    # when available (e.g. felix: far baseline ≈ y0, near baseline ≈ y1) so the
+    # spread matches the real court; else use a generic broadcast band.
+    top, bot = _depth_band(homography, frame_h)
     yr = y / frame_h
-    top, bot = 0.30, 0.84
-    depth = (yr - top) / (bot - top)                # 0 = far baseline, 1 = near
+    depth = (yr - top) / (bot - top + 1e-9)          # 0 = far baseline, 1 = near
     depth = max(0.0, min(1.0, depth))
-    Ym = HALF_LEN - depth * (2 * HALF_LEN)
+    Ym = HALF_LEN - depth * (2 * HALF_LEN)           # +HALF_LEN (far) → -HALF_LEN (near)
     xr = x / frame_w - 0.5
-    persp = 0.55 + 0.9 * depth
+    persp = 0.55 + 0.9 * depth                        # near rows span more width
     Xm = (xr / 0.5) * DOUBLES_HALF_W * persp
     Xm = max(-DOUBLES_HALF_W - PAD_M, min(DOUBLES_HALF_W + PAD_M, Xm))
     return Xm, Ym
+
+
+def _depth_band(homography, frame_h):
+    """Return (top_ratio, bot_ratio): the image-Y rows (as fractions of frame
+    height) of the FAR and NEAR baselines, derived from calibration landmark
+    pixels when present, else a generic broadcast band."""
+    if homography is not None and homography.get("landmark_px"):
+        lp = homography["landmark_px"]
+        far_ys = [lp[k][1] for k in lp if k.startswith("far_")]
+        near_ys = [lp[k][1] for k in lp if k.startswith("near_")]
+        if far_ys and near_ys:
+            top = min(far_ys) / frame_h
+            bot = max(near_ys) / frame_h
+            if bot - top > 0.05:
+                return top, bot
+    return 0.30, 0.84
 
 
 def _on_radar(Xm, Ym):

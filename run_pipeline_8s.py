@@ -96,69 +96,9 @@ class BallKalmanFilter:
         return float(np.hypot(x - pred[0][0], y - pred[1][0]))
 
 
-class PlayerTracker:
-    """
-    Simple 2-slot IoU-based tracker for tennis players.
-    Maintains up to 2 player slots with consistent IDs.
-    """
-
-    def __init__(self, iou_threshold=0.3):
-        self.iou_threshold = iou_threshold
-        self.slots = {}  # {player_id: box}
-        self.next_id = 1
-
-    @staticmethod
-    def _iou(box_a, box_b):
-        """Compute IoU between two boxes [x1, y1, x2, y2]."""
-        xa = max(box_a[0], box_b[0])
-        ya = max(box_a[1], box_b[1])
-        xb = min(box_a[2], box_b[2])
-        yb = min(box_a[3], box_b[3])
-        inter = max(0, xb - xa) * max(0, yb - ya)
-        if inter == 0:
-            return 0.0
-        area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-        area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-        return inter / (area_a + area_b - inter)
-
-    def update(self, detected_boxes):
-        """
-        Match detected boxes to existing slots via IoU (greedy).
-        Returns list of (player_id, box) for matched/new tracks.
-        """
-        if len(detected_boxes) == 0:
-            return list(self.slots.items())
-
-        # Compute IoU between all slots and detections
-        slot_ids = list(self.slots.keys())
-        pairs = []
-        for sid in slot_ids:
-            for di, dbox in enumerate(detected_boxes):
-                iou = self._iou(self.slots[sid], dbox)
-                if iou >= self.iou_threshold:
-                    pairs.append((iou, sid, di))
-        pairs.sort(reverse=True)
-
-        matched_slots = set()
-        matched_dets = set()
-        for iou, sid, di in pairs:
-            if sid in matched_slots or di in matched_dets:
-                continue
-            self.slots[sid] = list(detected_boxes[di])
-            matched_slots.add(sid)
-            matched_dets.add(di)
-
-        # Assign unmatched detections to new slots (max 2 total)
-        for di, dbox in enumerate(detected_boxes):
-            if di in matched_dets:
-                continue
-            if len(self.slots) < 2:
-                pid = self.next_id
-                self.next_id += 1
-                self.slots[pid] = list(dbox)
-
-        return list(self.slots.items())
-
+# Player identity is now handled by vision.player_track.TwoPlayerTracker (Pass 1.5):
+# persistent P1(far)/P2(near) lock + gap-fill + smoothing. The old 2-slot IoU
+# PlayerTracker was replaced by it.
 
 # Bounce detection + trajectory smoothing now live in the vision/ engine
 # module (PROJET.md 'moteur propre'), imported here so the pipeline and the
@@ -166,6 +106,7 @@ class PlayerTracker:
 from vision.bounce import smooth_ball_trajectory, detect_bounces_from_trajectory  # noqa: E402
 from vision.pose import estimate_players_pose  # noqa: E402
 from vision.minimap import draw_minimap  # noqa: E402
+import vision.fx as fx  # noqa: E402  — cinematic visual effects (glow, glass HUD, shockwave)
 
 
 def estimate_px_per_meter(court_zones, frame_height):
@@ -343,7 +284,11 @@ def parse_args():
     # New feature flags
     parser.add_argument("--no-court", action="store_true", help="Disable court zone overlay")
     parser.add_argument("--no-bounces", action="store_true", help="Disable bounce detection markers")
-    parser.add_argument("--no-player-boxes", action="store_true", help="Disable player bounding boxes")
+    parser.add_argument("--no-player-boxes", action="store_true",
+                        help="(default) Disable player bounding boxes. Boxes are OFF by default — "
+                             "skeletons read cleaner; pass --player-boxes to re-enable.")
+    parser.add_argument("--player-boxes", action="store_true",
+                        help="Re-enable player bounding boxes (off by default).")
     parser.add_argument("--court-labels", action="store_true", help="Show court zone labels")
     parser.add_argument("--dump-bounces", metavar="PATH", default=None,
                         help="Also write detected bounces to PATH as a predictions JSON "
@@ -363,7 +308,17 @@ def parse_args():
                         help="Path to WASB tennis weights (for --ball-tracker wasb).")
     parser.add_argument("--no-minimap", action="store_true",
                         help="Disable the 2D top-down court minimap (ball trajectory + bounces).")
-    return parser.parse_args()
+    parser.add_argument("--no-calibration", action="store_true",
+                        help="Ignore any saved court calibration sidecar (<video>.court.json / "
+                             "calibrations/<name>.court.json) used for the metric homography.")
+    parser.add_argument("--no-fx", action="store_true",
+                        help="Disable cinematic FX (glow trail, glass HUD, shockwaves). FX on by default.")
+    args = parser.parse_args()
+    # Player boxes default OFF (user feedback: boxes distract / a stale box looks
+    # fixed). --player-boxes opts back in; --no-player-boxes is the explicit default.
+    if not args.player_boxes:
+        args.no_player_boxes = True
+    return args
 
 
 def main():
@@ -466,6 +421,24 @@ def main():
         except Exception as e:
             logger.warning(f"Court homography failed ({e}) → scalar scale fallback")
             court_homography = None
+
+    # ─── Calibration homography (semi-auto 4-corner) ───
+    # On oblique/amateur angles the keypoint model can't localize the court, but a
+    # static camera only needs the court annotated ONCE. If a calibration sidecar
+    # exists for this clip (<video>.court.json, or calibrations/<name>.court.json),
+    # use it — it gives an exact metric homography where the keypoint model fails.
+    # This is what makes the minimap metric on felix-style angles.
+    if court_homography is None and not args.no_calibration:
+        try:
+            from models.court_calibrator import load_calibration
+            cal = load_calibration(video_path)
+            if cal is not None:
+                court_homography = cal
+                logger.info(f"Court calibration loaded ({cal['source']}): "
+                            f"{cal['n_used']} points, rms={cal['rms_px']:.1f}px → "
+                            f"metric homography enabled")
+        except Exception as e:
+            logger.warning(f"Court calibration load failed ({e})")
 
     # ─── Pass 1: Detect ball positions + bounces ───
     logger.info("=== PASS 1: Detect ball ===")
@@ -783,49 +756,50 @@ def main():
         bounce_by_frame[fidx] = (bx, by, depth, avg_speed, quality)
         logger.debug(f"Bounce frame {fidx}: depth={depth}, speed={avg_speed:.0f}km/h, Q={quality}")
 
+    # ─── Pass 1.5: Pose on every frame → locked P1/P2 skeleton tracks ───
+    # The per-frame pose estimator returns "the 2 players this frame" with no
+    # temporal identity. We run it on EVERY frame once, then feed the results to
+    # TwoPlayerTracker which assigns persistent P1(far)/P2(near) identities,
+    # associates frame-to-frame, GAP-FILLS missed detections, and smooths — so
+    # every frame has a stable, jitter-free skeleton for both players. This single
+    # pose pass is reused by the shot pre-pass and Pass 2 (no redundant inference).
+    logger.info("=== PASS 1.5: Pose + lock P1/P2 ===")
+    from vision.player_track import TwoPlayerTracker
+    players_per_frame = [None] * max_frames
+    rdr = VideoReader(video_path)
+    if start_frame > 0:
+        rdr.seek(start_frame)
+    net_y_seed = None
+    if court_zones:
+        from vision.pose import _net_y
+        net_y_seed = _net_y(court_zones, frame_height)
+    ptracker = TwoPlayerTracker(frame_width, frame_height, net_y_seed, fps)
+    for i, frame in enumerate(tqdm(rdr.iter_frames(), total=max_frames,
+                                   desc="Pass 1.5: pose")):
+        if i >= max_frames:
+            break
+        players = estimate_players_pose(
+            detector.person_model, pose_model, frame, device,
+            ball_xy=all_ball_centers[i] if i < len(all_ball_centers) else None,
+            court_zones=court_zones if court_zones else None)
+        players_per_frame[i] = players
+        ptracker.add_frame(players)
+    rdr.release()
+    # locked, gap-filled, smoothed tracks: {1: [pose|None]*N, 2: [pose|None]*N}
+    player_tracks = ptracker.finalize()
+    cov = ptracker.coverage()
+    logger.info(f"Player tracks locked: P1 coverage={cov[1]*100:.1f}%, "
+                f"P2 coverage={cov[2]*100:.1f}% (gap-filled)")
+
     # ─── Shot pre-pass: detect hits, attribute to player, classify FH/BH, score ───
-    # A hit is a ball vertical-direction reversal near a player. We compute pose
-    # only at candidate frames (cheap), attribute + classify, then link each hit to
+    # A hit is a ball vertical-direction reversal near a player. Reuses the Pass 1.5
+    # poses (no extra inference), attributes + classifies, then links each hit to
     # the next bounce for a multi-factor quality score (speed + depth + placement).
     shot_by_frame = {}      # frame -> dict(side, fhb, quality, speed)
     if not args.no_bounces and all_ball_centers:
         from vision.shots import detect_hits, classify_forehand_backhand, shot_quality
-        ys_arr = np.array([c[1] if c is not None else np.nan for c in all_ball_centers])
-        vy_arr = np.full(len(all_ball_centers), np.nan)
-        for i in range(1, len(all_ball_centers)):
-            if not np.isnan(ys_arr[i]) and not np.isnan(ys_arr[i - 1]):
-                vy_arr[i] = ys_arr[i] - ys_arr[i - 1]
-        hw = max(3, int(fps * 0.07))
-        bguard = int(fps * 0.12)
         bset = list(bounce_by_frame.keys())
-        cand_frames = []
-        for i in range(hw, len(all_ball_centers) - hw):
-            if all_ball_centers[i] is None:
-                continue
-            a = np.nanmean(vy_arr[max(0, i - hw):i])
-            b = np.nanmean(vy_arr[i:i + hw + 1])
-            if np.isnan(a) or np.isnan(b):
-                continue
-            if a > 1.0 and b < -1.0 and not any(abs(i - bf) <= bguard for bf in bset):
-                cand_frames.append(i)
-
-        # pose at candidate frames only
-        players_per_frame = [None] * max_frames
-        if cand_frames:
-            want = set(cand_frames)
-            rdr = VideoReader(video_path)
-            if start_frame > 0:
-                rdr.seek(start_frame)
-            for i, frame in enumerate(rdr.iter_frames()):
-                if i >= max_frames:
-                    break
-                if i in want:
-                    players_per_frame[i] = estimate_players_pose(
-                        detector.person_model, pose_model, frame, device,
-                        ball_xy=all_ball_centers[i],
-                        court_zones=court_zones if court_zones else None)
-            rdr.release()
-
+        # poses already computed for every frame in Pass 1.5 (players_per_frame)
         hits = detect_hits(all_ball_centers, players_per_frame, fps,
                            frame_height, frame_width, bounce_frames=bset)
         sorted_bounces = sorted(bounce_by_frame.keys())
@@ -854,8 +828,6 @@ def main():
         reader.seek(start_frame)
     writer = VideoWriter(output_path, fps=fps)
     ball_trail = deque(maxlen=trail_length)
-    skeleton_color = (0, 220, 255)  # single color for all skeletons
-    player_tracker = PlayerTracker(iou_threshold=0.3)
 
     # Bounce display duration: 0.5s worth of frames
     bounce_display_frames = int(fps * 0.5)
@@ -871,6 +843,12 @@ def main():
         legend_items["Quality 70+"] = (0, 200, 0)
         legend_items["Quality <40"] = (0, 0, 220)
 
+    # Precompute cumulative match stats per frame for the live HUD card (running
+    # FH/BH counts, rally length = bounces in the current point, max/avg speed).
+    sorted_shot_frames = sorted(shot_by_frame.keys())
+    sorted_bounce_frames = sorted(bounce_by_frame.keys())
+    peak_speed = 0.0
+
     frame_idx = 0
     for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 2"):
         if frame_idx >= max_frames:
@@ -882,77 +860,71 @@ def main():
             out = draw_court_overlay(out, court_zones, alpha=0.15,
                                      draw_labels=args.court_labels)
 
-        # 2. Pose — top-down: generic-YOLO person detection → pick the 2 players →
-        # crop + high-res pose per player (recovers the far player; robust on
-        # oblique angles). See vision/pose.py.
-        ball_xy = all_ball_centers[frame_idx]
-        players = estimate_players_pose(
-            detector.person_model, pose_model, frame, device,
-            ball_xy=ball_xy, court_zones=court_zones if court_zones else None)
-        pose_player_boxes = []
-        for p in players:
-            if p["kps_xy"] is not None:
-                out = draw_skeleton(out, p["kps_xy"], p["kps_conf"], skeleton_color)
-            pose_player_boxes.append(p["box"])
+        # 2. Pose — LOCKED P1/P2 skeleton tracks from Pass 1.5 (persistent identity,
+        # gap-filled so every frame has both skeletons, distinct colors per player).
+        # No per-frame pose here: we draw the pre-tracked, smoothed poses.
+        person_boxes = []
+        for pid in (1, 2):
+            pose = player_tracks[pid][frame_idx] if frame_idx < len(player_tracks[pid]) else None
+            if pose is None or pose.get("kps_xy") is None:
+                continue
+            out = draw_skeleton(out, pose["kps_xy"], pose["kps_conf"], PLAYER_COLORS[pid])
+            person_boxes.append((pid, pose["box"]))
 
-        person_boxes = list(pose_player_boxes)
-
-        # 3. Player bounding boxes (same top 2 persons)
-        if not args.no_player_boxes and person_boxes:
-            tracked = player_tracker.update(person_boxes)
-            for pid, box in tracked:
+        # 3. Player bounding boxes (off by default; same locked P1/P2 identity)
+        if not args.no_player_boxes:
+            for pid, box in person_boxes:
                 out = draw_player_bbox(out, box, pid)
 
-        # 4. Ball (already Kalman-filtered + interpolated)
+        # 4. Ball — cinematic comet trail + glowing pulsing marker (FX), or the
+        # plain trail/marker when --no-fx.
         bc = all_ball_centers[frame_idx]
         if bc is not None:
             ball_trail.append(bc)
-            out = draw_ball_marker(out, bc[0], bc[1])
-        draw_ball_trail(out, list(ball_trail))
+        if not args.no_fx:
+            if len(ball_trail) >= 2:
+                out = fx.comet_trail(out, list(ball_trail), base_color=BALL_COLOR,
+                                     max_thickness=7, glow=True)
+            if bc is not None:
+                # pulse phase advances with frame_idx so the ball "breathes"
+                out = fx.glow_marker(out, (int(bc[0]), int(bc[1])), color=BALL_COLOR,
+                                     radius=8, pulse=frame_idx * 0.5)
+        else:
+            if bc is not None:
+                out = draw_ball_marker(out, bc[0], bc[1])
+            draw_ball_trail(out, list(ball_trail))
 
-        # 4b. Speed HUD (top-left)
+        # 4b. Current ball speed (HUD drawn later, after overlays, as a gauge/card)
         current_speed = ball_speeds_kmh[frame_idx] if frame_idx < len(ball_speeds_kmh) else 0.0
-        if bc is not None and current_speed > 5.0:
-            speed_text = f"Ball: {int(current_speed)} km/h"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.7
-            thickness = 2
-            (tw, th), baseline = cv2.getTextSize(speed_text, font, font_scale, thickness)
-            hud_x, hud_y = 15, 35
-            # Semi-transparent background
-            overlay = out.copy()
-            cv2.rectangle(overlay, (hud_x - 5, hud_y - th - 5),
-                          (hud_x + tw + 5, hud_y + baseline + 5), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.6, out, 0.4, 0, out)
-            cv2.putText(out, speed_text, (hud_x, hud_y), font, font_scale,
-                        (255, 255, 255), thickness, cv2.LINE_AA)
 
-        # 5. Bounce markers (persist for bounce_display_frames, fade over time)
+        # 5. Bounce markers — FX shockwave (expanding glow ring) at each impact,
+        # color-coded by depth, with a styled label. Falls back to the plain
+        # marker under --no-fx.
+        DEPTH_COL = {"deep": (60, 60, 255), "mid": (0, 200, 255), "short": (120, 230, 0)}
         if not args.no_bounces:
             for bfi in range(max(0, frame_idx - bounce_display_frames), frame_idx + 1):
                 if bfi in bounce_by_frame:
                     bx, by, depth, b_speed, b_quality = bounce_by_frame[bfi]
                     age = frame_idx - bfi
-                    alpha = max(0.3, 1.0 - age / bounce_display_frames)
-                    out = draw_bounce_marker(out, bx, by, depth=depth, alpha=alpha)
-                    # Draw multi-line label next to marker
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    lx, ly = bx + 18, by - 10
-                    # Line 1: depth
-                    cv2.putText(out, depth.upper(), (lx, ly), font, 0.5,
-                                (255, 255, 255), 2, cv2.LINE_AA)
-                    # Line 2: speed
-                    cv2.putText(out, f"{int(b_speed)} km/h", (lx, ly + 18), font, 0.45,
-                                (200, 200, 200), 1, cv2.LINE_AA)
-                    # Line 3: quality (colored)
-                    if b_quality >= 70:
-                        q_color = (0, 200, 0)     # green
-                    elif b_quality >= 40:
-                        q_color = (0, 220, 220)    # yellow
+                    dcol = DEPTH_COL.get(depth, (255, 255, 255))
+                    if not args.no_fx:
+                        out = fx.shockwave(out, (bx, by), age, bounce_display_frames,
+                                           color=dcol, max_radius=int(frame_height * 0.07))
                     else:
-                        q_color = (0, 0, 220)      # red
-                    cv2.putText(out, f"Q:{b_quality}", (lx, ly + 34), font, 0.45,
-                                q_color, 2, cv2.LINE_AA)
+                        alpha = max(0.3, 1.0 - age / bounce_display_frames)
+                        out = draw_bounce_marker(out, bx, by, depth=depth, alpha=alpha)
+                    # styled label (only while fresh, so it doesn't clutter)
+                    if age <= bounce_display_frames // 2:
+                        lx, ly = bx + 20, by - 26
+                        if not args.no_fx:
+                            out = fx.draw_text(out, depth.upper(), (lx, ly), size=18,
+                                               color=dcol, font="bold")
+                            out = fx.draw_text(out, f"{int(b_speed)} km/h", (lx, ly + 20),
+                                               size=15, color=(210, 210, 210), font="regular")
+                            qc = ((90, 220, 90) if b_quality >= 70 else
+                                  (90, 220, 220) if b_quality >= 40 else (90, 90, 230))
+                            out = fx.draw_text(out, f"Q {b_quality}", (lx, ly + 39),
+                                               size=15, color=qc, font="bold")
 
         # 5b. Shot markers (forehand/backhand + quality at the contact frame)
         if shot_by_frame:
@@ -966,14 +938,19 @@ def main():
                     fhb = s["fhb"]
                     tag = {"forehand": "FOREHAND", "backhand": "BACKHAND"}.get(fhb, "SHOT")
                     fcol = (0, 200, 255) if fhb == "forehand" else (255, 150, 0)
-                    cv2.circle(out, (sx, sy), 14, fcol, 2, cv2.LINE_AA)
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    cv2.putText(out, tag, (sx + 16, sy - 6), font, 0.55, fcol, 2, cv2.LINE_AA)
-                    if s["quality"] > 0:
-                        qc = (0, 200, 0) if s["quality"] >= 70 else (
-                            (0, 220, 220) if s["quality"] >= 40 else (0, 0, 220))
-                        cv2.putText(out, f"Q:{s['quality']}", (sx + 16, sy + 14),
-                                    font, 0.5, qc, 2, cv2.LINE_AA)
+                    if not args.no_fx:
+                        out = fx.glow_marker(out, (sx, sy), color=fcol, radius=11)
+                        out = fx.draw_text(out, tag, (sx + 18, sy - 8), size=17,
+                                           color=fcol, font="bold")
+                        if s["quality"] > 0:
+                            qc = ((90, 220, 90) if s["quality"] >= 70 else
+                                  (90, 220, 220) if s["quality"] >= 40 else (90, 90, 230))
+                            out = fx.draw_text(out, f"Q {s['quality']}", (sx + 18, sy + 12),
+                                               size=15, color=qc, font="bold")
+                    else:
+                        cv2.circle(out, (sx, sy), 14, fcol, 2, cv2.LINE_AA)
+                        cv2.putText(out, tag, (sx + 16, sy - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.55, fcol, 2, cv2.LINE_AA)
 
         # 5c. 2D top-down court minimap (ball trajectory + bounce locations)
         if not args.no_minimap:
@@ -989,8 +966,35 @@ def main():
                                frame_width, frame_height,
                                homography=court_homography)
 
-        # 6. Legend
-        out = create_legend(out, legend_items, position="top-right")
+        # 6. HUD — speed gauge + live match-stats card, anchored BOTTOM-LEFT so it
+        # never collides with a broadcast scoreboard (top corners). On amateur phone
+        # footage the top corners are free too; bottom-left is the safe universal slot.
+        if not args.no_fx:
+            peak_speed = max(peak_speed, current_speed if bc is not None else 0.0)
+            margin = int(frame_height * 0.022)
+            gauge_r = int(frame_height * 0.052)
+            gauge_box = 2 * gauge_r + 2 * int(gauge_r * 0.42)
+            card_w = int(frame_width * 0.135)
+            n_fh = sum(1 for f in sorted_shot_frames
+                       if f <= frame_idx and shot_by_frame[f]["fhb"] == "forehand")
+            n_bh = sum(1 for f in sorted_shot_frames
+                       if f <= frame_idx and shot_by_frame[f]["fhb"] == "backhand")
+            n_rally = sum(1 for f in sorted_bounce_frames if f <= frame_idx)
+            card_lines = [
+                ("Forehand", str(n_fh)),
+                ("Backhand", str(n_bh)),
+                ("Rally", str(n_rally)),
+                ("Peak", f"{int(peak_speed)} km/h"),
+            ]
+            card_h = int(frame_height * 0.022) * 2 + int(frame_height * 0.019 * 1.55) * len(card_lines) + 50
+            # stack: gauge on top, stats card under it, bottom-left aligned
+            card_y = frame_height - margin - card_h
+            gauge_y = card_y - gauge_box - int(frame_height * 0.012)
+            fx.speed_gauge(out, margin, gauge_y, current_speed if bc is not None else 0.0,
+                           max_kmh=180, label="BALL", radius=gauge_r)
+            fx.stat_card(out, margin, card_y, card_lines, title="Match", width=card_w)
+        else:
+            out = create_legend(out, legend_items, position="top-right")
 
         writer.write_frame(out)
         frame_idx += 1

@@ -972,9 +972,13 @@ def main():
                         if all_ball_centers[j] is not None]
             bounces_so_far = [(v[0], v[1], v[2]) for bf, v in bounce_by_frame.items()
                               if bf <= frame_idx]
+            # live player feet (bottom-center of each locked P1/P2 box) → radar dots
+            players_img = [((b[0] + b[2]) / 2.0, b[3], pid) for pid, b in person_boxes]
             out = draw_minimap(out, mm_trail, bounces_so_far,
                                frame_width, frame_height,
-                               homography=court_homography)
+                               homography=court_homography,
+                               players_img=players_img,
+                               pulse=frame_idx * 0.5)
 
         # 6. HUD — speed gauge + live match-stats card, anchored BOTTOM-LEFT so it
         # never collides with a broadcast scoreboard (top corners). On amateur phone

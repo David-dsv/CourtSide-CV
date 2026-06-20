@@ -1,12 +1,17 @@
 """
-2D top-down court minimap with the ball trajectory and bounce locations.
+Premium 2D top-down "COURT RADAR" — a broadcast-quality animated minimap.
 
-Draws a schematic ITF court (singles + doubles lines, service boxes, net) in a
-corner of the frame, and projects ball positions + bounces onto it.
+Draws a schematic ITF court (singles + doubles lines, service boxes, net) inside a
+glassmorphism panel in a corner of the frame, and projects the ball trajectory,
+bounce locations (color-coded by depth, with a soft placement heatmap) and the two
+players onto it. The look targets Hawk-Eye / SwingVision radar overlays: a cool-blue
+court with a subtle gradient, glowing comet-style ball trail, pulsing live ball, and
+crisp TrueType chrome — all via the cinematic ``vision.fx`` library.
 
 Image→court projection:
   - PRIMARY: when a court homography H (image px → court meters) is available
-    (broadcast angle), project exactly via H.
+    (a one-time calibration, or a broadcast keypoint solve), project exactly via H.
+    The points then spread across the FULL court depth (metric-honest).
   - FALLBACK: when H is unavailable (oblique/amateur, court not localized), use a
     geometric approximation from the ball's position in the frame — the minimap is
     then indicative, not metric (flagged with a '~' in the title).
@@ -18,43 +23,96 @@ matches models.court_detector.WORLD_KEYPOINTS.
 import numpy as np
 import cv2
 
+from vision import fx
+
 # ITF dimensions (meters)
 DOUBLES_HALF_W = 5.485
 SINGLES_HALF_W = 4.115
 HALF_LEN = 11.885
 SERVICE_FROM_NET = 6.40
 
-# minimap pixel layout
-PAD_M = 1.2          # meters of margin around the court in the minimap
-TRAIL_COLOR = (90, 255, 150)
-BALL_COLOR = (0, 255, 80)
-LINE_COLOR = (245, 245, 245)
-COURT_FILL = (150, 95, 55)      # BGR — solid bluish court
-BOUNCE_COLORS = {"deep": (0, 0, 255), "mid": (0, 200, 255), "short": (0, 230, 120)}
+# meters of margin around the court inside the radar viewport (keeps points just
+# behind a baseline on-screen without wasting much real estate)
+PAD_M = 0.8
+
+# ── palette (BGR) ──────────────────────────────────────────────────────────
+COURT_DEEP = (96, 58, 26)        # cool deep blue (far / top)
+COURT_NEAR = (140, 92, 44)       # lighter blue (near / bottom) → subtle gradient
+COURT_FILL = (118, 74, 34)       # mean court tone
+LINE_COLOR = (235, 240, 245)     # near-white court lines
+LINE_SOFT = (200, 215, 225)      # inner lines slightly dimmer
+NET_COLOR = (245, 250, 255)
+TRAIL_COLOR = (120, 235, 90)     # green comet
+BALL_COLOR = (90, 255, 180)      # bright yellow-green live ball
+ACCENT = (255, 200, 110)         # cyan/amber accent for chrome (BGR)
+
+# bounce colors by depth (BGR): deep=red, mid=amber, short=green
+BOUNCE_COLORS = {
+    "deep":  (60, 60, 255),
+    "mid":   (40, 190, 255),
+    "short": (90, 230, 120),
+}
+
+# default player colors (BGR) — match run_pipeline_8s.PLAYER_COLORS
+PLAYER_COLORS = {1: (0, 191, 255), 2: (255, 160, 50)}
+
+# supersampling factor — render the court tile at SS× then downscale for crisp AA
+_SS = 2
 
 
-def _court_to_minimap(Xm, Ym, w, h):
-    """Court meters → minimap pixel. +Y (far baseline) maps to the TOP of the
-    minimap, +X (right) maps to the right."""
+def _court_to_tile(Xm, Ym, w, h):
+    """Court meters → tile pixel. +Y (far baseline) maps to the TOP, +X to the
+    right. Returns float (sub-pixel) coords for smooth AA drawing."""
     span_x = (DOUBLES_HALF_W + PAD_M)
     span_y = (HALF_LEN + PAD_M)
-    px = w / 2 + (Xm / span_x) * (w / 2)
-    py = h / 2 - (Ym / span_y) * (h / 2)
-    return int(round(px)), int(round(py))
+    px = w / 2.0 + (Xm / span_x) * (w / 2.0)
+    py = h / 2.0 - (Ym / span_y) * (h / 2.0)
+    return px, py
+
+
+def _ipt(p):
+    """Float point → int tuple for cv2 (uses sub-pixel shift-free rounding)."""
+    return (int(round(p[0])), int(round(p[1])))
 
 
 def render_court_base(w, h):
-    """Return a BGR minimap image with the court lines drawn (no ball yet)."""
-    img = np.full((h, w, 3), 35, np.uint8)            # dark backdrop
-    # court fill
-    tl = _court_to_minimap(-DOUBLES_HALF_W, +HALF_LEN, w, h)
-    br = _court_to_minimap(+DOUBLES_HALF_W, -HALF_LEN, w, h)
-    cv2.rectangle(img, tl, br, COURT_FILL, -1)
+    """Return a BGR court tile (court fill + lines), with a cool-blue gradient.
 
-    def line(p1, p2, thick=1):
-        a = _court_to_minimap(*p1, w, h)
-        b = _court_to_minimap(*p2, w, h)
-        cv2.line(img, a, b, LINE_COLOR, thick, cv2.LINE_AA)
+    No glow here — pure court geometry. Trajectory/markers/glow are layered on top
+    by :func:`draw_minimap`. Lines are anti-aliased; the caller renders this at a
+    supersampled size and downscales for extra crispness.
+    """
+    img = np.empty((h, w, 3), np.float32)
+
+    # vertical gradient backdrop (cool, dark) so the panel reads as a screen
+    top_bg = np.array((46, 30, 18), np.float32)
+    bot_bg = np.array((60, 40, 24), np.float32)
+    ramp = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None, None]
+    img[:] = top_bg * (1 - ramp) + bot_bg * ramp
+
+    # court rectangle (doubles) with a top→bottom gradient (far darker, near lighter)
+    tl = _court_to_tile(-DOUBLES_HALF_W, +HALF_LEN, w, h)
+    br = _court_to_tile(+DOUBLES_HALF_W, -HALF_LEN, w, h)
+    cx0, cy0 = int(round(tl[0])), int(round(tl[1]))
+    cx1, cy1 = int(round(br[0])), int(round(br[1]))
+    cx0, cx1 = sorted((cx0, cx1))
+    cy0, cy1 = sorted((cy0, cy1))
+    ch = max(1, cy1 - cy0)
+    cramp = np.linspace(0.0, 1.0, ch, dtype=np.float32)[:, None, None]
+    court_block = (np.array(COURT_DEEP, np.float32) * (1 - cramp)
+                   + np.array(COURT_NEAR, np.float32) * cramp)
+    img[cy0:cy1, cx0:cx1] = court_block
+
+    img = np.clip(img, 0, 255).astype(np.uint8)
+
+    th = max(1, int(round(w / 130)))      # base line thickness (scales with tile)
+    th_thin = max(1, th)
+    th_net = max(2, th + 1)
+
+    def line(p1, p2, color=LINE_COLOR, thick=th_thin):
+        a = _ipt(_court_to_tile(*p1, w, h))
+        b = _ipt(_court_to_tile(*p2, w, h))
+        cv2.line(img, a, b, color, thick, cv2.LINE_AA)
 
     # doubles box
     line((-DOUBLES_HALF_W, +HALF_LEN), (+DOUBLES_HALF_W, +HALF_LEN))
@@ -62,92 +120,250 @@ def render_court_base(w, h):
     line((-DOUBLES_HALF_W, +HALF_LEN), (-DOUBLES_HALF_W, -HALF_LEN))
     line((+DOUBLES_HALF_W, +HALF_LEN), (+DOUBLES_HALF_W, -HALF_LEN))
     # singles sidelines
-    line((-SINGLES_HALF_W, +HALF_LEN), (-SINGLES_HALF_W, -HALF_LEN))
-    line((+SINGLES_HALF_W, +HALF_LEN), (+SINGLES_HALF_W, -HALF_LEN))
+    line((-SINGLES_HALF_W, +HALF_LEN), (-SINGLES_HALF_W, -HALF_LEN), LINE_SOFT)
+    line((+SINGLES_HALF_W, +HALF_LEN), (+SINGLES_HALF_W, -HALF_LEN), LINE_SOFT)
     # service lines
-    line((-SINGLES_HALF_W, +SERVICE_FROM_NET), (+SINGLES_HALF_W, +SERVICE_FROM_NET))
-    line((-SINGLES_HALF_W, -SERVICE_FROM_NET), (+SINGLES_HALF_W, -SERVICE_FROM_NET))
+    line((-SINGLES_HALF_W, +SERVICE_FROM_NET), (+SINGLES_HALF_W, +SERVICE_FROM_NET), LINE_SOFT)
+    line((-SINGLES_HALF_W, -SERVICE_FROM_NET), (+SINGLES_HALF_W, -SERVICE_FROM_NET), LINE_SOFT)
     # center service line
-    line((0, +SERVICE_FROM_NET), (0, -SERVICE_FROM_NET))
-    # net (thicker)
-    line((-DOUBLES_HALF_W, 0), (+DOUBLES_HALF_W, 0), thick=2)
+    line((0, +SERVICE_FROM_NET), (0, -SERVICE_FROM_NET), LINE_SOFT)
+    # center marks on the baselines (small ticks)
+    line((0, +HALF_LEN), (0, +HALF_LEN - 0.4), LINE_SOFT)
+    line((0, -HALF_LEN), (0, -HALF_LEN + 0.4), LINE_SOFT)
+
+    # net: a soft dark band (the net's shadow) + a bright crisp line over it, so
+    # the divider reads instantly. Drawn slightly wider than the court so the
+    # posts overhang the doubles sidelines like a real net.
+    nl = _ipt(_court_to_tile(-DOUBLES_HALF_W - 0.25, 0, w, h))
+    nr = _ipt(_court_to_tile(+DOUBLES_HALF_W + 0.25, 0, w, h))
+    band = img.copy()
+    cv2.line(band, nl, nr, (20, 14, 8), max(3, th_net * 4), cv2.LINE_AA)
+    band = cv2.GaussianBlur(band, (1, (max(3, th_net * 4) | 1)), 0)
+    img[:] = cv2.addWeighted(img, 0.55, band, 0.45, 0)
+    cv2.line(img, nl, nr, NET_COLOR, th_net, cv2.LINE_AA)
+    # net posts (small ticks at the ends)
+    cv2.circle(img, nl, max(2, th_net), NET_COLOR, -1, cv2.LINE_AA)
+    cv2.circle(img, nr, max(2, th_net), NET_COLOR, -1, cv2.LINE_AA)
     return img
 
 
 def project_to_court(x, y, frame_w, frame_h, homography=None):
     """Image pixel (x,y) → court meters (Xm, Ym). Uses homography if available,
-    else a geometric fallback. Returns (Xm, Ym) or None if off-court (clamped)."""
+    else a geometric fallback. Returns (Xm, Ym)."""
     if homography is not None and homography.get("H") is not None:
         from models.court_detector import img_to_world
         Xm, Ym = img_to_world(homography["H"], x, y)
         return Xm, Ym
     # ── geometric fallback (no homography) ──
-    # Assume the visible court roughly spans a vertical band of the frame. Map the
-    # ball's vertical position to court depth (top of band = far baseline) and its
-    # horizontal position to court width, with a mild perspective correction
-    # (objects higher in the frame = farther = compressed horizontally).
+    # Map the ball's vertical frame position to court depth (top of band = far
+    # baseline) and horizontal position to court width, with a mild perspective
+    # correction (objects higher in the frame = farther = compressed horizontally).
     yr = y / frame_h
-    # court occupies ~ rows 0.30..0.82 of the frame on a typical mid/low angle
     top, bot = 0.30, 0.84
     depth = (yr - top) / (bot - top)                # 0 = far baseline, 1 = near
     depth = max(0.0, min(1.0, depth))
-    Ym = HALF_LEN - depth * (2 * HALF_LEN)          # +HALF_LEN (far) → -HALF_LEN (near)
-    # horizontal: center the frame, scale by a perspective factor (wider near cam)
+    Ym = HALF_LEN - depth * (2 * HALF_LEN)
     xr = x / frame_w - 0.5
-    persp = 0.55 + 0.9 * depth                       # near rows span more width
+    persp = 0.55 + 0.9 * depth
     Xm = (xr / 0.5) * DOUBLES_HALF_W * persp
     Xm = max(-DOUBLES_HALF_W - PAD_M, min(DOUBLES_HALF_W + PAD_M, Xm))
     return Xm, Ym
 
 
+def _on_radar(Xm, Ym):
+    """True if a court-meter point falls within the radar viewport (court + margin
+    + a little slack so points just behind the baseline still render at the edge)."""
+    return (abs(Xm) <= DOUBLES_HALF_W + PAD_M + 2.5 and
+            abs(Ym) <= HALF_LEN + PAD_M + 3.0)
+
+
+def _draw_heat(tile, pts_tile, colors):
+    """Soft additive placement-heat blobs at bounce tile points (cheap, glanceable).
+    pts_tile: list of (px,py); colors: matching list of BGR. Modifies tile in place."""
+    if not pts_tile:
+        return
+    h, w = tile.shape[:2]
+    glow = np.zeros_like(tile)
+    r = max(4, int(w / 14))
+    for (p, col) in zip(pts_tile, colors):
+        cv2.circle(glow, _ipt(p), r, tuple(int(c) for c in col), -1, cv2.LINE_AA)
+    k = (r | 1)
+    glow = cv2.GaussianBlur(glow, (k, k), sigmaX=r * 0.55)
+    tile[:] = np.clip(tile.astype(np.float32) + glow.astype(np.float32) * 0.40, 0, 255).astype(np.uint8)
+
+
 def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
-                 homography=None, scale=0.26, margin=18):
-    """Composite a minimap onto the bottom-right of `frame` (in place-ish; returns
-    the frame).
-      ball_trail_img: list of recent (x,y) image points (the live trail)
-      bounces_img: list of (x, y, depth) image points (all bounces so far)
+                 homography=None, players_img=None, scale=0.30, margin=None,
+                 pulse=0.0):
+    """Composite the premium COURT RADAR onto the bottom-right of ``frame``.
+
+    Parameters
+    ----------
+    frame : HxWx3 uint8 BGR — modified in place (and returned).
+    ball_trail_img : list of recent (x, y) image points (the live ball trail).
+    bounces_img : list of (x, y, depth) image points (all bounces so far);
+        ``depth`` is one of 'deep' | 'mid' | 'short'.
+    frame_w, frame_h : frame dimensions.
+    homography : court homography dict {H, ...} (image px → court meters), or None.
+    players_img : OPTIONAL list of (x, y, player_id) feet image points; drawn as
+        colored dots (PLAYER_COLORS). Backward-compatible — omit to skip.
+    scale : radar height as a fraction of the frame height.
+    margin : panel margin from the frame edge in px (default: ~2.2% of height).
+    pulse : animation phase (radians) for the live-ball breathing + ring.
     """
-    # minimap size proportional to frame
-    mh = int(frame_h * scale)
-    mw = int(mh * ((DOUBLES_HALF_W + PAD_M) / (HALF_LEN + PAD_M)) * 1.0)
-    mw = max(mw, int(frame_w * 0.12))
-    base = render_court_base(mw, mh)
+    H, Wf = frame.shape[:2]
+    if margin is None:
+        margin = int(frame_h * 0.022)
 
-    # draw trail
-    pts = []
-    for (x, y) in ball_trail_img:
-        proj = project_to_court(x, y, frame_w, frame_h, homography)
-        if proj is not None:
-            pts.append(_court_to_minimap(proj[0], proj[1], mw, mh))
-    for i in range(1, len(pts)):
-        a = i / max(1, len(pts))
-        col = tuple(int(c * (0.4 + 0.6 * a)) for c in TRAIL_COLOR)
-        cv2.line(base, pts[i - 1], pts[i], col, 3, cv2.LINE_AA)
-    if pts:
-        cv2.circle(base, pts[-1], 5, BALL_COLOR, -1, cv2.LINE_AA)
-        cv2.circle(base, pts[-1], 5, (255, 255, 255), 1, cv2.LINE_AA)
-
-    # draw bounces
-    for (x, y, depth) in bounces_img:
-        proj = project_to_court(x, y, frame_w, frame_h, homography)
-        if proj is None:
-            continue
-        mp = _court_to_minimap(proj[0], proj[1], mw, mh)
-        col = BOUNCE_COLORS.get(depth, (255, 255, 255))
-        cv2.circle(base, mp, 5, col, -1, cv2.LINE_AA)
-        cv2.circle(base, mp, 5, (255, 255, 255), 1, cv2.LINE_AA)
-
-    # title (flag fallback)
     exact = homography is not None and homography.get("H") is not None
-    title = "Court map" if exact else "Court map ~"
-    cv2.putText(base, title, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                (255, 255, 255), 1, cv2.LINE_AA)
 
-    # composite bottom-right: mostly opaque so the court reads clearly
-    x0 = frame_w - mw - margin
-    y0 = frame_h - mh - margin
-    roi = frame[y0:y0 + mh, x0:x0 + mw]
-    blended = cv2.addWeighted(base, 0.94, roi, 0.06, 0)
-    frame[y0:y0 + mh, x0:x0 + mw] = blended
-    cv2.rectangle(frame, (x0 - 2, y0 - 2), (x0 + mw + 1, y0 + mh + 1), (255, 255, 255), 2)
+    # ── panel geometry (glassmorphism container) ──────────────────────────────
+    # court aspect inside the viewport
+    span_x = DOUBLES_HALF_W + PAD_M
+    span_y = HALF_LEN + PAD_M
+    court_ar = span_x / span_y                          # width / height
+
+    pad = max(8, int(frame_h * 0.012))                  # inner padding inside glass
+    title_h = max(16, int(frame_h * 0.030))             # space for the title row
+    legend_h = max(12, int(frame_h * 0.024))            # space for the legend row
+
+    # radar tile drawing area (the court), height-driven
+    tile_h = int(frame_h * scale)
+    tile_w = int(round(tile_h * court_ar))
+    panel_w = tile_w + 2 * pad
+    panel_h = tile_h + title_h + legend_h + 2 * pad
+    panel_w = min(panel_w, Wf - 2 * margin)
+    panel_h = min(panel_h, H - 2 * margin)
+
+    px0 = Wf - panel_w - margin
+    py0 = H - panel_h - margin
+
+    # frosted-glass backing pane
+    fx.glass_panel(frame, px0, py0, panel_w, panel_h,
+                   tint=(40, 26, 16), alpha=0.52,
+                   border=(200, 175, 130), radius=max(10, int(panel_h * 0.06)))
+
+    # ── render the court radar onto a supersampled tile ───────────────────────
+    tw, th = tile_w * _SS, tile_h * _SS
+    tile = render_court_base(tw, th)
+
+    def to_tile(Xm, Ym):
+        return _court_to_tile(Xm, Ym, tw, th)
+
+    # project helper (image → court meters → tile px), with on-radar gating
+    def proj_tile(x, y):
+        Xm, Ym = project_to_court(x, y, frame_w, frame_h, homography)
+        if not _on_radar(Xm, Ym):
+            return None
+        # clamp to viewport so near-baseline points sit on the edge, not off-tile
+        Xm = max(-span_x, min(span_x, Xm))
+        Ym = max(-span_y, min(span_y, Ym))
+        return to_tile(Xm, Ym)
+
+    # 1) bounce placement heat layer (subtle), under everything
+    bounce_tpts, bounce_cols, bounce_depths = [], [], []
+    for b in bounces_img:
+        x, y, depth = b[0], b[1], b[2]
+        p = proj_tile(x, y)
+        if p is None:
+            continue
+        bounce_tpts.append(p)
+        bounce_cols.append(BOUNCE_COLORS.get(depth, (255, 255, 255)))
+        bounce_depths.append(depth)
+    if len(bounce_tpts) >= 2:
+        _draw_heat(tile, bounce_tpts, bounce_cols)
+
+    # 2) ball trajectory — glowing comet (gradient head→tail) on the tile
+    trail_pts = []
+    for (x, y) in ball_trail_img:
+        p = proj_tile(x, y)
+        if p is not None:
+            trail_pts.append(p)
+    if len(trail_pts) >= 2:
+        fx.comet_trail(tile, trail_pts, base_color=TRAIL_COLOR,
+                       max_thickness=max(3, int(tw / 50)), glow=True)
+
+    # 3) bounce markers — glowing depth-colored dots with a white core
+    br = max(3, int(tw / 60))
+    for (p, col) in zip(bounce_tpts, bounce_cols):
+        fx.glow_marker(tile, p, color=col, radius=br, pulse=0.0)
+
+    # 4) players — larger glowing pucks with a white ring + ID, so they're clearly
+    #    distinct from bounce dots (optional kwarg; off by default).
+    if players_img:
+        pr = max(5, int(tw / 34))
+        for item in players_img:
+            x, y, pid = item[0], item[1], item[2]
+            p = proj_tile(x, y)
+            if p is None:
+                continue
+            pid = int(pid)
+            col = PLAYER_COLORS.get(pid, (220, 220, 220))
+            # soft footprint halo under the puck
+            shadow = np.zeros_like(tile)
+            cv2.circle(shadow, _ipt(p), int(pr * 2.0), tuple(int(c) for c in col),
+                       -1, cv2.LINE_AA)
+            shadow = cv2.GaussianBlur(shadow, ((pr | 1), (pr | 1)), 0)
+            tile[:] = np.clip(tile.astype(np.float32)
+                              + shadow.astype(np.float32) * 0.35, 0, 255).astype(np.uint8)
+            fx.glow_marker(tile, p, color=col, radius=pr, pulse=0.0)
+            # crisp white seating ring
+            cv2.circle(tile, _ipt(p), int(pr * 1.6), (255, 255, 255), max(1, _SS), cv2.LINE_AA)
+            # player ID tag
+            fx.draw_text(tile, f"P{pid}", (int(p[0]), int(p[1] - pr * 2.4)),
+                         size=max(10, int(pr * 1.3)), color=(255, 255, 255),
+                         font="bold", anchor="center")
+
+    # 5) live ball — pulsing bright dot at the head of the trail
+    if trail_pts:
+        fx.glow_marker(tile, trail_pts[-1], color=BALL_COLOR,
+                       radius=max(4, int(tw / 44)), pulse=pulse)
+
+    # downscale the supersampled tile → crisp anti-aliased radar
+    radar = cv2.resize(tile, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
+
+    # ── composite the radar into the panel's content area ─────────────────────
+    rx = px0 + pad
+    ry = py0 + pad + title_h
+    # rounded clip so the radar's corners follow the glass pane
+    rmask = fx._rounded_rect_mask(tile_w, tile_h, max(4, int(tile_h * 0.05)))
+    m3 = (rmask[..., None].astype(np.float32) / 255.0)
+    roi = frame[ry:ry + tile_h, rx:rx + tile_w]
+    if roi.shape[:2] == radar.shape[:2]:
+        frame[ry:ry + tile_h, rx:rx + tile_w] = np.clip(
+            roi.astype(np.float32) * (1 - m3) + radar.astype(np.float32) * m3,
+            0, 255).astype(np.uint8)
+        # thin inner frame around the radar for a "screen" feel
+        cv2.rectangle(frame, (rx - 1, ry - 1), (rx + tile_w, ry + tile_h),
+                      (150, 130, 100), 1, cv2.LINE_AA)
+
+    # ── chrome: title + accent rule + legend ──────────────────────────────────
+    title = "COURT RADAR" if exact else "COURT RADAR ~"
+    t_size = max(13, int(title_h * 0.62))
+    fx.draw_text(frame, title, (px0 + pad, py0 + pad), size=t_size,
+                 color=(255, 255, 255), font="bold", anchor="lt")
+    # a small accent indicator (green = metric, amber = approximate)
+    dot_c = (110, 230, 120) if exact else ACCENT
+    dcy = py0 + pad + t_size // 2
+    cv2.circle(frame, (px0 + panel_w - pad - 4, dcy), max(3, t_size // 5),
+               dot_c, -1, cv2.LINE_AA)
+    # accent rule under the title
+    ruley = py0 + pad + title_h - 3
+    cv2.line(frame, (px0 + pad, ruley), (px0 + panel_w - pad, ruley),
+             (90, 80, 65), 1, cv2.LINE_AA)
+
+    # legend row (depth color key) along the bottom strip
+    ly = py0 + panel_h - pad - int(legend_h * 0.72)
+    leg_sz = max(10, int(legend_h * 0.52))
+    lx = px0 + pad
+    for label, depth in (("DEEP", "deep"), ("MID", "mid"), ("SHORT", "short")):
+        col = BOUNCE_COLORS[depth]
+        cv2.circle(frame, (lx + leg_sz // 2, ly + leg_sz // 2),
+                   max(3, leg_sz // 2), col, -1, cv2.LINE_AA)
+        cv2.circle(frame, (lx + leg_sz // 2, ly + leg_sz // 2),
+                   max(3, leg_sz // 2), (240, 240, 240), 1, cv2.LINE_AA)
+        fx.draw_text(frame, label, (lx + leg_sz + 4, ly - 1),
+                     size=leg_sz, color=(225, 230, 235), font="regular")
+        lx += leg_sz + 6 + fx.text_size(label, leg_sz, font="regular")[0] + 12
+
     return frame

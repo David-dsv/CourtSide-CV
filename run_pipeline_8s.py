@@ -445,8 +445,12 @@ def main():
             if cal is not None:
                 court_homography = cal
                 logger.info(f"Court calibration loaded ({cal['source']}): "
-                            f"{cal['n_used']} points, rms={cal['rms_px']:.1f}px → "
-                            f"metric homography enabled")
+                            f"{cal['n_used']} points, rms={cal['rms_px']:.1f}px, "
+                            f"confidence={cal['confidence']} → metric homography enabled")
+                if cal['confidence'] == 'low':
+                    logger.warning("Calibration is LOW confidence (grazing/oblique angle "
+                                   "— far-field depth is approximate). Add more well-spread "
+                                   "court points via tools/calibrate_court.py to improve.")
         except Exception as e:
             logger.warning(f"Court calibration load failed ({e})")
 

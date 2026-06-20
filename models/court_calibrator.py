@@ -100,8 +100,57 @@ def homography_from_points(image_points: dict):
     err = np.linalg.norm(reproj - img_arr, axis=1)
     rms = float(np.sqrt(np.mean(err ** 2)))
 
+    # Honest confidence. With exactly 4 points the solve is exact (rms≈0), so rms
+    # alone is meaningless — the real risk is OVER-EXTRAPOLATION from points that
+    # don't span the court (the grazing-oblique case). We test conditioning by how
+    # well the homography maps a reference court rectangle back to a sane image
+    # quad: project the 4 ITF doubles corners to image and check they form a
+    # convex, non-degenerate, in-frame-ish quad spanning a reasonable area.
+    confidence = _assess_conditioning(H_inv, world_pts, img_arr, n, rms)
+
     return {"H": H, "H_inv": H_inv, "rms_px": rms, "n_used": n,
-            "landmarks": names, "source": "manual4pt", "confidence": "high"}
+            "landmarks": names, "source": "manual4pt", "confidence": confidence}
+
+
+def _assess_conditioning(H_inv, world_pts, img_arr, n, rms):
+    """Return 'high' | 'medium' | 'low' for how trustworthy the homography is.
+
+    Grazing-oblique 4-point solves are exact at the control points (rms≈0) but
+    extrapolate wildly off them. We flag that by measuring how much the control
+    points span the court's WIDTH and DEPTH (a solve with no near-half or
+    one-sided points can't constrain the far field) and whether projecting the
+    full doubles rectangle back to the image yields a convex, sane quad."""
+    wp = np.array(world_pts, dtype=np.float32)
+    x_span = float(wp[:, 0].max() - wp[:, 0].min())   # court-width coverage (m)
+    y_span = float(wp[:, 1].max() - wp[:, 1].min())   # court-depth coverage (m)
+    # full doubles rectangle → image; must be a convex non-self-intersecting quad
+    corners_world = np.array([[-DOUBLES_HALF_W, +HALF_LEN], [+DOUBLES_HALF_W, +HALF_LEN],
+                              [+DOUBLES_HALF_W, -HALF_LEN], [-DOUBLES_HALF_W, -HALF_LEN]],
+                             dtype=np.float32)
+    proj = cv2.perspectiveTransform(corners_world.reshape(-1, 1, 2), H_inv).reshape(-1, 2)
+    hull = cv2.convexHull(proj.astype(np.float32))
+    convex = len(hull) == 4                            # all 4 corners on the hull → convex quad
+
+    # IMAGE-space conditioning: a GRAZING oblique angle (camera near-parallel to a
+    # sideline) crushes the 23.77m-deep court into a thin image band — the depth
+    # axis is severely foreshortened, so tiny pixel errors blow up into large
+    # meter errors in the far field (the felix case). The tell is the projected
+    # court's image ASPECT: a healthy view has real vertical extent; a grazing one
+    # has court_h ≪ court_w. We also penalize when the court fills very little of
+    # the frame's height (a thin sliver).
+    court_w = float(proj[:, 0].max() - proj[:, 0].min())
+    court_h = float(proj[:, 1].max() - proj[:, 1].min())
+    aspect = court_h / (court_w + 1e-6)                 # depth-extent / width-extent
+
+    well_spread = x_span >= 7.0 and y_span >= 12.0     # ~most of doubles width + both baselines
+    some_spread = x_span >= 5.0 and y_span >= 6.0
+    # A non-grazing court view projects to an aspect well above ~0.35 (the court is
+    # deeper than it is wide in reality; perspective compresses it but not to a sliver).
+    if convex and well_spread and aspect >= 0.35 and n >= 4:
+        return "high"
+    if convex and some_spread and aspect >= 0.18:
+        return "medium"
+    return "low"
 
 
 def img_to_world(H, x, y):

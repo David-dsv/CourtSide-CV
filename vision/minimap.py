@@ -215,7 +215,11 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
     if margin is None:
         margin = int(frame_h * 0.022)
 
-    exact = homography is not None and homography.get("H") is not None
+    # "exact" (green dot, no ~) only when a homography is present AND it isn't
+    # flagged low-confidence (a grazing-oblique calibration is metric but its
+    # far-field depth is approximate — flag it honestly with ~).
+    exact = (homography is not None and homography.get("H") is not None
+             and homography.get("confidence") != "low")
 
     # ── panel geometry (glassmorphism container) ──────────────────────────────
     # court aspect inside the viewport

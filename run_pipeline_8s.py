@@ -165,6 +165,7 @@ class PlayerTracker:
 # test suite exercise the identical algorithm.
 from vision.bounce import smooth_ball_trajectory, detect_bounces_from_trajectory  # noqa: E402
 from vision.pose import estimate_players_pose  # noqa: E402
+from vision.minimap import draw_minimap  # noqa: E402
 
 
 def estimate_px_per_meter(court_zones, frame_height):
@@ -360,6 +361,8 @@ def parse_args():
                              "bounce recall on broadcast; needs --wasb-weights).")
     parser.add_argument("--wasb-weights", default="training/wasb/wasb_tennis.pth.tar",
                         help="Path to WASB tennis weights (for --ball-tracker wasb).")
+    parser.add_argument("--no-minimap", action="store_true",
+                        help="Disable the 2D top-down court minimap (ball trajectory + bounces).")
     return parser.parse_args()
 
 
@@ -971,6 +974,20 @@ def main():
                             (0, 220, 220) if s["quality"] >= 40 else (0, 0, 220))
                         cv2.putText(out, f"Q:{s['quality']}", (sx + 16, sy + 14),
                                     font, 0.5, qc, 2, cv2.LINE_AA)
+
+        # 5c. 2D top-down court minimap (ball trajectory + bounce locations)
+        if not args.no_minimap:
+            # a longer dedicated trajectory window for the map (the on-court trail
+            # is intentionally short). Show ~2s of recent ball positions.
+            mm_window = int(fps * 2.0)
+            lo = max(0, frame_idx - mm_window)
+            mm_trail = [all_ball_centers[j] for j in range(lo, frame_idx + 1)
+                        if all_ball_centers[j] is not None]
+            bounces_so_far = [(v[0], v[1], v[2]) for bf, v in bounce_by_frame.items()
+                              if bf <= frame_idx]
+            out = draw_minimap(out, mm_trail, bounces_so_far,
+                               frame_width, frame_height,
+                               homography=court_homography)
 
         # 6. Legend
         out = create_legend(out, legend_items, position="top-right")

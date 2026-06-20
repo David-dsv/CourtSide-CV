@@ -281,6 +281,11 @@ def parse_args():
     parser.add_argument("--pose-conf", type=float, default=0.10, help="Pose estimation confidence")
     parser.add_argument("--pose-model", default="yolov8m-pose.pt",
                         help="Pose model (yolov8m-pose.pt or yolov8x-pose.pt for better small player detection)")
+    parser.add_argument("--pose-backend", choices=["yolo", "rtmw"], default="yolo",
+                        help="Pose backend. 'yolo' = YOLOv8-pose (default, fast, 17 kpts). "
+                             "'rtmw' = RTMW whole-body via rtmlib (133 kpts incl. hands/feet, "
+                             "better on the tiny far player; CPU-only, ~3x slower). "
+                             "Needs: pip install rtmlib onnxruntime.")
     # New feature flags
     parser.add_argument("--no-court", action="store_true", help="Disable court zone overlay")
     parser.add_argument("--no-bounces", action="store_true", help="Disable bounce detection markers")
@@ -345,7 +350,12 @@ def main():
     detector = TennisYOLODetector(
         conf_threshold=args.conf, iou_threshold=0.45, device=device, imgsz=1280
     )
-    pose_model = YOLO(args.pose_model)
+    if args.pose_backend == "rtmw":
+        from vision.pose_rtmw import RTMWPose
+        logger.info("Pose backend: RTMW whole-body (rtmlib, CPU) — 133 kpts, slower")
+        pose_model = RTMWPose(mode="balanced")
+    else:
+        pose_model = YOLO(args.pose_model)
 
     # ─── Read video info ───
     reader = VideoReader(video_path)

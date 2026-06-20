@@ -167,14 +167,72 @@ def estimate_players_pose(detector, pose_model, frame, device,
         rank = h * float(pconfs[i])
         cand.append((rank, i))
     cand.sort(reverse=True)
-    idxs = [i for _, i in cand[:max_players]]
-    players = []
-    for pi in idxs:
+    # Pose the top few candidates, then keep the best max_players that pass a
+    # validity gate (real skeleton + feet on the court band, not in the stands).
+    # This drops spectators / umpire / ball kids that rank high but aren't players.
+    pool = [i for _, i in cand[:max_players + 2]]
+    valid, fallback = [], []
+    for pi in pool:
         box = pboxes[pi]
-        res = pose_on_crop(pose_model, frame, box, device,
-                           imgsz=pose_imgsz, conf=0.15)
-        if res is None:
-            players.append({"box": box, "kps_xy": None, "kps_conf": None})
+        res = pose_on_crop(pose_model, frame, box, device, imgsz=pose_imgsz, conf=0.15)
+        kxy = res[0] if res else None
+        kcf = res[1] if res else None
+        entry = {"box": box, "kps_xy": kxy, "kps_conf": kcf}
+        if is_valid_player(box, kcf, fw, fh, court_zones):
+            valid.append((float(pconfs[pi]) * (box[3] - box[1]), entry))
         else:
-            players.append({"box": box, "kps_xy": res[0], "kps_conf": res[1]})
+            fallback.append((float(pconfs[pi]) * (box[3] - box[1]), entry))
+    valid.sort(key=lambda e: -e[0])
+    players = [e for _, e in valid[:max_players]]
+    # Do NOT top up from fallback with clear parasites: it is better to show one
+    # real player than to draw a spectator/umpire. Only top up with a fallback
+    # candidate that has SOME skeleton and is not high in the frame.
+    if len(players) < max_players:
+        fallback.sort(key=lambda e: -e[0])
+        for _, e in fallback:
+            kcf = e["kps_conf"]
+            nkp = int((kcf > 0.30).sum()) if kcf is not None else 0
+            b = e["box"]
+            ycenter = (b[1] + b[3]) / 2 / fh
+            if nkp >= 6 and ycenter >= 0.38:    # plausible player, not in stands
+                players.append(e)
+            if len(players) >= max_players:
+                break
     return players
+
+
+def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None):
+    """A real player has a valid skeleton AND stands on the court surface band
+    (not up in the stands / umpire chair). Tuned from the felix diagnosis: real
+    players have >=10 valid keypoints and box-center y_ratio in ~[0.38, 0.78];
+    parasites are high in frame (y<0.38) or have no pose. The far player is small
+    but DOES have a valid skeleton, so size is not used to reject."""
+    x1, y1, x2, y2 = box
+    feet_y = y2
+    head_y = y1
+    h = y2 - y1
+    # valid skeleton: enough confident keypoints
+    nkp = int((kps_conf > 0.30).sum()) if kps_conf is not None else 0
+    if nkp < 10:
+        return False
+    # court-surface band: derive from court zones if available, else broadcast default
+    if court_zones:
+        ys = []
+        for name, info in court_zones.items():
+            if name in ("court", "net") or "baseline" in name:
+                b = info["box"]
+                ys += [b[1], b[3]]
+        if ys:
+            top_band = min(ys) - 0.06 * frame_h     # a little above far baseline
+            bot_band = max(ys) + 0.04 * frame_h
+        else:
+            top_band, bot_band = 0.32 * frame_h, 0.88 * frame_h
+    else:
+        top_band, bot_band = 0.32 * frame_h, 0.88 * frame_h
+    # the player's FEET must be within the court band (head can be above the band)
+    if not (top_band <= feet_y <= bot_band):
+        return False
+    # reject clearly-in-the-stands (whole box high in frame)
+    if (head_y + feet_y) / 2 < 0.35 * frame_h:
+        return False
+    return True

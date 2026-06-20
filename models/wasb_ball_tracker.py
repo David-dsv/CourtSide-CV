@@ -119,26 +119,33 @@ class HeatmapBallTracker:
         t = torch.from_numpy(stacked).permute(2, 0, 1).unsqueeze(0).float()  # 1,9,H,W
         return t
 
-    def _peak(self, hm, scale_x, scale_y):
-        """heatmap (288,512) -> (x,y) in native res or None. Weighted centroid of
-        the brightest blob above threshold."""
+    def _peaks(self, hm, scale_x, scale_y, topk=3):
+        """heatmap (288,512) -> list of up to topk (x,y,score) blob centroids in
+        native res, brightest first. score = peak heatmap value of the blob."""
         mx = float(hm.max())
         if mx <= self.score_threshold:
-            return None
+            return []
         _, binar = cv2.threshold(hm, self.score_threshold, 1.0, cv2.THRESH_BINARY)
         binar = binar.astype(np.uint8)
         ncc, labels, stats, _ = cv2.connectedComponentsWithStats(binar, connectivity=8)
         if ncc <= 1:
-            return None
-        # largest blob by area (excluding background label 0)
-        best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        ys, xs = np.where(labels == best)
-        w = hm[ys, xs]
-        if w.sum() <= 0:
-            return None
-        cx = float((xs * w).sum() / w.sum())
-        cy = float((ys * w).sum() / w.sum())
-        return (cx * scale_x, cy * scale_y)
+            return []
+        blobs = []
+        for lab in range(1, ncc):
+            ys, xs = np.where(labels == lab)
+            w = hm[ys, xs]
+            if w.sum() <= 0:
+                continue
+            cx = float((xs * w).sum() / w.sum())
+            cy = float((ys * w).sum() / w.sum())
+            blobs.append((cx * scale_x, cy * scale_y, float(w.max())))
+        blobs.sort(key=lambda b: -b[2])
+        return blobs[:topk]
+
+    def _peak(self, hm, scale_x, scale_y):
+        """Back-compat: single best blob (x,y) or None."""
+        ps = self._peaks(hm, scale_x, scale_y, topk=1)
+        return (ps[0][0], ps[0][1]) if ps else None
 
     @torch.no_grad()
     def track_ball(self, frames, batch_size=16, frame_step=1):
@@ -164,12 +171,127 @@ class HeatmapBallTracker:
             i0, i1 = max(0, t - 2 * frame_step), max(0, t - frame_step)
             stacks.append([frames[i0], frames[i1], frames[t]])
 
+        # collect per-frame candidate blobs (top-K), then gate by trajectory
+        cand_per_frame = [[] for _ in range(n)]
         for start in range(0, n, batch_size):
             batch = stacks[start:start + batch_size]
             tens = torch.cat([self._preprocess_stack(s) for s in batch], dim=0).to(self.device)
             out = self.model(tens)[0]                 # (B,3,288,512)
             out = torch.sigmoid(out).cpu().numpy()
             for bi in range(out.shape[0]):
-                hm = out[bi, FRAMES_IN - 1]           # heatmap for last frame in stack
-                centers[start + bi] = self._peak(hm, scale_x, scale_y)
+                hm = out[bi, FRAMES_IN - 1]
+                cand_per_frame[start + bi] = self._peaks(hm, scale_x, scale_y, topk=3)
+
+        centers = self._gate_trajectory(cand_per_frame, w0, h0)
+        centers = self._despike(centers, w0, h0)
+        return centers
+
+    @staticmethod
+    def _despike(centers, frame_w, frame_h):
+        """Remove isolated jump-and-return outliers the gate let through across a
+        gap. We look up to W frames on each side (skipping None) for stable
+        anchors; a point that sits far from the straight line between those
+        anchors — while the anchors are themselves consistent — is a teleport
+        spike, not a real ball position. Two passes so a 2-frame excursion
+        (point, None, point) is fully cleaned."""
+        n = len(centers)
+        diag = float(np.hypot(frame_w, frame_h))
+        thr = diag * 0.12
+        W = 8
+        out = list(centers)
+
+        def stable_anchor(idx, direction):
+            """Walk outward; return the first point that has a close neighbour just
+            beyond it (i.e. sits on a stable stretch, not itself a spike)."""
+            step = -1 if direction < 0 else 1
+            prev = None
+            for k in range(1, W + 1):
+                j = idx + step * k
+                if not (0 <= j < n) or out[j] is None:
+                    continue
+                if prev is not None and np.hypot(out[j][0] - prev[0], out[j][1] - prev[1]) < thr:
+                    return prev  # prev had a close neighbour → stable
+                prev = out[j]
+            return prev
+
+        for _ in range(3):
+            changed = False
+            for i in range(n):
+                if out[i] is None:
+                    continue
+                p = stable_anchor(i, -1)
+                q = stable_anchor(i, +1)
+                if p is None or q is None:
+                    continue
+                dp = np.hypot(out[i][0] - p[0], out[i][1] - p[1])
+                dq = np.hypot(out[i][0] - q[0], out[i][1] - q[1])
+                dpq = np.hypot(p[0] - q[0], p[1] - q[1])
+                if dp > thr and dq > thr and dpq < dp and dpq < dq:
+                    out[i] = None
+                    changed = True
+            if not changed:
+                break
+        return out
+
+    def _gate_trajectory(self, cand_per_frame, frame_w, frame_h):
+        """Trajectory-consistency gate against aberrant detections (ball teleporting
+        to the stands / other side of the court). For each frame, among the top-K
+        candidate blobs, accept the one consistent with a constant-velocity
+        prediction within a distance gate that grows with frames-since-accept. A
+        big jump is allowed ONLY if the blob has a very high WASB score (a genuine
+        fast ball). Blobs in the upper stands band are rejected outright.
+
+        Thresholds from the measured felix diagnosis + anti-parasite design: a real
+        tennis ball moves at most ~5% of frame width per frame, so a 15%-diagonal
+        base gate is comfortably safe; aberrant teleports (35-65% diagonal) and
+        stand detections are removed without dropping true fast-ball frames."""
+        n = len(cand_per_frame)
+        diag = float(np.hypot(frame_w, frame_h))
+        # Generous gate against IMPOSSIBLE jumps only (keeps real fast balls + the
+        # 82% density); grows with missed frames so re-acquisition after occlusion
+        # still works. The WASB heatmap peak score is in [0,1] (sigmoid).
+        gate_base = diag * 0.18          # ~400px @1080p — above any real 1-frame move
+        gate_growth = diag * 0.05        # widen per missed frame (tighter: avoids
+                                          # admitting a stray on the far side during
+                                          # a 2-3 frame gap, the residual aberration)
+        gate_max = diag * 0.45
+        y_stands = frame_h * 0.05        # above this = stands → never a ball in play
+        strong_score = 0.85              # a confident blob may re-seed after a long gap
+        max_miss_keep = int(round(0.5 * 60))  # after ~0.5s of misses, allow re-seed
+        centers = [None] * n
+        last_pos = None
+        miss = 0
+        for i in range(n):
+            blobs = [b for b in cand_per_frame[i] if b[1] >= y_stands]
+            if not blobs:
+                miss += 1
+                centers[i] = None
+                continue
+            if last_pos is None:
+                bx, by, _ = max(blobs, key=lambda b: b[2])
+                centers[i] = (bx, by)
+                last_pos = (bx, by)
+                miss = 0
+                continue
+            gate = min(gate_max, gate_base + gate_growth * miss)
+            # choose the blob closest to the LAST accepted position within the gate
+            best, bestd = None, float("inf")
+            for bx, by, sc in blobs:
+                d = np.hypot(bx - last_pos[0], by - last_pos[1])
+                if d <= gate and d < bestd:
+                    bestd, best = d, (bx, by)
+            if best is None:
+                # nothing consistent. If we've been lost a while, re-seed on a
+                # strong blob (handles a genuine long occlusion); else drop strays.
+                if miss >= max_miss_keep:
+                    strong = max(blobs, key=lambda b: b[2])
+                    if strong[2] >= strong_score:
+                        best = (strong[0], strong[1])
+                if best is None:
+                    miss += 1
+                    centers[i] = None
+                    continue
+            last_pos = best
+            centers[i] = best
+            miss = 0
         return centers

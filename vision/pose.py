@@ -194,7 +194,12 @@ def estimate_players_pose(detector, pose_model, frame, device,
             nkp = int((kcf > 0.30).sum()) if kcf is not None else 0
             b = e["box"]
             ycenter = (b[1] + b[3]) / 2 / fh
-            if nkp >= 6 and ycenter >= 0.38:    # plausible player, not in stands
+            xr = (b[0] + b[2]) / 2 / fw
+            feet_yr = b[3] / fh
+            # same invisible side-margin rule as is_valid_player: an edge candidate
+            # that isn't low/on-court is a parasite (ball kid / line judge).
+            edge_parasite = (xr < 0.10 or xr > 0.90) and feet_yr < 0.58
+            if nkp >= 6 and ycenter >= 0.38 and not edge_parasite:
                 players.append(e)
             if len(players) >= max_players:
                 break
@@ -211,9 +216,19 @@ def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None):
     feet_y = y2
     head_y = y1
     h = y2 - y1
+    cx = (x1 + x2) / 2
     # valid skeleton: enough confident keypoints
     nkp = int((kps_conf > 0.30).sum()) if kps_conf is not None else 0
     if nkp < 10:
+        return False
+    # Invisible side margin: ball kids / line judges / photographers sit at the
+    # screen edges. Reject a candidate whose center is in the lateral margin UNLESS
+    # it is also low in the frame (near the camera, on the court) — on oblique
+    # angles the far player can be laterally placed but is always low/on-court
+    # (felix far player: xr~0.10 but feet_y~0.64h), whereas an edge parasite is
+    # high (tennis ball-kid: xr~0.08, feet_y~0.47h). So margin + high = parasite.
+    xr = cx / frame_w
+    if (xr < 0.10 or xr > 0.90) and feet_y < 0.58 * frame_h:
         return False
     # court-surface band: derive from court zones if available, else broadcast default
     if court_zones:

@@ -1,0 +1,131 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import { pxToMeters, projectMeters } from "@/lib/court/projection";
+import type { Bounce } from "@/lib/types";
+
+const INFERNO: [number, number, number][] = [
+  [0, 0, 4],
+  [27, 12, 65],
+  [74, 12, 107],
+  [120, 28, 109],
+  [165, 44, 96],
+  [207, 68, 70],
+  [237, 105, 37],
+  [251, 155, 6],
+  [247, 209, 61],
+  [252, 255, 164],
+];
+
+function infernoColor(t: number): [number, number, number] {
+  const x = Math.max(0, Math.min(1, t)) * (INFERNO.length - 1);
+  const i = Math.floor(x);
+  const f = x - i;
+  const a = INFERNO[i];
+  const b = INFERNO[Math.min(i + 1, INFERNO.length - 1)];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
+
+/**
+ * Placement heatmap — Canvas KDE over projected bounce points, INFERNO ramp,
+ * additive blend. Port of vision/fx.py placement_heatmap intent.
+ */
+export function PlacementHeatmap({
+  bounces,
+  width = 360,
+  height = 760,
+  className,
+}: {
+  bounces: Bounce[];
+  width?: number;
+  height?: number;
+  className?: string;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    // project bounces to court meters → tile px
+    const pts = bounces
+      .map((b) => {
+        const { Xm, Ym } = pxToMeters(b.x, b.y, undefined, 1920, 1080);
+        return projectMeters(Xm, Ym, width, height);
+      })
+      .filter(([x, y]) => x >= 0 && x <= width && y >= 0 && y <= height);
+
+    if (pts.length === 0) return;
+
+    // build density via additive gaussian splats
+    const sigma = Math.max(width, height) * 0.06;
+    ctx.globalCompositeOperation = "lighter";
+
+    // render to an offscreen low-res buffer for performance
+    const scale = 4;
+    const loW = Math.ceil(width / scale);
+    const loH = Math.ceil(height / scale);
+    const off = document.createElement("canvas");
+    off.width = loW;
+    off.height = loH;
+    const octx = off.getContext("2d");
+    if (!octx) return;
+    const img = octx.createImageData(loW, loH);
+
+    // accumulate density
+    const density = new Float32Array(loW * loH);
+    const r = Math.ceil(sigma / scale);
+    for (const [px, py] of pts) {
+      const cx = px / scale;
+      const cy = py / scale;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const x = Math.round(cx + dx);
+          const y = Math.round(cy + dy);
+          if (x < 0 || y < 0 || x >= loW || y >= loH) continue;
+          const d2 = dx * dx + dy * dy;
+          const g = Math.exp(-d2 / (2 * (sigma / scale) ** 2));
+          density[y * loW + x] += g;
+        }
+      }
+    }
+    const max = Math.max(...density, 1e-6);
+    for (let i = 0; i < density.length; i++) {
+      const t = density[i] / max;
+      const [r0, g0, b0] = infernoColor(t);
+      const a = Math.pow(t, 0.7) * 235;
+      img.data[i * 4 + 0] = r0;
+      img.data[i * 4 + 1] = g0;
+      img.data[i * 4 + 2] = b0;
+      img.data[i * 4 + 3] = a;
+    }
+    octx.putImageData(img, 0, 0);
+
+    ctx.globalCompositeOperation = "source-over";
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalAlpha = 0.85;
+    ctx.drawImage(off, 0, 0, width, height);
+    ctx.globalAlpha = 1;
+  }, [bounces, width, height]);
+
+  return (
+    <canvas
+      ref={ref}
+      style={{ width, height }}
+      className={className}
+      aria-label="Heatmap de placement des balles"
+    />
+  );
+}

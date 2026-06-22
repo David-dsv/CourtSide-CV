@@ -38,6 +38,9 @@ data/
 *.avi
 *.mov
 *.mkv
+# but DO track small web demo assets (landing-page hero clips)
+!web/public/demo/*.mp4
+!web/public/demo/*.webm
 
 # Weights and Models
 weights/

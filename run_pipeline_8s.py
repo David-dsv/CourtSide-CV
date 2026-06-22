@@ -976,13 +976,27 @@ def main():
                         if all_ball_centers[j] is not None]
             bounces_so_far = [(v[0], v[1], v[2]) for bf, v in bounce_by_frame.items()
                               if bf <= frame_idx]
+            # GROUND-PATH for the radar arc: only metrically-trustworthy ground
+            # contacts — bounces (true ground impacts) + hit/contact points (≈ground
+            # at the player) — in temporal (frame) order, growing over the clip. The
+            # in-flight ball is no longer projected naively onto the top-down map.
+            gp_events = []
+            for bf, v in bounce_by_frame.items():
+                if bf <= frame_idx:
+                    gp_events.append((bf, v[0], v[1], "bounce"))
+            for sf, s in shot_by_frame.items():
+                if sf <= frame_idx:
+                    gp_events.append((sf, s["x"], s["y"], "hit"))
+            gp_events.sort(key=lambda e: e[0])
+            ground_path = [(e[1], e[2], e[3]) for e in gp_events]
             # live player feet (bottom-center of each locked P1/P2 box) → radar dots
             players_img = [((b[0] + b[2]) / 2.0, b[3], pid) for pid, b in person_boxes]
             out = draw_minimap(out, mm_trail, bounces_so_far,
                                frame_width, frame_height,
                                homography=court_homography,
                                players_img=players_img,
-                               pulse=frame_idx * 0.5)
+                               pulse=frame_idx * 0.5,
+                               ground_path=ground_path)
 
         # 6. HUD — speed gauge + live match-stats card, anchored BOTTOM-LEFT so it
         # never collides with a broadcast scoreboard (top corners). On amateur phone

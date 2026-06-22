@@ -209,6 +209,34 @@ def _on_radar(Xm, Ym):
             abs(Ym) <= HALF_LEN + PAD_M + 3.0)
 
 
+def _smooth_arc(tile_pts, per_seg=10):
+    """Catmull-Rom upsample an ordered list of (px,py) tile points into a smooth
+    flowing arc (Hawk-Eye 'shot spot' look). With <3 points there's nothing to
+    spline, so return the points unchanged. ``per_seg`` is the number of
+    interpolated samples emitted per original segment."""
+    pts = [(float(p[0]), float(p[1])) for p in tile_pts if p is not None]
+    if len(pts) < 3:
+        return pts
+    P = np.asarray(pts, np.float32)
+    # pad the ends by reflecting so the first/last segments are also splined
+    ext = np.vstack([P[0] + (P[0] - P[1]), P, P[-1] + (P[-1] - P[-2])])
+    out = []
+    n = len(P)
+    for i in range(n - 1):
+        p0, p1, p2, p3 = ext[i], ext[i + 1], ext[i + 2], ext[i + 3]
+        for j in range(per_seg):
+            t = j / float(per_seg)
+            t2, t3 = t * t, t * t * t
+            # Catmull-Rom basis (uniform)
+            q = 0.5 * ((2 * p1)
+                       + (-p0 + p2) * t
+                       + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+                       + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+            out.append((float(q[0]), float(q[1])))
+    out.append((float(P[-1][0]), float(P[-1][1])))   # ensure the head is exact
+    return out
+
+
 def _draw_heat(tile, pts_tile, colors):
     """Soft additive placement-heat blobs at bounce tile points (cheap, glanceable).
     pts_tile: list of (px,py); colors: matching list of BGR. Modifies tile in place."""
@@ -226,13 +254,17 @@ def _draw_heat(tile, pts_tile, colors):
 
 def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
                  homography=None, players_img=None, scale=0.30, margin=None,
-                 pulse=0.0):
+                 pulse=0.0, ground_path=None):
     """Composite the premium COURT RADAR onto the bottom-right of ``frame``.
 
     Parameters
     ----------
     frame : HxWx3 uint8 BGR — modified in place (and returned).
     ball_trail_img : list of recent (x, y) image points (the live ball trail).
+        Used ONLY as the legacy fallback when ``ground_path`` is None — a ball in
+        flight sits ABOVE its ground point in the image, so projecting in-flight
+        positions mirrors image→2D instead of translating 3D→2D (the ball appears
+        to recede on the radar during the descending arc). Prefer ``ground_path``.
     bounces_img : list of (x, y, depth) image points (all bounces so far);
         ``depth`` is one of 'deep' | 'mid' | 'short'.
     frame_w, frame_h : frame dimensions.
@@ -242,6 +274,12 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
     scale : radar height as a fraction of the frame height.
     margin : panel margin from the frame edge in px (default: ~2.2% of height).
     pulse : animation phase (radians) for the live-ball breathing + ring.
+    ground_path : OPTIONAL ordered list of (x_img, y_img, kind) GROUND-level points
+        (kind in {'bounce','hit'}) in temporal order. When given, the radar plots a
+        smoothed arc through these metrically-trustworthy ground contacts instead of
+        the in-flight comet — the only points that translate honestly to a top-down
+        map. The live-ball dot then sits at the most recent ground point. Backward-
+        compatible: omit (or pass None) to keep the legacy ``ball_trail_img`` comet.
     """
     H, Wf = frame.shape[:2]
     if margin is None:
@@ -309,12 +347,24 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
     if len(bounce_tpts) >= 2:
         _draw_heat(tile, bounce_tpts, bounce_cols)
 
-    # 2) ball trajectory — glowing comet (gradient head→tail) on the tile
+    # 2) ball trajectory — a GROUND-PATH arc when ground_path is provided (bounces +
+    #    hit/contact points, temporally ordered, smoothed into Hawk-Eye 'shot spot'
+    #    arcs), else the legacy in-flight comet (kept for backward compatibility).
     trail_pts = []
-    for (x, y) in ball_trail_img:
-        p = proj_tile(x, y)
-        if p is not None:
-            trail_pts.append(p)
+    if ground_path is not None:
+        gp_pts = []
+        for item in ground_path:
+            x, y = item[0], item[1]
+            p = proj_tile(x, y)
+            if p is not None:
+                gp_pts.append(p)
+        # smooth the ground contacts into flowing arcs (upsample per segment)
+        trail_pts = _smooth_arc(gp_pts, per_seg=10)
+    else:
+        for (x, y) in ball_trail_img:
+            p = proj_tile(x, y)
+            if p is not None:
+                trail_pts.append(p)
     if len(trail_pts) >= 2:
         fx.comet_trail(tile, trail_pts, base_color=TRAIL_COLOR,
                        max_thickness=max(3, int(tw / 50)), glow=True)

@@ -130,16 +130,32 @@ class CourtKeypointDetector:
 
         img_arr = np.array(img_pts, dtype=np.float32)
         world_arr = np.array(world_pts, dtype=np.float32)
-        H, mask = cv2.findHomography(img_arr, world_arr, method=cv2.RANSAC,
-                                     ransacReprojThreshold=0.10)  # 10cm in court meters
+        # Robust solve: the keypoint detector occasionally hallucinates a point
+        # (e.g. a service-line mark mapped to the wrong corner, 50-190px off),
+        # which a vanilla RANSAC at a sub-pixel threshold can't reject. Use LMEDS
+        # (no threshold, robust to <=50% outliers), then drop any keypoint whose
+        # reprojection error exceeds an absolute floor and re-solve on the clean
+        # inliers. rms is computed on the inliers so confidence reflects the real
+        # fit, not the hallucinated outliers.
+        H, _ = cv2.findHomography(img_arr, world_arr, method=cv2.LMEDS)
         if H is None:
             return {"H": None, "H_inv": None, "confidence": "fallback",
                     "rms_px": None, "n_used": n, "keypoints": kps}
         H_inv = np.linalg.inv(H)
-
-        # reprojection error in PIXELS: project world pts back to image, compare
         reproj = cv2.perspectiveTransform(world_arr.reshape(-1, 1, 2), H_inv).reshape(-1, 2)
         err = np.linalg.norm(reproj - img_arr, axis=1)
+        outlier_floor = max(12.0, frame_diag * 0.008)   # ~1% of diagonal
+        inlier = err <= outlier_floor
+        n_used = int(inlier.sum())
+        if n_used >= 4 and not inlier.all():
+            img_in = img_arr[inlier]
+            world_in = world_arr[inlier]
+            H2, _ = cv2.findHomography(img_in, world_in, method=cv2.LMEDS)
+            if H2 is not None:
+                H, H_inv = H2, np.linalg.inv(H2)
+                reproj = cv2.perspectiveTransform(
+                    world_in.reshape(-1, 1, 2), H_inv).reshape(-1, 2)
+                err = np.linalg.norm(reproj - img_in, axis=1)
         rms = float(np.sqrt(np.mean(err ** 2)))
 
         thr = frame_diag * 0.004   # ~ a few px on 1080p
@@ -150,9 +166,9 @@ class CourtKeypointDetector:
         else:
             conf = "fallback"
             logger.warning(f"Court homography rms={rms:.1f}px > {2*thr:.1f}px → unreliable, fallback")
-        logger.info(f"Court homography: {n}/14 keypoints, rms={rms:.1f}px, confidence={conf}")
+        logger.info(f"Court homography: {n_used}/{n} keypoints, rms={rms:.1f}px, confidence={conf}")
         return {"H": H, "H_inv": H_inv, "confidence": conf, "rms_px": rms,
-                "n_used": n, "keypoints": kps}
+                "n_used": n_used, "keypoints": kps}
 
 
 def img_to_world(H, x, y):

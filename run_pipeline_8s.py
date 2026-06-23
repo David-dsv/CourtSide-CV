@@ -107,6 +107,7 @@ from vision.bounce import smooth_ball_trajectory, detect_bounces_from_trajectory
 from vision.pose import estimate_players_pose  # noqa: E402
 from vision.minimap import draw_minimap  # noqa: E402
 import vision.fx as fx  # noqa: E402  — cinematic visual effects (glow, glass HUD, shockwave)
+from vision.court_track import h_at  # noqa: E402  — per-frame homography lookup (track-camera)
 
 
 def estimate_px_per_meter(court_zones, frame_height):
@@ -310,6 +311,11 @@ def parse_args():
                         help="Compute a court homography (px↔meters) from court keypoints "
                              "for perspective-correct speed/depth. Falls back to the scalar "
                              "scale when the court can't be reliably localized (oblique/partial).")
+    parser.add_argument("--track-camera", action="store_true",
+                        help="Recompute the court homography at every frame so the overlay/"
+                             "minimap/speed follow a panning/tilting camera (adds a Pass 0, "
+                             "~14ms/frame). Implies --homography. Off by default (the f0 "
+                             "homography is fine for a fixed camera).")
     parser.add_argument("--court-model", default="training/court/tennis_court_det.pt",
                         help="Path to the court-keypoint model weights (for --homography).")
     parser.add_argument("--ball-tracker", choices=["kalman", "wasb"], default="kalman",
@@ -454,6 +460,48 @@ def main():
                                    "court points via tools/calibrate_court.py to improve.")
         except Exception as e:
             logger.warning(f"Court calibration load failed ({e})")
+
+    # ─── Pass 0 (optional): per-frame homography for a moving camera. ───
+    # A broadcast camera pans/tilts, so the f0 homography drifts (measured up to
+    # ~140px on a 13s clip). When --track-camera is set, recompute the homography
+    # at every frame (robust to hallucinated keypoints + hold on fallback) so the
+    # court overlay / minimap / speed follow the camera. Pass 2 looks up the
+    # per-frame H via _h_at. Off by default (fixed camera → f0 H is exact + cheap).
+    court_homography_by_frame = None
+    if args.track_camera:
+        if not args.homography:
+            args.homography = True  # --track-camera implies --homography
+        if court_homography is None and first_frame is not None:
+            # no f0 solve above (e.g. homography just forced) → solve f0 first
+            try:
+                from models.court_detector import CourtKeypointDetector
+                court_det = CourtKeypointDetector(args.court_model, device=device)
+                court_homography = court_det.compute_homography(first_frame, frame_diag)
+                if court_homography['confidence'] == 'fallback':
+                    court_homography = None
+            except Exception as e:
+                logger.warning(f"Court homography (track-camera f0) failed: {e}")
+        try:
+            from vision.court_track import compute_homography_series
+            from models.court_detector import CourtKeypointDetector
+            court_det = CourtKeypointDetector(args.court_model, device=device)
+            rdr0 = VideoReader(video_path)
+            if start_frame > 0:
+                rdr0.seek(start_frame)
+            pass0_frames = []
+            for j, fr in enumerate(rdr0.iter_frames()):
+                if j >= max_frames:
+                    break
+                pass0_frames.append(fr)
+            rdr0.release()
+            court_homography_by_frame = compute_homography_series(
+                pass0_frames, court_det, frame_diag)
+            logger.info(f"Pass 0: per-frame homography ready "
+                        f"({sum(1 for f in court_homography_by_frame if f.H is not None)}/"
+                        f"{len(court_homography_by_frame)} frames tracked)")
+        except Exception as e:
+            logger.warning(f"Pass 0 (track-camera) failed: {e} — falling back to f0 homography")
+            court_homography_by_frame = None
 
     # ─── Court zones: DERIVE from the homography (exact perspective geometry)
     # when one is available; fall back to the HF YOLO zone detector only when
@@ -874,9 +922,10 @@ def main():
             nb = next((b for b in sorted_bounces if b > h["frame"]), None)
             if nb is not None:
                 bx, by, depth, b_speed, _ = bounce_by_frame[nb]
+                _h = h_at(court_homography_by_frame, nb, court_homography)
                 q = shot_quality(b_speed, depth, (bx, by), court_zones,
                                  frame_width, frame_height,
-                                 homography=court_homography, speed_ref=speed_ref)
+                                 homography=_h, speed_ref=speed_ref)
             else:
                 b_speed, q = 0.0, 0
             shot_by_frame[h["frame"]] = {
@@ -901,9 +950,10 @@ def main():
                 bx, by, depth, b_speed, _ = bounce_by_frame[nb]
                 try:
                     from vision.shots import shot_quality
+                    _h = h_at(court_homography_by_frame, nb, court_homography)
                     q = shot_quality(b_speed, depth, (bx, by), court_zones,
                                      frame_width, frame_height,
-                                     homography=court_homography, speed_ref=speed_ref)
+                                     homography=_h, speed_ref=speed_ref)
                 except Exception:
                     q = 0
             else:
@@ -948,9 +998,16 @@ def main():
             break
         out = frame.copy()
 
-        # 1. Court zone overlay (background layer)
+        # 1. Court zone overlay (background layer) — redrive from the per-frame
+        # homography when tracking a moving camera, so the zones follow the court.
         if not args.no_court and court_zones:
-            out = draw_court_overlay(out, court_zones, alpha=0.15,
+            cz = court_zones
+            if court_homography_by_frame is not None:
+                _h = h_at(court_homography_by_frame, frame_idx, court_homography)
+                if _h is not None and _h.get("H_inv") is not None:
+                    from vision.court_zones import derive_court_zones_from_homography
+                    cz = derive_court_zones_from_homography(_h) or court_zones
+            out = draw_court_overlay(out, cz, alpha=0.15,
                                      draw_labels=args.court_labels)
 
         # 2. Pose — LOCKED P1/P2 skeleton tracks from Pass 1.5 (persistent identity,
@@ -1072,7 +1129,7 @@ def main():
             players_img = [((b[0] + b[2]) / 2.0, b[3], pid) for pid, b in person_boxes]
             out = draw_minimap(out, mm_trail, bounces_so_far,
                                frame_width, frame_height,
-                               homography=court_homography,
+                               homography=h_at(court_homography_by_frame, frame_idx, court_homography),
                                players_img=players_img,
                                pulse=frame_idx * 0.5,
                                ground_path=ground_path,

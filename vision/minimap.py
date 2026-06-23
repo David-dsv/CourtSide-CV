@@ -254,7 +254,7 @@ def _draw_heat(tile, pts_tile, colors):
 
 def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
                  homography=None, players_img=None, scale=0.30, margin=None,
-                 pulse=0.0, ground_path=None):
+                 pulse=0.0, ground_path=None, now_frame=None):
     """Composite the premium COURT RADAR onto the bottom-right of ``frame``.
 
     Parameters
@@ -274,6 +274,14 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
     scale : radar height as a fraction of the frame height.
     margin : panel margin from the frame edge in px (default: ~2.2% of height).
     pulse : animation phase (radians) for the live-ball breathing + ring.
+    ground_path : OPTIONAL ordered list of (frame, x_img, y_img, kind) GROUND-level
+        points (bounces + hit/contact points) in temporal order. When ``now_frame``
+        is also given, the trail is drawn up to the live ball position — the ball
+        TRAVELS along the arc frame by frame (Hawk-Eye) instead of teleporting
+        contact-to-contact.
+    now_frame : OPTIONAL current frame index. With ``ground_path`` it places the
+        live ball head at the interpolated point between the two contacts that
+        bracket ``now_frame``, and truncates the drawn trail there.
     ground_path : OPTIONAL ordered list of (x_img, y_img, kind) GROUND-level points
         (kind in {'bounce','hit'}) in temporal order. When given, the radar plots a
         smoothed arc through these metrically-trustworthy ground contacts instead of
@@ -350,16 +358,64 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
     # 2) ball trajectory — a GROUND-PATH arc when ground_path is provided (bounces +
     #    hit/contact points, temporally ordered, smoothed into Hawk-Eye 'shot spot'
     #    arcs), else the legacy in-flight comet (kept for backward compatibility).
+    #    With now_frame, the arc is drawn up to the LIVE ball position (interpolated
+    #    between the two contacts bracketing the current frame) so the ball travels
+    #    along the arc instead of teleporting contact-to-contact.
     trail_pts = []
+    live_head = None
     if ground_path is not None:
-        gp_pts = []
+        # keep (frame, tile_pt) for the temporal interpolation; skip unprojectable
+        gp = []
         for item in ground_path:
-            x, y = item[0], item[1]
+            # ground_path items are (frame, x_img, y_img, kind)
+            fr, x, y = item[0], item[1], item[2]
+            # coerce to python floats — ball/shot coords may arrive as numpy
+            # scalars/arrays; project_to_court does arithmetic that breaks on
+            # sequences, so normalize here.
+            try:
+                x = float(np.asarray(x).reshape(-1)[0])
+                y = float(np.asarray(y).reshape(-1)[0])
+            except Exception:
+                continue
             p = proj_tile(x, y)
             if p is not None:
-                gp_pts.append(p)
-        # smooth the ground contacts into flowing arcs (upsample per segment)
-        trail_pts = _smooth_arc(gp_pts, per_seg=10)
+                gp.append((fr, p))
+        if gp:
+            gp.sort(key=lambda e: e[0])
+            gp_frames = [e[0] for e in gp]
+            gp_pts = [e[1] for e in gp]
+            smooth = _smooth_arc(gp_pts, per_seg=10)
+            if now_frame is not None and len(gp) >= 1:
+                # find the segment [a, b] in contact-time that brackets now_frame
+                now = float(now_frame)
+                if now >= gp_frames[-1]:
+                    head_sample = len(smooth) - 1
+                elif now < gp_frames[0]:
+                    head_sample = None  # before the first contact: nothing yet
+                else:
+                    a_idx = max(i for i, f in enumerate(gp_frames) if f <= now)
+                    b_idx = min(len(gp_frames) - 1, a_idx + 1)
+                    fa, fb = gp_frames[a_idx], gp_frames[b_idx]
+                    frac = 0.0 if fb <= fa else (now - fa) / float(fb - fa)
+                    frac = max(0.0, min(1.0, frac))
+                    per_seg = 10
+                    head_sample = a_idx * per_seg + int(frac * per_seg)
+                    head_sample = max(0, min(len(smooth) - 1, head_sample))
+                if head_sample is None:
+                    trail_pts = []
+                    live_head = None
+                else:
+                    # SLIDING COMET: draw only a short tail behind the live head,
+                    # NOT the full history. The path before the tail is erased so
+                    # the radar shows the ball moving NOW, not its whole journey.
+                    # ~14 smoothed samples ≈ a touch over one inter-contact segment,
+                    # which reads as a short comet tail at any rally tempo.
+                    tail_len = 14
+                    lo = max(0, head_sample - tail_len)
+                    trail_pts = smooth[lo:head_sample + 1]
+                    live_head = smooth[head_sample] if trail_pts else None
+            else:
+                trail_pts = smooth
     else:
         for (x, y) in ball_trail_img:
             p = proj_tile(x, y)
@@ -400,9 +456,11 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
                          size=max(10, int(pr * 1.3)), color=(255, 255, 255),
                          font="bold", anchor="center")
 
-    # 5) live ball — pulsing bright dot at the head of the trail
-    if trail_pts:
-        fx.glow_marker(tile, trail_pts[-1], color=BALL_COLOR,
+    # 5) live ball — pulsing bright dot at the head of the trail (the traveling
+    #    ball position when now_frame interpolation gave us a live_head)
+    head_pt = live_head if live_head is not None else (trail_pts[-1] if trail_pts else None)
+    if head_pt is not None:
+        fx.glow_marker(tile, head_pt, color=BALL_COLOR,
                        radius=max(4, int(tw / 44)), pulse=pulse)
 
     # downscale the supersampled tile → crisp anti-aliased radar

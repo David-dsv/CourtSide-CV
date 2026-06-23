@@ -152,7 +152,7 @@ class VideoWriter:
         output_path: str,
         fps: float = 30.0,
         frame_size: Optional[Tuple[int, int]] = None,
-        codec: str = "mp4v",
+        codec: str = "avc1",
         quality: int = 90
     ):
         """
@@ -162,7 +162,9 @@ class VideoWriter:
             output_path: Output file path
             fps: Frames per second
             frame_size: (width, height) of output video
-            codec: Video codec (mp4v, avc1, x264, etc.)
+            codec: Video codec (mp4v, avc1, x264, etc.). Default "avc1" (H.264)
+                which is universally playable (QuickTime, browsers, macOS preview);
+                falls back to "mp4v" if H.264 isn't available in this OpenCV build.
             quality: Video quality (0-100)
         """
         self.output_path = output_path
@@ -190,15 +192,27 @@ class VideoWriter:
             if self.frame_size is None:
                 self.frame_size = (frame.shape[1], frame.shape[0])
 
-            fourcc = cv2.VideoWriter_fourcc(*self.codec)
-            self.writer = cv2.VideoWriter(
-                self.output_path,
-                fourcc,
-                self.fps,
-                self.frame_size
-            )
-
-            if not self.writer.isOpened():
+            # Try the requested codec; if it won't open (some OpenCV builds lack
+            # H.264), fall back through a list so we always produce a playable file.
+            codecs_to_try = [self.codec]
+            for fb in ("avc1", "mp4v"):
+                if fb not in codecs_to_try:
+                    codecs_to_try.append(fb)
+            for codec in codecs_to_try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                self.writer = cv2.VideoWriter(
+                    self.output_path,
+                    fourcc,
+                    self.fps,
+                    self.frame_size
+                )
+                if self.writer.isOpened():
+                    if codec != self.codec:
+                        logger.info(f"Codec '{self.codec}' unavailable, fell back to '{codec}'")
+                    self.codec = codec
+                    break
+                self.writer = None
+            if self.writer is None:
                 raise ValueError(f"Cannot open video writer: {self.output_path}")
 
         # Resize if necessary

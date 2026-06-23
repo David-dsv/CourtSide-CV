@@ -81,7 +81,8 @@ class TwoPlayerTracker:
     """
 
     def __init__(self, frame_w, frame_h, net_y, fps,
-                 max_gap_s=0.5, smooth_alpha=0.55, assoc_max_dist_frac=0.18):
+                 max_gap_s=0.5, smooth_alpha=0.55, assoc_max_dist_frac=0.18,
+                 max_step_frac=0.04):
         self.fw = frame_w
         self.fh = frame_h
         self.net_y = net_y          # seed divider (net line if known) — may be None
@@ -89,10 +90,20 @@ class TwoPlayerTracker:
         self.max_gap = max(1, int(round(max_gap_s * fps)))
         self.smooth_alpha = smooth_alpha
         self.assoc_max_dist = assoc_max_dist_frac * frame_w
+        # Max per-frame displacement of a player's centroid before a candidate is
+        # deemed a different person (a teleport → a ball kid/line judge stealing
+        # the slot). A real player moves at most a few % of the frame per frame;
+        # a judge 500px away never qualifies. When no candidate is within this
+        # radius, the slot stays empty and gap-fill holds the last pose rather
+        # than jumping to a stranger. Zero-hardcoding: a fraction of frame_w.
+        self.max_step = max_step_frac * frame_w
         # raw assignment per frame: {1: pose|None, 2: pose|None}
         self._raw = {1: [], 2: []}
         # last seen pose per slot (for association continuity)
         self._last = {1: None, 2: None}
+        # consecutive frames each slot has been missing (drives the max_step
+        # re-acquisition grace: after a long enough gap we allow a fresh lock)
+        self._misses = {1: 0, 2: 0}
         # running divider: EMA of the midpoint between the two players' feet. This
         # is the zero-hardcoding split — it self-centers on the actual net even
         # when net_y is unknown/wrong, and adapts if the framing shifts slightly.
@@ -140,26 +151,37 @@ class TwoPlayerTracker:
             pool = by_side[slot]
             if not pool:
                 continue
-            if len(pool) == 1:
-                assigned[slot] = pool[0]
-                continue
-            # multiple candidates on this side → pick the one most consistent with
-            # the slot's last seen pose (centroid distance, tie-broken by IoU),
-            # else the largest/most-confident.
             last = self._last[slot]
-            if last is not None:
-                lc = _box_centroid(last["box"])
-                best, best_key = None, None
-                for p in pool:
-                    d = np.linalg.norm(_box_centroid(p["box"]) - lc)
-                    iou = _iou(p["box"], last["box"])
-                    key = (d - iou * self.assoc_max_dist)  # lower = better
-                    if best_key is None or key < best_key:
-                        best, best_key = p, key
-                assigned[slot] = best
-            else:
-                # no history: largest box (the real player vs a stray detection)
+            if last is None:
+                # no history at all (first frames): take the largest on this side.
                 assigned[slot] = max(pool, key=lambda p: (p["box"][3] - p["box"][1]))
+                continue
+            # A player can't teleport: once a slot is locked, only a candidate
+            # within max_step of the last pose re-associates. A ball kid / line
+            # judge hundreds of px away never qualifies, so it can't steal the
+            # slot — even during a long gap, we hold the last pose (gap-fill)
+            # rather than jumping to a stranger. The gate widens slightly as the
+            # gap grows (a player who was occluded drifts while unseen), but never
+            # opens wide enough to reach a stationary judge on the far side.
+            grow = 1.0 + min(self._misses[slot], self.max_gap) * 0.15
+            gate = self.max_step * grow
+            lc = _box_centroid(last["box"])
+            gated = [p for p in pool
+                     if np.linalg.norm(_box_centroid(p["box"]) - lc) <= gate]
+            if not gated:
+                continue  # no near candidate → gap-fill holds the real player
+            if len(gated) == 1:
+                assigned[slot] = gated[0]
+                continue
+            # tie-break the near candidates by centroid distance + IoU
+            best, best_key = None, None
+            for p in gated:
+                d = np.linalg.norm(_box_centroid(p["box"]) - lc)
+                iou = _iou(p["box"], last["box"])
+                key = (d - iou * self.assoc_max_dist)  # lower = better
+                if best_key is None or key < best_key:
+                    best, best_key = p, key
+            assigned[slot] = best
 
         # handle the rare both-on-same-side frame: if one slot is empty but the
         # other side has 2 candidates, lend the extra to the empty slot using its
@@ -178,6 +200,9 @@ class TwoPlayerTracker:
             self._raw[slot].append(pose)
             if pose is not None:
                 self._last[slot] = pose
+                self._misses[slot] = 0
+            else:
+                self._misses[slot] += 1
 
     # -- gap filling + smoothing -------------------------------------------
     @staticmethod

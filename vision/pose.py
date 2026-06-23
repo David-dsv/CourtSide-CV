@@ -132,6 +132,24 @@ def select_players_by_side(person_boxes, frame_w, frame_h, net_y, ball_xy=None):
     return chosen
 
 
+def _pool_by_side(pboxes, cand, net_y, n_per_side=3, min_pool=3):
+    """Build a candidate pool that GUARANTEES representation from both sides of
+    the net. ``cand`` is the global top-N list of (rank, idx) sorted desc; we split
+    it by each box's feet vs ``net_y`` and take ``n_per_side`` from each. This
+    prevents the small broadcast FAR player (~95px) from being starved out of the
+    pool by larger near-side parasites (line judges / stands at ~150px): the far
+    player must qualify through its OWN side slot, not compete head-to-head with
+    the near side. Falls back to the global top if a side is empty."""
+    by_side = {"far": [], "near": []}
+    for _, i in cand:
+        feet_y = pboxes[i][3]
+        by_side["near" if feet_y >= net_y else "far"].append(i)
+    pool = by_side["far"][:n_per_side] + by_side["near"][:n_per_side]
+    if len(pool) < min_pool:
+        pool = [i for _, i in cand[:min_pool + 1]]
+    return pool
+
+
 def estimate_players_pose(detector, pose_model, frame, device,
                           ball_xy=None, max_players=2,
                           det_imgsz=1280, pose_imgsz=960, court_zones=None):
@@ -170,7 +188,26 @@ def estimate_players_pose(detector, pose_model, frame, device,
     # Pose the top few candidates, then keep the best max_players that pass a
     # validity gate (real skeleton + feet on the court band, not in the stands).
     # This drops spectators / umpire / ball kids that rank high but aren't players.
-    pool = [i for _, i in cand[:max_players + 2]]
+    # KEY: guarantee representation from BOTH sides of the net. A global top-N by
+    # h*conf starves the small FAR player (broadcast: ~95px) when near-side parasites
+    # (line judges/stands at ~150px) outrank it — the far player must enter the pool
+    # via its OWN side slot, not compete head-to-head with the near side. This mirrors
+    # select_players_by_side() but keeps a few extras per side for the validity gate.
+    net_y = _net_y(court_zones, fh) if court_zones else 0.5 * fh
+    pool = _pool_by_side(pboxes, cand, net_y, n_per_side=max_players + 1,
+                         min_pool=max_players + 1)
+    # Adaptive court band when court_zones are unavailable (the keypoint detector
+    # misses some broadcast framings): derive the vertical court extent from the
+    # detected person boxes themselves rather than a magic 0.32*H threshold. The
+    # far player's feet set the top, the near player's feet set the bottom. The
+    # pre-filter already dropped extreme-margin/over-wide boxes, so the remaining
+    # feet_y span is a good proxy for the court surface band. (Zero-hardcoding:
+    # derived from the scene, not a fixed frame fraction.)
+    band = None
+    if not court_zones and len(cand) >= 1:
+        feet = [pboxes[i][3] for _, i in cand]
+        if feet:
+            band = (min(feet) - 0.04 * fh, max(feet) + 0.04 * fh)
     valid, fallback = [], []
     for pi in pool:
         box = pboxes[pi]
@@ -178,7 +215,7 @@ def estimate_players_pose(detector, pose_model, frame, device,
         kxy = res[0] if res else None
         kcf = res[1] if res else None
         entry = {"box": box, "kps_xy": kxy, "kps_conf": kcf}
-        if is_valid_player(box, kcf, fw, fh, court_zones):
+        if is_valid_player(box, kcf, fw, fh, court_zones, band=band):
             valid.append((float(pconfs[pi]) * (box[3] - box[1]), entry))
         else:
             fallback.append((float(pconfs[pi]) * (box[3] - box[1]), entry))
@@ -206,12 +243,23 @@ def estimate_players_pose(detector, pose_model, frame, device,
     return players
 
 
-def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None):
+def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None, band=None):
     """A real player has a valid skeleton AND stands on the court surface band
-    (not up in the stands / umpire chair). Tuned from the felix diagnosis: real
-    players have >=10 valid keypoints and box-center y_ratio in ~[0.38, 0.78];
-    parasites are high in frame (y<0.38) or have no pose. The far player is small
-    but DOES have a valid skeleton, so size is not used to reject."""
+    (not up in the stands / umpire chair). A real player has >=10 confident
+    keypoints and FEET within the court band (derived from court_zones, an
+    explicit ``band`` override, or a broadcast default). Parasites (ball kids /
+    line judges / stands) are rejected by the side-margin rule + the feet-band
+    rule; we deliberately do NOT reject by absolute box height: on a broadcast the
+    FAR player is legitimately high in frame (small, top of image) yet has a valid
+    skeleton and feet on-court, so a "whole box too high" rule would kill the far
+    player (seen: P1 at 17 kpts, feet on the far baseline, rejected by a 0.35*H
+    mid-box threshold).
+
+    ``band``: optional (top_y, bot_y) in px, computed adaptively by the caller
+    (e.g. from the detected person boxes when court_zones are unavailable). When
+    provided it takes precedence over the court_zones / default derivation — this
+    is the zero-hardcoding path (the court extent is inferred from the scene, not
+    a magic fraction of the frame)."""
     x1, y1, x2, y2 = box
     feet_y = y2
     head_y = y1
@@ -230,8 +278,10 @@ def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None):
     xr = cx / frame_w
     if (xr < 0.10 or xr > 0.90) and feet_y < 0.58 * frame_h:
         return False
-    # court-surface band: derive from court zones if available, else broadcast default
-    if court_zones:
+    # court-surface band: explicit override > court_zones > broadcast default.
+    if band is not None:
+        top_band, bot_band = band
+    elif court_zones:
         ys = []
         for name, info in court_zones.items():
             if name in ("court", "net") or "baseline" in name:
@@ -246,8 +296,5 @@ def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None):
         top_band, bot_band = 0.32 * frame_h, 0.88 * frame_h
     # the player's FEET must be within the court band (head can be above the band)
     if not (top_band <= feet_y <= bot_band):
-        return False
-    # reject clearly-in-the-stands (whole box high in frame)
-    if (head_y + feet_y) / 2 < 0.35 * frame_h:
         return False
     return True

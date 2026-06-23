@@ -299,6 +299,13 @@ def parse_args():
                         help="Also write detected bounces to PATH as a predictions JSON "
                              "(eval_bounces.py format) for scoring against ground truth. "
                              "Off by default; does not affect the annotated video.")
+    parser.add_argument("--demo-override", metavar="PATH", default=None,
+                        help="Manual ground-truth sidecar (JSON from tools/annotate_demo.py) "
+                             "that OVERRIDES this clip's bounces with bounces_true (replacing "
+                             "the detector's) and adds racket->ball strikes (forehand/backhand) "
+                             "as glow markers. Bounded to this clip only — no global threshold "
+                             "changes (respects zero-hardcoding). demo_frame is 0-based within "
+                             "the -s/-d window, matching the annotator.")
     parser.add_argument("--homography", action="store_true",
                         help="Compute a court homography (px↔meters) from court keypoints "
                              "for perspective-correct speed/depth. Falls back to the scalar "
@@ -733,6 +740,38 @@ def main():
             f.write("\n")
         logger.info(f"Dumped {len(bounce_events)} bounce predictions -> {args.dump_bounces}")
 
+    # ─── Demo override: replace detected bounces with the manual ground truth ───
+    # A curated clip (e.g. the landing-page hero) can override the detector's
+    # bounces with hand-annotated ones (the detector misses ~6/9 far-side
+    # bounces on this broadcast clip) and add racket->ball strikes. demo_frame
+    # in the sidecar is 0-based within the -s/-d window, i.e. it maps directly
+    # to the segment frame index used below. Bounded to this clip only — no
+    # global thresholds move (respects zero-hardcoding).
+    override_strikes = {}  # segment_frame -> {"xy": (x,y), "type": "forehand"|"backhand"}
+    if args.demo_override:
+        with open(args.demo_override) as _f:
+            ov = json.load(_f)
+        gt_bounces = ov.get("bounces_true", [])
+        if gt_bounces:
+            # bounces_false let us suppress specific detector hits by proximity.
+            suppress_xy = [tuple(b["xy"]) for b in ov.get("bounces_false", [])]
+            override_events = [
+                (int(b["demo_frame"]), float(b["xy"][0]), float(b["xy"][1]))
+                for b in gt_bounces
+            ]
+            logger.info(f"Demo override: replacing {len(bounce_events)} detected "
+                        f"bounces with {len(override_events)} manual GT bounces.")
+            bounce_events = override_events
+        for s in ov.get("strikes", []):
+            override_strikes[int(s["demo_frame"])] = {
+                "xy": (float(s["xy"][0]), float(s["xy"][1])),
+                "type": s.get("type", "forehand"),
+            }
+        if override_strikes:
+            logger.info(f"Demo override: {len(override_strikes)} racket->ball strikes "
+                        f"({sum(1 for v in override_strikes.values() if v['type']=='forehand')} "
+                        f"forehand, {sum(1 for v in override_strikes.values() if v['type']=='backhand')} backhand).")
+
     # ─── Classify bounces ───
     classified_bounces = []
     if bounce_events:
@@ -834,6 +873,34 @@ def main():
         logger.info(f"Shots: {len(shot_by_frame)} detected "
                     f"({sum(1 for s in shot_by_frame.values() if s['fhb']=='forehand')} FH, "
                     f"{sum(1 for s in shot_by_frame.values() if s['fhb']=='backhand')} BH)")
+
+    # ─── Demo override: inject manual racket->ball strikes ───
+    # Overrides the geometric shot detector with hand-annotated contacts. Each
+    # strike replaces any auto-detected hit at the same frame (no duplicates) and
+    # is linked to the next bounce for a quality score, mirroring the auto path.
+    if override_strikes:
+        sorted_bounces = sorted(bounce_by_frame.keys())
+        n_replaced = 0
+        for sfi, s in sorted(override_strikes.items()):
+            if sfi in shot_by_frame:
+                n_replaced += 1
+            nb = next((b for b in sorted_bounces if b > sfi), None)
+            if nb is not None:
+                bx, by, depth, b_speed, _ = bounce_by_frame[nb]
+                try:
+                    from vision.shots import shot_quality
+                    q = shot_quality(b_speed, depth, (bx, by), court_zones,
+                                     frame_width, frame_height,
+                                     homography=court_homography, speed_ref=speed_ref)
+                except Exception:
+                    q = 0
+            else:
+                b_speed, q = 0.0, 0
+            shot_by_frame[sfi] = {
+                "side": None, "fhb": s["type"], "quality": q,
+                "speed": b_speed, "x": s["xy"][0], "y": s["xy"][1]}
+        logger.info(f"Demo override strikes: injected {len(override_strikes)} "
+                    f"({n_replaced} replaced auto hits).")
 
     # ─── Pass 2: Annotate ───
     logger.info("=== PASS 2: Annotate ===")
@@ -996,7 +1063,8 @@ def main():
                                homography=court_homography,
                                players_img=players_img,
                                pulse=frame_idx * 0.5,
-                               ground_path=ground_path)
+                               ground_path=ground_path,
+                               now_frame=frame_idx)
 
         # 6. HUD — speed gauge + live match-stats card, anchored BOTTOM-LEFT so it
         # never collides with a broadcast scoreboard (top corners). On amateur phone

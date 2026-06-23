@@ -236,6 +236,108 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
     return chosen
 
 
+def detect_bounces_tolerant(ball_centers, ball_speeds_px, fps, frame_height,
+                            frame_width=None):
+    """Tolerant bounce detector — same validation as detect_bounces_from_trajectory
+    (ballistic line fits + slope/rmse/swing/restitution/x-continuity gates), but
+    admits candidates via scipy find_peaks on the y series instead of a strict
+    per-frame "is this the local max to 0.5px" test.
+
+    Why: the strict test (yc >= nanmax(local) - 0.5) rejects real bounces whose
+    apex is 1-3 frames off the annotated frame (annotation jitter + interpolated
+    minimum shift). On broadcast clips this dropped recall to 2/9. find_peaks with
+    a prominence floor admits the apex wherever it actually sits, and the same
+    ballistic gates filter false positives.
+
+    This is the broadcast path; detect_bounces_from_trajectory (the strict one)
+    stays the default for felix and is felix-regression-tested. Do not collapse
+    them into one tunable function — they are tuned for different trajectories.
+    """
+    from scipy.signal import find_peaks
+    n = len(ball_centers)
+    if n < 7:
+        return []
+
+    win = max(4, int(fps * 0.28))
+    min_gap = int(fps * 0.30)
+    min_drop = frame_height * 0.008
+    max_side_rmse = frame_height * 0.030
+    min_slope = frame_height * 0.0008
+    restitution_max = 1.8
+    max_xjump_frac = 0.04
+    min_y_ratio = 0.12
+    max_y_ratio = 0.95
+
+    ys = np.array([c[1] if c is not None else np.nan for c in ball_centers], dtype=float)
+    xs = np.array([c[0] if c is not None else np.nan for c in ball_centers], dtype=float)
+
+    # admit candidate apexes as prominent local maxima of y (ball low-points).
+    # prominence floor = half the side-rmse budget: ripples below that aren't
+    # bounces; a real bounce dips many px. distance >= min_gap dedups one bounce.
+    cand = []
+    valid = np.where(~np.isnan(ys))[0]
+    if len(valid) > 4:
+        pk, _ = find_peaks(ys[valid], prominence=max_side_rmse * 0.5,
+                           distance=max(1, min_gap))
+        cand = [int(valid[k]) for k in pk]
+
+    out = []
+    for i in cand:
+        if i < 2 or i >= n - 2 or np.isnan(ys[i]):
+            continue
+        yc = ys[i]
+        if not (min_y_ratio <= yc / frame_height <= max_y_ratio):
+            continue
+        lx, ly = _collect_ballistic_side(ys, n, i, win, -1)
+        rx, ry = _collect_ballistic_side(ys, n, i, win, +1)
+        if len(lx) < 3 or len(rx) < 3:
+            continue
+        lf = _fit_line(lx, ly)
+        rf = _fit_line(rx, ry)
+        if lf is None or rf is None:
+            continue
+        a_l, b_l, rmse_l = lf
+        a_r, b_r, rmse_r = rf
+        if a_l < min_slope or a_r > -min_slope:
+            continue
+        if rmse_l > max_side_rmse or rmse_r > max_side_rmse:
+            continue
+        swing_l = abs(a_l) * (lx[-1] - lx[0])
+        swing_r = abs(a_r) * (rx[-1] - rx[0])
+        if swing_l < min_drop or swing_r < min_drop * 0.5:
+            continue
+        if abs(a_r) > restitution_max * abs(a_l):
+            continue
+        if frame_width:
+            wx = max(3, int(fps * 0.07))
+            jumps = [abs(xs[k] - xs[k - 1])
+                     for k in range(i - wx, i + wx + 1)
+                     if 0 < k < n and not np.isnan(xs[k]) and not np.isnan(xs[k - 1])]
+            if jumps and max(jumps) > max_xjump_frac * frame_width:
+                continue
+        if abs(a_l - a_r) > 1e-6:
+            x_int = (b_r - b_l) / (a_l - a_r)
+        else:
+            x_int = float(i)
+        if not (i - win <= x_int <= i + win):
+            x_int = float(i)
+        bf = max(0, min(n - 1, int(round(x_int))))
+        score = (abs(a_l) + abs(a_r)) / (1.0 + rmse_l + rmse_r)
+        bx = xs[bf] if not np.isnan(xs[bf]) else xs[i]
+        by = ys[bf] if not np.isnan(ys[bf]) else yc
+        out.append((bf, int(bx), int(by), score))
+
+    out.sort(key=lambda c: -c[3])
+    chosen, used = [], []
+    for bf, bx, by, score in out:
+        if all(abs(bf - u) >= min_gap for u in used):
+            chosen.append((bf, bx, by))
+            used.append(bf)
+    chosen.sort(key=lambda c: c[0])
+    logger.info(f"Tolerant bounce detection: {len(chosen)} bounces found")
+    return chosen
+
+
 
 # ─────────────────────── robust variant (WASB-grade trajectory) ───────────────────────
 # The robust detector below pairs with a dense heatmap trajectory (WASB). It adds

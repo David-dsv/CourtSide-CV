@@ -401,28 +401,22 @@ def main():
     logger.info(f"Processing: frames {start_frame}-{end_frame} ({max_frames} frames, {max_frames/fps:.1f}s)")
     logger.info(f"Pose imgsz: {pose_imgsz}, ball jump threshold: {max_ball_jump:.0f}px")
 
-    # ─── Court zone detection (on first frame) ───
-    court_zones = {}
-    if not args.no_court or not args.no_bounces:
-        # Read first frame for court detection
+    # ─── Read first frame (used for court homography + zones) ───
+    first_frame = None
+    if (not args.no_court or not args.no_bounces) or args.homography:
         first_frame = next(reader.iter_frames())
         reader.release()
         reader = VideoReader(video_path)
         if start_frame > 0:
             reader.seek(start_frame)
 
-        logger.info("Detecting court zones on first frame...")
-        court_zones = detector.detect_court_zones(first_frame, conf_threshold=0.3)
-        if court_zones:
-            logger.info(f"Detected {len(court_zones)} court zones: {list(court_zones.keys())}")
-        else:
-            logger.warning("No court zones detected")
-
     # ─── Court homography (px ↔ meters) via keypoints, for perspective-correct
     # speed & depth. Only used when it solves with high/low confidence; otherwise
-    # the pipeline falls back to the scalar px-per-meter scale. ───
+    # the pipeline falls back to the scalar px-per-meter scale. Computed BEFORE
+    # court zones because the zones are now DERIVED from it (the HF zone detector
+    # suffers a domain shift on broadcast framings and returns {}). ───
     court_homography = None
-    if args.homography and 'first_frame' in locals():
+    if args.homography and first_frame is not None:
         try:
             from models.court_detector import CourtKeypointDetector
             court_det = CourtKeypointDetector(args.court_model, device=device)
@@ -460,6 +454,24 @@ def main():
                                    "court points via tools/calibrate_court.py to improve.")
         except Exception as e:
             logger.warning(f"Court calibration load failed ({e})")
+
+    # ─── Court zones: DERIVE from the homography (exact perspective geometry)
+    # when one is available; fall back to the HF YOLO zone detector only when
+    # there is no homography at all. Derived zones are drop-in compatible
+    # (same {name: {box, ...}} shape) and carry a `polygon` for a perspective
+    # overlay. See vision/court_zones.py. ───
+    court_zones = {}
+    if not args.no_court or not args.no_bounces:
+        from vision.court_zones import get_court_zones
+        yolo_det = detector if not args.no_court else None
+        court_zones = get_court_zones(first_frame, court_homography, yolo_det,
+                                      conf_threshold=0.3)
+        if court_zones:
+            src = next(iter(court_zones.values())).get("source", "yolo")
+            logger.info(f"Court zones ({src}): {len(court_zones)} — "
+                        f"{list(court_zones.keys())}")
+        else:
+            logger.warning("No court zones (no homography and YOLO returned nothing)")
 
     # ─── Pass 1: Detect ball positions + bounces ───
     logger.info("=== PASS 1: Detect ball ===")

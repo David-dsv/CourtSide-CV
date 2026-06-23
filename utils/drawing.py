@@ -557,8 +557,12 @@ def draw_court_overlay(
     draw_labels: bool = False
 ) -> np.ndarray:
     """
-    Draw semi-transparent colored rectangles for each court zone.
-    court_zones: {zone_name: {'box': [x1,y1,x2,y2], 'score': float}}
+    Draw semi-transparent colored zones. Each zone is drawn as a perspective
+    polygon when ``info['polygon']`` is present (homography-derived zones — the
+    broadcast court is a trapezoid, so axis-aligned rectangles overlap badly),
+    otherwise as an axis-aligned rectangle from ``info['box']`` (YOLO-detected
+    zones, legacy).
+    court_zones: {zone_name: {'box': [x1,y1,x2,y2], 'polygon': [(x,y)*4]|None, 'score': float}}
     """
     ZONE_COLORS = {
         "bottom-dead-zone": (80, 80, 200),
@@ -571,25 +575,40 @@ def draw_court_overlay(
         "top-dead-zone": (200, 80, 80),
     }
 
+    def _pts(info):
+        """Return an int32 Nx2 polygon for fill/polylines, or None to use the AABB."""
+        poly = info.get("polygon")
+        if poly and len(poly) >= 3:
+            return np.array(poly, dtype=np.int32)
+        return None
+
     overlay = image.copy()
     for zone_name, info in court_zones.items():
-        box = info["box"]
-        x1, y1, x2, y2 = [int(v) for v in box]
         color = ZONE_COLORS.get(zone_name, (128, 128, 128))
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+        pts = _pts(info)
+        if pts is not None:
+            cv2.fillPoly(overlay, [pts], color)
+        else:
+            x1, y1, x2, y2 = [int(v) for v in info["box"]]
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
 
     cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
 
-    # Draw solid border lines and optional labels
+    # Solid border lines + optional labels
     for zone_name, info in court_zones.items():
-        box = info["box"]
-        x1, y1, x2, y2 = [int(v) for v in box]
         color = ZONE_COLORS.get(zone_name, (128, 128, 128))
-        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+        pts = _pts(info)
+        if pts is not None:
+            cv2.polylines(image, [pts], True, color, 2, cv2.LINE_AA)
+            lx, ly = int(pts[0][0]), int(pts[0][1])
+        else:
+            x1, y1, x2, y2 = [int(v) for v in info["box"]]
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            lx, ly = x1, y1
         if draw_labels:
             label = zone_name.replace("-", " ").title()
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            cv2.putText(image, label, (x1 + 4, y1 + 16), font, 0.4, color, 1, cv2.LINE_AA)
+            cv2.putText(image, label, (lx + 4, ly + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
 
     return image
 

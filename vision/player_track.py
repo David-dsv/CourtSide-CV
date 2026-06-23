@@ -185,13 +185,21 @@ class TwoPlayerTracker:
 
         # handle the rare both-on-same-side frame: if one slot is empty but the
         # other side has 2 candidates, lend the extra to the empty slot using its
-        # last-known position as the anchor (keeps both skeletons alive).
+        # last-known position as the anchor (keeps both skeletons alive). The
+        # GATE STILL APPLIES: a spare far from the empty slot's last position is
+        # a different person (a ball kid / line judge mis-bucketed onto this side
+        # during a brief occlusion), not the missing player — lending it would
+        # permanently hijack the slot (the max_step gate would then refuse the
+        # real player's return). So we lend only if a spare sits within max_step;
+        # otherwise the slot stays empty and gap-fill holds the real player.
         for empty, other in ((1, 2), (2, 1)):
             if assigned[empty] is None and len(by_side[other]) >= 2 and self._last[empty] is not None:
                 taken = assigned[other]
-                spare = [p for p in by_side[other] if p is not taken]
+                lc = _box_centroid(self._last[empty]["box"])
+                spare = [p for p in by_side[other]
+                         if p is not taken
+                         and np.linalg.norm(_box_centroid(p["box"]) - lc) <= self.max_step]
                 if spare:
-                    lc = _box_centroid(self._last[empty]["box"])
                     assigned[empty] = min(
                         spare, key=lambda p: np.linalg.norm(_box_centroid(p["box"]) - lc))
 

@@ -1,0 +1,130 @@
+/**
+ * Shared types — derived 1:1 from the CourtSide pipeline stats JSON
+ * (run_pipeline_8s.py lines 1058-1089). Keeping these faithful means the mock
+ * fixtures can be imported straight from data/output/*.json.
+ */
+
+export type Depth = "deep" | "mid" | "short";
+export type Stroke = "forehand" | "backhand";
+export type PlayerSide = "near" | "far";
+export type HomographyConfidence = "high" | "low" | "fallback" | "none";
+export type SpeedSource = "scalar" | `homography(${"high" | "low"})`;
+
+export interface Bounce {
+  frame: number;
+  x: number;
+  y: number;
+  depth: Depth;
+  speed_kmh: number;
+  quality: number;
+}
+
+export interface Shot {
+  frame: number;
+  x: number;
+  y: number;
+  player_side: PlayerSide;
+  stroke: Stroke;
+  quality: number;
+  speed_kmh: number;
+}
+
+export interface Summary {
+  total_bounces: number;
+  depth: Record<Depth, number>;
+  speed_kmh: { avg: number; max: number; min: number };
+  quality: { avg: number; max: number; high_count: number };
+  strokes: Record<Stroke, number>;
+}
+
+/**
+ * A rally — a contiguous sequence of play grouped by temporal gap between
+ * shots. Derived from shots[] (gap > RALLY_GAP_FRAMES_FRACTION * fps breaks a
+ * rally). Optional in the pipeline JSON (legacy files omit it); the front-end
+ * derives it client-side as a fallback (see deriveRallies).
+ */
+export interface Rally {
+  /** inclusive frame of the first event (bounce or shot) */
+  start_frame: number;
+  /** inclusive frame of the last event */
+  end_frame: number;
+  /** shot frames that belong to this rally, ascending */
+  shot_frames: number[];
+  /** bounce frames that belong to this rally, ascending */
+  bounce_frames: number[];
+  /** number of shots — the natural "length" of a rally */
+  n_shots: number;
+}
+
+/** Highlight categories surfaced in the post-analysis summary. */
+export type HighlightType =
+  | "best_point" // best-played rally by the user
+  | "worst_point" // lowest-quality / error rally
+  | "longest" // most shots
+  | "winner" // likely point-ending winning shot
+  | "top_shot"; // single best stroke of the match
+
+export interface Highlight {
+  type: HighlightType;
+  title: string;
+  reason: string;
+  /** frame the player should jump to (usually the defining shot) */
+  frame: number;
+  /** optional window [start, end] for replay */
+  window?: [number, number];
+  /** quick stat chips shown on the card */
+  chips?: { label: string; value: string }[];
+}
+
+/**
+ * Momentum timeline — net performance sampled on a fixed time grid.
+ * Each bucket holds a signed score (positive = playing well) so the sparkline
+ * can show runs of good/bad play.
+ */
+export interface MomentumBucket {
+  frame: number;
+  score: number;
+}
+
+export interface PipelineStats {
+  video: string;
+  fps: number;
+  frame_range: [number, number];
+  speed_source: SpeedSource;
+  homography_confidence: HomographyConfidence;
+  summary: Summary;
+  bounces: Bounce[];
+  shots: Shot[];
+  /** optional server-computed rallies (run_pipeline_8s.py). Absent on legacy files. */
+  rallies?: Rally[];
+}
+
+export interface TrajectoryPoint {
+  x: number;
+  y: number;
+  frame: number;
+}
+
+export interface PlayerPosition {
+  id: 1 | 2;
+  x: number;
+  y: number;
+  frame: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  video: string;
+  createdAt: string;
+  status: "ready";
+  stats: PipelineStats;
+  /** synthetic ball trajectory (px), for the minimap comet trail */
+  trajectory?: TrajectoryPoint[];
+  /** optional player puck positions (px) per frame-snapshot */
+  players?: PlayerPosition[];
+  /** optional court homography 3x3 (row-major). When absent, minimap falls back geometrically with `~`. */
+  H?: number[][];
+  /** representative annotated frame path (mock poster) */
+  posterFrame?: number;
+}

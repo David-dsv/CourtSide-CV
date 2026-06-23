@@ -1142,6 +1142,36 @@ def main():
                     f"min={np.min(quals_arr):.0f}, "
                     f"high (>=70): {high_q}/{n} ({100*high_q/n:.0f}%)")
 
+        # ─── Rally segmentation ───
+        # Group shots into rallies: a gap > 2.5s between consecutive shots
+        # breaks a rally (threshold is a fraction of fps — zero hardcoding).
+        rallies = []
+        if shot_by_frame:
+            rally_gap_frames = 2.5 * fps
+            sorted_sf = sorted(shot_by_frame.keys())
+            grouped = []
+            cur = [sorted_sf[0]]
+            for sf in sorted_sf[1:]:
+                if sf - cur[-1] > rally_gap_frames:
+                    grouped.append(cur)
+                    cur = []
+                cur.append(sf)
+            grouped.append(cur)
+            sorted_bf = sorted(bounce_by_frame.keys())
+            for g in grouped:
+                start = g[0]
+                end = max(g[-1], max([bf for bf in sorted_bf if start <= bf <= g[-1] + rally_gap_frames], default=g[-1]))
+                bframes = [bf for bf in sorted_bf if start <= bf <= end]
+                rallies.append({
+                    "start_frame": int(start_frame + start),
+                    "end_frame": int(start_frame + end),
+                    "shot_frames": [int(start_frame + sf) for sf in g],
+                    "bounce_frames": [int(start_frame + bf) for bf in bframes],
+                    "n_shots": len(g),
+                })
+            logger.info(f"Rallies: {len(rallies)} "
+                        f"(longest={max((r['n_shots'] for r in rallies), default=0)} shots)")
+
         # Shot-type stats
         if shot_by_frame:
             fh = sum(1 for s in shot_by_frame.values() if s["fhb"] == "forehand")
@@ -1176,6 +1206,7 @@ def main():
                        "player_side": s["side"], "stroke": s["fhb"],
                        "quality": s["quality"], "speed_kmh": round(s["speed"], 1)}
                       for f, s in sorted(shot_by_frame.items())],
+            "rallies": rallies,
         }
         stats_path = str(Path(output_path).with_suffix("")) + "_stats.json"
         with open(stats_path, "w") as f:

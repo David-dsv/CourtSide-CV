@@ -3,7 +3,7 @@
 import { use, useState } from "react";
 import { getProject } from "@/lib/mock/projects";
 import { CourtMinimap } from "@/components/court/court-minimap";
-import { PlacementHeatmap } from "@/components/court/placement-heatmap";
+import { PlacementHeatmap, type HeatmapFilter } from "@/components/court/placement-heatmap";
 import { GlassCard } from "@/components/core/glass-card";
 import { SectionHeading } from "@/components/core/section-heading";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
@@ -12,6 +12,14 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Map } from "lucide-react";
 
+const FILTERS: { value: HeatmapFilter; label: string }[] = [
+  { value: "all", label: "Tout" },
+  { value: "forehand", label: "Coup droit" },
+  { value: "backhand", label: "Revers" },
+  { value: "deep", label: "Profond" },
+  { value: "short", label: "Court" },
+];
+
 export default function MinimapPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
   const project = getProject(projectId);
@@ -19,6 +27,7 @@ export default function MinimapPage({ params }: { params: Promise<{ projectId: s
   const [showTraj, setShowTraj] = useState(true);
   const [showPlayers, setShowPlayers] = useState(true);
   const [showHeat, setShowHeat] = useState(false);
+  const [heatFilter, setHeatFilter] = useState<HeatmapFilter>("all");
 
   if (!project) return null;
 
@@ -47,7 +56,7 @@ export default function MinimapPage({ params }: { params: Promise<{ projectId: s
           />
           {showHeat && (
             <div className="pointer-events-none absolute inset-0 mx-auto max-w-[440px]">
-              <PlacementHeatmap bounces={project.stats.bounces} width={360} height={760} className="h-full w-full opacity-70" />
+              <PlacementHeatmap bounces={project.stats.bounces} stats={project.stats} filter={heatFilter} width={360} height={760} className="h-full w-full opacity-70" />
             </div>
           )}
         </div>
@@ -57,6 +66,32 @@ export default function MinimapPage({ params }: { params: Promise<{ projectId: s
           <ToggleRow label="Trajectoire balle" checked={showTraj} onChecked={setShowTraj} />
           <ToggleRow label="Joueurs (P1/P2)" checked={showPlayers} onChecked={setShowPlayers} />
           <ToggleRow label="Heatmap placement (INFERNO)" checked={showHeat} onChecked={setShowHeat} />
+
+          {showHeat && (
+            <div className="flex flex-col gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Filtrer la heatmap</span>
+              <div className="flex flex-wrap gap-1.5">
+                {FILTERS.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    onClick={() => setHeatFilter(f.value)}
+                    className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
+                      heatFilter === f.value
+                        ? "glass-strong text-foreground"
+                        : "glass text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                « Coup droit » / « Revers » affiche le placement de vos frappes de ce type (rebond résultant).
+                « Profond » / « Court » filtre par profondeur de rebond.
+              </p>
+            </div>
+          )}
 
           <div className="mt-2 rounded-lg glass p-3 text-xs leading-relaxed text-muted-foreground">
             <p className="mb-1 font-medium text-foreground">À propos de cette vue</p>

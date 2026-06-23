@@ -1,0 +1,259 @@
+{
+  "video": "felix.mp4",
+  "fps": 60.0,
+  "frame_range": [
+    0,
+    1860
+  ],
+  "speed_source": "scalar",
+  "homography_confidence": "none",
+  "summary": {
+    "total_bounces": 20,
+    "depth": {
+      "deep": 0,
+      "mid": 5,
+      "short": 15
+    },
+    "speed_kmh": {
+      "avg": 88.8099793618961,
+      "max": 153.13239198818133,
+      "min": 28.389664768345256
+    },
+    "quality": {
+      "avg": 39.65,
+      "max": 70,
+      "high_count": 1
+    },
+    "strokes": {
+      "forehand": 5,
+      "backhand": 2
+    }
+  },
+  "bounces": [
+    {
+      "frame": 52,
+      "x": 1132,
+      "y": 540,
+      "depth": "short",
+      "speed_kmh": 67.3,
+      "quality": 30
+    },
+    {
+      "frame": 161,
+      "x": 656,
+      "y": 630,
+      "depth": "mid",
+      "speed_kmh": 127.0,
+      "quality": 63
+    },
+    {
+      "frame": 245,
+      "x": 1376,
+      "y": 540,
+      "depth": "short",
+      "speed_kmh": 70.2,
+      "quality": 30
+    },
+    {
+      "frame": 329,
+      "x": 825,
+      "y": 593,
+      "depth": "short",
+      "speed_kmh": 106.3,
+      "quality": 40
+    },
+    {
+      "frame": 423,
+      "x": 1546,
+      "y": 548,
+      "depth": "short",
+      "speed_kmh": 91.3,
+      "quality": 36
+    },
+    {
+      "frame": 545,
+      "x": 1148,
+      "y": 547,
+      "depth": "short",
+      "speed_kmh": 28.4,
+      "quality": 19
+    },
+    {
+      "frame": 603,
+      "x": 1169,
+      "y": 513,
+      "depth": "short",
+      "speed_kmh": 32.3,
+      "quality": 20
+    },
+    {
+      "frame": 696,
+      "x": 396,
+      "y": 626,
+      "depth": "mid",
+      "speed_kmh": 100.7,
+      "quality": 56
+    },
+    {
+      "frame": 720,
+      "x": 1422,
+      "y": 605,
+      "depth": "short",
+      "speed_kmh": 138.2,
+      "quality": 48
+    },
+    {
+      "frame": 819,
+      "x": 918,
+      "y": 592,
+      "depth": "short",
+      "speed_kmh": 93.4,
+      "quality": 36
+    },
+    {
+      "frame": 883,
+      "x": 1470,
+      "y": 585,
+      "depth": "short",
+      "speed_kmh": 53.5,
+      "quality": 26
+    },
+    {
+      "frame": 979,
+      "x": 1187,
+      "y": 566,
+      "depth": "short",
+      "speed_kmh": 32.2,
+      "quality": 20
+    },
+    {
+      "frame": 1052,
+      "x": 495,
+      "y": 620,
+      "depth": "short",
+      "speed_kmh": 83.8,
+      "quality": 34
+    },
+    {
+      "frame": 1141,
+      "x": 1196,
+      "y": 539,
+      "depth": "short",
+      "speed_kmh": 108.6,
+      "quality": 41
+    },
+    {
+      "frame": 1253,
+      "x": 341,
+      "y": 688,
+      "depth": "mid",
+      "speed_kmh": 96.5,
+      "quality": 55
+    },
+    {
+      "frame": 1346,
+      "x": 1331,
+      "y": 558,
+      "depth": "short",
+      "speed_kmh": 100.9,
+      "quality": 38
+    },
+    {
+      "frame": 1440,
+      "x": 603,
+      "y": 641,
+      "depth": "mid",
+      "speed_kmh": 153.1,
+      "quality": 70
+    },
+    {
+      "frame": 1518,
+      "x": 1643,
+      "y": 552,
+      "depth": "short",
+      "speed_kmh": 110.0,
+      "quality": 41
+    },
+    {
+      "frame": 1608,
+      "x": 822,
+      "y": 650,
+      "depth": "mid",
+      "speed_kmh": 135.1,
+      "quality": 66
+    },
+    {
+      "frame": 1795,
+      "x": 926,
+      "y": 615,
+      "depth": "short",
+      "speed_kmh": 47.5,
+      "quality": 24
+    }
+  ],
+  "shots": [
+    {
+      "frame": 187,
+      "x": 258,
+      "y": 591,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 37,
+      "speed_kmh": 70.2
+    },
+    {
+      "frame": 271,
+      "x": 1512,
+      "y": 480,
+      "player_side": "far",
+      "stroke": "backhand",
+      "quality": 36,
+      "speed_kmh": 106.3
+    },
+    {
+      "frame": 369,
+      "x": 401,
+      "y": 568,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 47,
+      "speed_kmh": 91.3
+    },
+    {
+      "frame": 628,
+      "x": 321,
+      "y": 617,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 60,
+      "speed_kmh": 100.7
+    },
+    {
+      "frame": 756,
+      "x": 1724,
+      "y": 503,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 30,
+      "speed_kmh": 93.4
+    },
+    {
+      "frame": 941,
+      "x": 1012,
+      "y": 532,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 24,
+      "speed_kmh": 32.2
+    },
+    {
+      "frame": 1022,
+      "x": 1209,
+      "y": 521,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 41,
+      "speed_kmh": 83.8
+    }
+  ]
+}

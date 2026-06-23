@@ -1,0 +1,302 @@
+{
+  "video": "tennis.mp4",
+  "fps": 50.0,
+  "frame_range": [
+    0,
+    3000
+  ],
+  "speed_source": "homography(high)",
+  "homography_confidence": "high",
+  "summary": {
+    "total_bounces": 13,
+    "depth": {
+      "deep": 1,
+      "mid": 7,
+      "short": 5
+    },
+    "speed_kmh": {
+      "avg": 71.38934088821098,
+      "max": 102.05786349213848,
+      "min": 42.328935201392284
+    },
+    "quality": {
+      "avg": 44.92307692307692,
+      "max": 78,
+      "high_count": 1
+    },
+    "strokes": {
+      "forehand": 8,
+      "backhand": 10
+    }
+  },
+  "bounces": [
+    {
+      "frame": 57,
+      "x": 1029,
+      "y": 708,
+      "depth": "mid",
+      "speed_kmh": 102.1,
+      "quality": 58
+    },
+    {
+      "frame": 161,
+      "x": 1035,
+      "y": 380,
+      "depth": "mid",
+      "speed_kmh": 96.8,
+      "quality": 57
+    },
+    {
+      "frame": 232,
+      "x": 1283,
+      "y": 789,
+      "depth": "deep",
+      "speed_kmh": 67.1,
+      "quality": 78
+    },
+    {
+      "frame": 414,
+      "x": 585,
+      "y": 460,
+      "depth": "short",
+      "speed_kmh": 50.9,
+      "quality": 26
+    },
+    {
+      "frame": 681,
+      "x": 775,
+      "y": 474,
+      "depth": "short",
+      "speed_kmh": 72.1,
+      "quality": 32
+    },
+    {
+      "frame": 960,
+      "x": 1088,
+      "y": 324,
+      "depth": "mid",
+      "speed_kmh": 74.3,
+      "quality": 50
+    },
+    {
+      "frame": 1807,
+      "x": 1265,
+      "y": 365,
+      "depth": "mid",
+      "speed_kmh": 96.7,
+      "quality": 57
+    },
+    {
+      "frame": 1868,
+      "x": 1179,
+      "y": 691,
+      "depth": "mid",
+      "speed_kmh": 63.6,
+      "quality": 47
+    },
+    {
+      "frame": 2046,
+      "x": 652,
+      "y": 716,
+      "depth": "mid",
+      "speed_kmh": 55.7,
+      "quality": 45
+    },
+    {
+      "frame": 2180,
+      "x": 738,
+      "y": 615,
+      "depth": "short",
+      "speed_kmh": 82.3,
+      "quality": 35
+    },
+    {
+      "frame": 2344,
+      "x": 659,
+      "y": 716,
+      "depth": "mid",
+      "speed_kmh": 60.8,
+      "quality": 47
+    },
+    {
+      "frame": 2655,
+      "x": 1024,
+      "y": 458,
+      "depth": "short",
+      "speed_kmh": 42.3,
+      "quality": 23
+    },
+    {
+      "frame": 2689,
+      "x": 1402,
+      "y": 538,
+      "depth": "short",
+      "speed_kmh": 63.5,
+      "quality": 29
+    }
+  ],
+  "shots": [
+    {
+      "frame": 121,
+      "x": 886,
+      "y": 346,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 59,
+      "speed_kmh": 96.8
+    },
+    {
+      "frame": 187,
+      "x": 847,
+      "y": 858,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 80,
+      "speed_kmh": 67.1
+    },
+    {
+      "frame": 275,
+      "x": 1556,
+      "y": 912,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 46,
+      "speed_kmh": 50.9
+    },
+    {
+      "frame": 372,
+      "x": 1022,
+      "y": 853,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 46,
+      "speed_kmh": 50.9
+    },
+    {
+      "frame": 467,
+      "x": 306,
+      "y": 815,
+      "player_side": "far",
+      "stroke": "backhand",
+      "quality": 33,
+      "speed_kmh": 72.1
+    },
+    {
+      "frame": 803,
+      "x": 772,
+      "y": 666,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 62,
+      "speed_kmh": 74.3
+    },
+    {
+      "frame": 1099,
+      "x": 815,
+      "y": 1009,
+      "player_side": "far",
+      "stroke": "backhand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1141,
+      "x": 1419,
+      "y": 1068,
+      "player_side": "far",
+      "stroke": "forehand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1313,
+      "x": 1177,
+      "y": 559,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1336,
+      "x": 1360,
+      "y": 628,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1449,
+      "x": 899,
+      "y": 757,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1573,
+      "x": 661,
+      "y": 726,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1722,
+      "x": 591,
+      "y": 731,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 72,
+      "speed_kmh": 96.7
+    },
+    {
+      "frame": 1900,
+      "x": 1157,
+      "y": 707,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 48,
+      "speed_kmh": 55.7
+    },
+    {
+      "frame": 2066,
+      "x": 596,
+      "y": 719,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 37,
+      "speed_kmh": 82.3
+    },
+    {
+      "frame": 2204,
+      "x": 554,
+      "y": 634,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 49,
+      "speed_kmh": 60.8
+    },
+    {
+      "frame": 2371,
+      "x": 562,
+      "y": 712,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 33,
+      "speed_kmh": 42.3
+    },
+    {
+      "frame": 2555,
+      "x": 789,
+      "y": 803,
+      "player_side": "far",
+      "stroke": "backhand",
+      "quality": 33,
+      "speed_kmh": 42.3
+    }
+  ]
+}

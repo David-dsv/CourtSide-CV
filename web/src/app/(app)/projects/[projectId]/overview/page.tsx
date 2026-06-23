@@ -7,8 +7,11 @@ import { GlassCard } from "@/components/core/glass-card";
 import { SectionHeading } from "@/components/core/section-heading";
 import { FrameJumpLink } from "@/components/core/frame-jump-link";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
+import { HighlightCard } from "@/components/analysis/highlight-card";
+import { MomentumChart } from "@/components/analysis/momentum-chart";
+import { deriveHighlights, deriveMomentum } from "@/lib/analysis/highlights";
 import { depthColorClass, depthLabel, fmtKmh, strokeLabel } from "@/lib/format";
-import { Gauge, Target, CircleDot, Activity, Zap, Map, TrendingUp } from "lucide-react";
+import { Gauge, Target, CircleDot, Activity, Zap, Map, TrendingUp, Sparkles } from "lucide-react";
 import type { Metadata } from "next";
 
 export async function generateMetadata({
@@ -33,6 +36,8 @@ export default async function OverviewPage({
   const { summary, bounces, shots, speed_source, homography_confidence } = project.stats;
   const recentBounces = [...bounces].sort((a, b) => b.frame - a.frame).slice(0, 5);
   const recentShots = [...shots].sort((a, b) => b.frame - a.frame).slice(0, 5);
+  const highlights = deriveHighlights(project.stats);
+  const momentum = deriveMomentum(project.stats);
 
   return (
     <div className="flex flex-col gap-6">
@@ -83,6 +88,34 @@ export default async function OverviewPage({
           icon={<Target className="h-4 w-4" />}
         />
       </div>
+
+      {/* Momentum timeline */}
+      <GlassCard>
+        <SectionHeading
+          title="Momentum"
+          description="Votre rythme au fil du match — cliquez une barre pour y revenir."
+          icon={<TrendingUp className="h-4 w-4" />}
+          className="mb-4"
+        />
+        <MomentumChart buckets={momentum} fps={project.stats.fps} />
+      </GlassCard>
+
+      {/* Highlights — best/worst points, longest rallies, winners */}
+      {highlights.length > 0 && (
+        <div>
+          <SectionHeading
+            title="Faits marquants"
+            description="Vos meilleurs coups, points à revoir et échanges les plus longs — cliquez pour rejouer le moment."
+            icon={<Sparkles className="h-4 w-4" />}
+            className="mb-3"
+          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {highlights.map((h, i) => (
+              <HighlightCard key={`${h.type}-${i}`} highlight={h} fps={project.stats.fps} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* minimap + speed highlight */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">

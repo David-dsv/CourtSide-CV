@@ -1,8 +1,23 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { pxToMeters, projectMeters } from "@/lib/court/projection";
-import type { Bounce } from "@/lib/types";
+import type { Bounce, PipelineStats, Stroke, Depth } from "@/lib/types";
+
+/**
+ * Filter modes for the placement heatmap.
+ * - `all`              : every bounce
+ * - `forehand|backhand`: bounces that are the *result* of a user shot of that
+ *                        stroke (we join shots→next-bounce; only user/near shots)
+ * - `deep|short`       : bounces by their own depth
+ */
+export type HeatmapFilter =
+  | "all"
+  | "forehand"
+  | "backhand"
+  | "deep"
+  | "mid"
+  | "short";
 
 const INFERNO: [number, number, number][] = [
   [0, 0, 4],
@@ -33,19 +48,46 @@ function infernoColor(t: number): [number, number, number] {
 /**
  * Placement heatmap — Canvas KDE over projected bounce points, INFERNO ramp,
  * additive blend. Port of vision/fx.py placement_heatmap intent.
+ *
+ * Pass `stats` + `filter` to slice the placement by stroke (forehand/backhand)
+ * or by depth. When omitted, falls back to the raw `bounces` prop (back-compat).
  */
 export function PlacementHeatmap({
   bounces,
+  stats,
+  filter = "all",
   width = 360,
   height = 760,
   className,
 }: {
   bounces: Bounce[];
+  stats?: PipelineStats;
+  filter?: HeatmapFilter;
   width?: number;
   height?: number;
   className?: string;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
+
+  // Resolve which bounces to plot under the active filter.
+  const filtered = useMemo<Bounce[]>(() => {
+    if (!stats || filter === "all") return bounces;
+    const sortedShots = [...stats.shots].sort((a, b) => a.frame - b.frame);
+    const sortedBounces = [...bounces].sort((a, b) => a.frame - b.frame);
+
+    if (filter === "deep" || filter === "mid" || filter === "short") {
+      return bounces.filter((b) => b.depth === (filter as Depth));
+    }
+    // stroke filter: bounces that are the result of a user (near) shot of this stroke
+    const stroke = filter as Stroke;
+    const resultFrames = new Set<number>();
+    for (const s of sortedShots) {
+      if (s.player_side !== "near" || s.stroke !== stroke) continue;
+      const nb = sortedBounces.find((b) => b.frame > s.frame);
+      if (nb) resultFrames.add(nb.frame);
+    }
+    return bounces.filter((b) => resultFrames.has(b.frame));
+  }, [bounces, stats, filter]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -60,7 +102,7 @@ export function PlacementHeatmap({
     ctx.clearRect(0, 0, width, height);
 
     // project bounces to court meters → tile px
-    const pts = bounces
+    const pts = filtered
       .map((b) => {
         const { Xm, Ym } = pxToMeters(b.x, b.y, undefined, 1920, 1080);
         return projectMeters(Xm, Ym, width, height);
@@ -118,7 +160,7 @@ export function PlacementHeatmap({
     ctx.globalAlpha = 0.85;
     ctx.drawImage(off, 0, 0, width, height);
     ctx.globalAlpha = 1;
-  }, [bounces, width, height]);
+  }, [filtered, width, height]);
 
   return (
     <canvas

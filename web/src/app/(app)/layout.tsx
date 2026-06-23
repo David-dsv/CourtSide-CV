@@ -12,7 +12,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-40 border-b border-white/6 bg-coal-950/70 backdrop-blur-xl">
         <div className="flex h-14 items-center justify-between px-4 sm:px-6">
-          <Link href="/projects" className="transition-opacity hover:opacity-80">
+          <Link href="/landing" className="transition-opacity hover:opacity-80">
             <Logo />
           </Link>
           <div className="flex items-center gap-2">

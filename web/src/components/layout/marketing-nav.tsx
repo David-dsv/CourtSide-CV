@@ -6,7 +6,7 @@ export function MarketingNav() {
   return (
     <header className="sticky top-0 z-40 border-b border-white/6 bg-coal-950/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Link href="/landing" className="transition-opacity hover:opacity-80">
+        <Link href="/" className="transition-opacity hover:opacity-80">
           <Logo />
         </Link>
         <nav className="hidden items-center gap-8 font-mono text-xs uppercase tracking-widest text-muted-foreground md:flex">

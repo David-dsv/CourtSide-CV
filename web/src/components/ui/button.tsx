@@ -44,11 +44,18 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  nativeButton,
+  render,
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+  // When rendering as a non-button element (e.g. a Link <a>), tell base-ui so it
+  // drops native button semantics and the accessibility warning.
+  const isNative = nativeButton ?? render === undefined
   return (
     <ButtonPrimitive
       data-slot="button"
+      nativeButton={isNative}
+      render={render}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />

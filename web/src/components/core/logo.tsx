@@ -1,26 +1,39 @@
 import { cn } from "@/lib/utils";
 
-/** CourtSide brand mark — tennis ball with the court seam curve. */
+/**
+ * CourtSide brand mark — an abstract "court tile": a rounded square holding the
+ * service-box lines, with a single ball-yellow trajectory arc sweeping across.
+ * Reads as court + motion, no literal tennis ball.
+ */
 export function LogoMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" className={cn("h-7 w-7", className)} aria-hidden>
-      <circle cx="16" cy="16" r="14" fill="var(--color-ball)" />
-      <circle cx="16" cy="16" r="14" fill="none" stroke="rgba(0,0,0,0.35)" strokeWidth="0.5" />
-      {/* the iconic seam — two opposing curves */}
+      {/* court tile */}
+      <rect
+        x="2.5"
+        y="2.5"
+        width="27"
+        height="27"
+        rx="7"
+        fill="var(--color-coal-800)"
+        stroke="color-mix(in oklab, white 12%, transparent)"
+        strokeWidth="1"
+      />
+      {/* court lines (chalk) */}
+      <g stroke="color-mix(in oklab, var(--color-chalk) 45%, transparent)" strokeWidth="1.4" strokeLinecap="round">
+        <line x1="16" y1="6" x2="16" y2="26" />
+        <line x1="8" y1="16" x2="24" y2="16" />
+      </g>
+      {/* trajectory arc — the signature */}
       <path
-        d="M5 7 C 12 13, 12 19, 5 25"
+        d="M6 24 Q 16 2, 26 14"
         fill="none"
-        stroke="#16150f"
-        strokeWidth="1.8"
+        stroke="var(--color-ball)"
+        strokeWidth="2.4"
         strokeLinecap="round"
       />
-      <path
-        d="M27 7 C 20 13, 20 19, 27 25"
-        fill="none"
-        stroke="#16150f"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
+      {/* impact point */}
+      <circle cx="26" cy="14" r="2.6" fill="var(--color-ball)" />
     </svg>
   );
 }

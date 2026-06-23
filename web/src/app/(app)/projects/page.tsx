@@ -19,49 +19,51 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         <Link href="/projects/new" className="group">
-          <GlassCard className="flex h-full min-h-[280px] flex-col items-center justify-center gap-3 text-muted-foreground transition-colors group-hover:text-foreground">
+          <GlassCard className="flex h-full min-h-[260px] flex-col items-center justify-center gap-3 text-muted-foreground transition-colors group-hover:text-foreground">
             <div className="flex h-12 w-12 items-center justify-center rounded-full glass-strong text-court-green">
               <Plus className="h-6 w-6" />
             </div>
-            <span className="text-sm font-medium">Analyser un nouveau match</span>
+            <span className="text-sm font-medium text-center">Analyser un<br />nouveau match</span>
           </GlassCard>
         </Link>
 
         {projects.map((p) => (
           <Link key={p.id} href={`/projects/${p.id}`} className="group">
-            <GlassCard className="flex h-full flex-col gap-3 p-0 transition-transform group-hover:-translate-y-1">
+            <GlassCard className="flex h-full flex-col gap-0 overflow-hidden p-0 transition-transform group-hover:-translate-y-1">
+              {/* fixed-height header: title + badge (badge lives here, NOT on the court) */}
+              <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-3">
+                <h3 className="line-clamp-1 text-sm font-semibold leading-tight">{p.name}</h3>
+                <ConfidenceBadge
+                  source={p.stats.speed_source}
+                  confidence={p.stats.homography_confidence}
+                  showTooltip={false}
+                />
+              </div>
+              {/* court visual — fixed aspect ratio → identical height across all cards in a row */}
               <div className="relative">
                 <CourtMinimap
                   bounces={p.stats.bounces}
                   trajectory={p.trajectory}
                   showPlayers={false}
                   showTrajectory={false}
+                  showConfidenceBadge={false}
                   source={p.stats.speed_source}
                   confidence={p.stats.homography_confidence}
-                  className="rounded-b-none rounded-t-2xl"
+                  className="rounded-none border-0"
                 />
               </div>
-              <div className="flex flex-1 flex-col gap-2 px-4 pb-4">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="font-semibold leading-tight">{p.name}</h3>
-                  <ConfidenceBadge
-                    source={p.stats.speed_source}
-                    confidence={p.stats.homography_confidence}
-                    showTooltip={false}
-                  />
-                </div>
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1">
-                    <Activity className="h-3.5 w-3.5" />
-                    {p.stats.summary.total_bounces} rebonds
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-3.5 w-3.5" />
-                    {new Date(p.createdAt).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
-                  </span>
-                </div>
+              {/* fixed-height footer */}
+              <div className="flex h-9 shrink-0 items-center gap-3 px-3 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <Activity className="h-3 w-3" />
+                  {p.stats.summary.total_bounces} rebonds
+                </span>
+                <span className="flex items-center gap-1">
+                  <Calendar className="h-3 w-3" />
+                  {new Date(p.createdAt).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                </span>
               </div>
             </GlassCard>
           </Link>

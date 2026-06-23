@@ -47,7 +47,6 @@ const PIPELINE = [
 
 export default function LandingPage() {
   const p = tennisProject;
-  const s = p.stats.summary;
 
   return (
     <div className="overflow-hidden">
@@ -75,7 +74,7 @@ export default function LandingPage() {
         </div>
 
         <div className="relative z-10 mx-auto grid max-w-6xl grid-cols-1 items-center gap-14 px-4 py-20 sm:px-6 lg:grid-cols-12 lg:py-28">
-          <div className="lg:col-span-7">
+          <div className="lg:col-span-6">
             <div className="rise mb-6 inline-flex items-center gap-2 rounded-full border border-ball/25 bg-ball/[0.06] px-3 py-1">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ball opacity-75" />
@@ -107,23 +106,16 @@ export default function LandingPage() {
               </Button>
             </div>
 
-            {/* inline broadcast stat strip */}
-            <div className="rise mt-12 grid max-w-md grid-cols-3 gap-px overflow-hidden rounded-xl border border-white/8 bg-white/5" style={{ animationDelay: "300ms" }}>
-              {[
-                { v: `${s.speed_kmh.max.toFixed(0)}`, u: "km/h max", c: "text-ball" },
-                { v: `${s.total_bounces}`, u: "rebonds", c: "text-clay" },
-                { v: `${s.quality.high_count}`, u: "frappes A+", c: "text-foreground" },
-              ].map((x) => (
-                <div key={x.u} className="bg-coal-900/80 px-4 py-3">
-                  <div className={`stat-numeral text-3xl ${x.c}`}>{x.v}</div>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">{x.u}</div>
-                </div>
-              ))}
+            {/* trust row — what makes CourtSide different (not match stats) */}
+            <div className="rise mt-12 flex flex-wrap items-center gap-x-6 gap-y-2 font-mono text-[11px] uppercase tracking-widest text-muted-foreground" style={{ animationDelay: "300ms" }}>
+              <span className="flex items-center gap-1.5"><span className="h-1 w-1 rounded-full bg-ball" /> Sans abonnement premium</span>
+              <span className="flex items-center gap-1.5"><span className="h-1 w-1 rounded-full bg-ball" /> Tout appareil</span>
+              <span className="flex items-center gap-1.5"><span className="h-1 w-1 rounded-full bg-ball" /> 100% privé</span>
             </div>
           </div>
 
           {/* hero demo video — the real annotated pipeline output (motion + wow) */}
-          <div className="rise lg:col-span-5" style={{ animationDelay: "180ms" }}>
+          <div className="rise lg:col-span-6" style={{ animationDelay: "180ms" }}>
             <HeroDemoVideo
               mp4="/demo/hero-tennis.mp4"
               webm="/demo/hero-tennis.webm"

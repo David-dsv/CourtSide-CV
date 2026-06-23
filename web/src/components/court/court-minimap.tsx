@@ -30,6 +30,9 @@ export interface CourtMinimapProps {
   className?: string;
   /** aspect: true = portrait court (default), false = compact */
   height?: number;
+  /** show the confidence badge overlay (default true; set false when the
+   *  parent already renders it, to avoid duplicating it) */
+  showConfidenceBadge?: boolean;
 }
 
 const VIEW_W = 360;
@@ -46,6 +49,7 @@ export function CourtMinimap({
   frame,
   onBounceClick,
   className,
+  showConfidenceBadge = true,
 }: CourtMinimapProps) {
   const hasH = source?.startsWith("homography");
 
@@ -207,7 +211,7 @@ export function CourtMinimap({
       </svg>
 
       {/* confidence badge overlay */}
-      {(source || confidence) && (
+      {showConfidenceBadge && (source || confidence) && (
         <div className="absolute right-2 top-2">
           <ConfidenceBadge source={source as never} confidence={confidence} showTooltip />
         </div>

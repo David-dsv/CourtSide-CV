@@ -4,6 +4,18 @@
  * fixtures can be imported straight from data/output/*.json.
  */
 
+/**
+ * Type d'analyse choisi par l'utilisateur à l'upload.
+ * - "training" : caméra fixe, un joueur qui ne change PAS de côté. Le verrou
+ *   P1/P2 fixe actuel marche parfaitement — c'est le cœur de cible CourtSide
+ *   (amateur sur trépied).
+ * - "match" : vraie vidéo de match, les joueurs changent de côté entre jeux.
+ *   La ré-identité joueur (side-swap) est gérée côté backend (feat/match-mode) ;
+ *   tant qu'elle n'est pas branchée, les stats par joueur (vitesse, fatigue)
+ *   restent approximatives → l'UI affiche un avertissement (MatchModeNotice).
+ */
+export type MatchType = "training" | "match";
+
 export type Depth = "deep" | "mid" | "short";
 export type Stroke = "forehand" | "backhand";
 export type PlayerSide = "near" | "far";
@@ -141,6 +153,8 @@ export interface Project {
   video: string;
   createdAt: string;
   status: "ready";
+  /** training = caméra fixe (défaut) | match = side-swap entre jeux */
+  matchType: MatchType;
   stats: PipelineStats;
   /** synthetic ball trajectory (px), for the minimap comet trail */
   trajectory?: TrajectoryPoint[];

@@ -113,6 +113,19 @@ from vision.pose import estimate_players_pose  # noqa: E402
 from vision.minimap import draw_minimap  # noqa: E402
 import vision.fx as fx  # noqa: E402  — cinematic visual effects (glow, glass HUD, shockwave)
 from vision.court_track import h_at  # noqa: E402  — per-frame homography lookup (track-camera)
+from vision.shot_guard import compute_court_visibility_mask, non_court_spans  # noqa: E402
+
+
+def _court_frames_between(mask, a, b):
+    """Count court-visible frames strictly between absolute frame indices a and b.
+
+    Used by rally segmentation so a multi-second non-court span (a replay
+    between two real shots) doesn't falsely split one rally: the gap is measured
+    in COURT frames only, treating the replay as if it weren't there."""
+    if b <= a + 1:
+        return 0
+    return sum(1 for k in range(a + 1, b)
+               if k < len(mask) and mask[k])
 
 
 def _merge_solo_rallies(rallies):
@@ -388,6 +401,14 @@ def parse_args():
                              "P1=far / P2=near (net-side identity) — the training default, unchanged. With it, "
                              "players keep their id when they swap ends between games (HSV jersey re-id + "
                              "continuity), and each shot/rally carries a stable human_id on top of player_side.")
+    parser.add_argument("--no-shot-guard", action="store_true",
+                        help="Disable the court-visibility gate (shot-guard). By default, frames where the "
+                             "full court is NOT visible (camera close-ups, replays, graphics) are detected "
+                             "and EXCLUDED from ball/shot/bounce/pose stats and overlay — they're written "
+                             "clean to the output video so garbage detections aren't attributed to a player.")
+    parser.add_argument("--shot-guard-badge", action="store_true",
+                        help="Draw a discreet 'NON-PLAY' badge on gated frames in the output video. Off by "
+                             "default (gated frames are written with no overlay at all).")
     args = parser.parse_args()
     # Player boxes default OFF (user feedback: boxes distract / a stale box looks
     # fixed). --player-boxes opts back in; --no-player-boxes is the explicit default.
@@ -560,6 +581,35 @@ def main():
             logger.warning(f"Pass 0 (track-camera) failed: {e} — falling back to f0 homography")
             court_homography_by_frame = None
 
+    # ─── Pass 0.5: shot-guard — court-visibility mask (Canny + HoughLinesP) ───
+    # A cheap, colour-independent gate: a frame is "full court visible" when it
+    # has >= 40 long straight lines (the court lines). Close-ups / replays /
+    # graphics have ~0. Raw signal is dwell-hysteresis-cleaned (~0.3 s) so
+    # single-frame transition dips stay court. The mask is consumed by every
+    # downstream stage: ball/pose detection is SKIPPED on non-court frames
+    # (no garbage stats) and Pass 2 writes those frames with NO overlay. Active
+    # by default; --no-shot-guard disables. See vision/shot_guard.py.
+    shot_guard_enabled = not args.no_shot_guard
+    court_visible_mask = [True] * max_frames
+    non_court_spans_rel = []
+    if shot_guard_enabled and max_frames > 0:
+        sg_reader = VideoReader(video_path)
+        if start_frame > 0:
+            sg_reader.seek(start_frame)
+        sg_frames = []
+        for j, fr in enumerate(sg_reader.iter_frames()):
+            if j >= max_frames:
+                break
+            sg_frames.append(fr)
+        sg_reader.release()
+        court_visible_mask = compute_court_visibility_mask(sg_frames, fps)
+        del sg_frames  # free before Pass 1
+        non_court_spans_rel = non_court_spans(court_visible_mask)
+        n_court = sum(court_visible_mask)
+        logger.info(f"Pass 0.5 (shot-guard): {n_court}/{len(court_visible_mask)} court frames "
+                    f"({100 * n_court / max(1, len(court_visible_mask)):.1f}%), "
+                    f"{len(non_court_spans_rel)} non-court spans")
+
     # ─── Court zones: DERIVE from the homography (exact perspective geometry)
     # when one is available; fall back to the HF YOLO zone detector only when
     # there is no homography at all. Derived zones are drop-in compatible
@@ -600,6 +650,13 @@ def main():
             tracker = HeatmapBallTracker(args.wasb_weights, device=device)
             logger.info("Tracking ball with WASB heatmap model...")
             raw_ball_centers = tracker.track_ball(wasb_frames)
+            # shot-guard: WASB can hallucinate a heatmap blob on a close-up; null
+            # its output on non-court frames so no ball is fabricated there.
+            if shot_guard_enabled:
+                raw_ball_centers = [
+                    None if (i < len(court_visible_mask) and not court_visible_mask[i]) else c
+                    for i, c in enumerate(raw_ball_centers)
+                ]
             ball_speeds_px = [0.0] * len(raw_ball_centers)  # filled below
             raw_detections = None
         except Exception as e:
@@ -616,6 +673,13 @@ def main():
         for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 1a: detect"):
             if frame_count >= max_frames:
                 break
+            # shot-guard: skip ball detection on non-court frames (close-ups /
+            # replays). The spline interpolation (max_gap 0.4 s) won't bridge a
+            # multi-second cut, so no ball is fabricated across a replay.
+            if shot_guard_enabled and not court_visible_mask[frame_count]:
+                raw_detections.append([])
+                frame_count += 1
+                continue
             det = detector.detect(frame, classes=[32])
             ball_mask = det["class_ids"] == 32
             candidates = []
@@ -957,10 +1021,17 @@ def main():
                                    desc="Pass 1.5: pose")):
         if i >= max_frames:
             break
-        players = estimate_players_pose(
-            detector.person_model, pose_model, frame, device,
-            ball_xy=all_ball_centers[i] if i < len(all_ball_centers) else None,
-            court_zones=court_zones if court_zones else None)
+        # shot-guard: skip pose inference on non-court frames (no skeleton can
+        # be trusted on a close-up, and we save the GPU call). Both trackers
+        # accept an empty list; the long gap-fill stays None, and since Pass 2
+        # skips the overlay on these frames, no phantom skeleton is drawn.
+        if shot_guard_enabled and not court_visible_mask[i]:
+            players = []
+        else:
+            players = estimate_players_pose(
+                detector.person_model, pose_model, frame, device,
+                ball_xy=all_ball_centers[i] if i < len(all_ball_centers) else None,
+                court_zones=court_zones if court_zones else None)
         players_per_frame[i] = players
         if match_mode:
             ptracker.add_frame(players, frame)   # frame needed for HSV re-id
@@ -1081,6 +1152,23 @@ def main():
         if frame_idx >= max_frames:
             break
         out = frame.copy()
+
+        # shot-guard: on a non-court frame (close-up / replay / graphic) draw NO
+        # annotation at all (optionally a discreet NON-PLAY badge) and write the
+        # clean frame. This keeps the output timeline 1:1 with the input (the web
+        # player's frame↔time mapping stays valid) while excluding garbage
+        # detections from the visible overlay and the stats.
+        if shot_guard_enabled and not court_visible_mask[frame_idx]:
+            if args.shot_guard_badge and not args.no_fx:
+                _bw = int(frame_width * 0.18)
+                out = fx.draw_text(out, "NON-PLAY",
+                                   (frame_width - 16, frame_height - 14),
+                                   size=int(frame_height * 0.022),
+                                   color=(210, 210, 210), font="regular",
+                                   anchor="rt")
+            writer.write_frame(out)
+            frame_idx += 1
+            continue
 
         # 1. Court zone overlay (background layer) — redrive from the per-frame
         # homography when tracking a moving camera, so the zones follow the court.
@@ -1293,7 +1381,13 @@ def main():
             grouped = []
             cur = [sorted_sf[0]]
             for sf in sorted_sf[1:]:
-                if sf - cur[-1] > rally_gap_frames:
+                # shot-guard: measure the gap in COURT frames only, so a replay
+                # between two real shots doesn't split one rally in two.
+                if shot_guard_enabled:
+                    gap = _court_frames_between(court_visible_mask, cur[-1], sf)
+                else:
+                    gap = sf - cur[-1]
+                if gap > rally_gap_frames:
                     grouped.append(cur)
                     cur = []
                 cur.append(sf)
@@ -1363,6 +1457,17 @@ def main():
             "match": ({"side_swaps": (match_result["swaps"] if match_result else []),
                        "n_swaps": (len(match_result["swaps"]) if match_result else 0)}
                       if match_mode else None),
+            "shot_guard": {
+                "enabled": shot_guard_enabled,
+                "court_frames": int(sum(court_visible_mask)),
+                "total_frames": int(len(court_visible_mask)),
+                "non_court_ratio": (1.0 - sum(court_visible_mask) / max(1, len(court_visible_mask)))
+                                   if shot_guard_enabled else 0.0,
+                "non_court_spans": non_court_spans_rel,
+                "threshold_lines": 40,
+                "min_line_length_frac": 0.15,
+                "dwell_frames": int(max(1, round(0.3 * fps))),
+            },
             "homography_confidence": (court_homography.get("confidence")
                                       if court_homography else "none"),
             "summary": {

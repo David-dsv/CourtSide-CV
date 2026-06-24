@@ -329,6 +329,37 @@ def select_moments(
             note=f"Q={s.get('quality',0)} {s.get('stroke','coup')}",
         ))
 
+    # ── Fallback: no shots detected at all (some pipeline variants only emit
+    # bounces). Build moments directly from bounce clusters so the reel still works.
+    if not moments and bounces:
+        logger.info(
+            "No shots in stats; selecting highlight moments from bounce clusters."
+        )
+        gap_frames = 2.5 * fps
+        clusters: list[list[int]] = []
+        cur = [bounce_frames[0]]
+        for b in bounce_frames[1:]:
+            if b - cur[-1] > gap_frames:
+                clusters.append(cur); cur = []
+            cur.append(b)
+        clusters.append(cur)
+        # Score each cluster by mean bounce speed (a proxy for an exciting exchange).
+        speed_by_frame = {int(b["frame"]): float(b.get("speed_kmh", 0)) for b in bounces}
+        scored = sorted(
+            ((sum(speed_by_frame.get(b, 0) for b in c) / len(c), c) for c in clusters),
+            key=lambda t: t[0], reverse=True,
+        )
+        lead_in = max(1, int(1.0 * fps))   # 1s before the first bounce of a cluster
+        tail = max(1, int(0.8 * fps))      # 0.8s after the last bounce
+        for i, (score, c) in enumerate(scored[:max(top_rallies, 1)]):
+            moments.append(Moment(
+                kind="rally", label="Meilleur point",
+                start_frame=max(0, c[0] - lead_in),
+                end_frame=c[-1] + tail,
+                score=score,
+                note=f"{len(c)} bounces, mean {score:.0f}km/h",
+            ))
+
     # ── Chronological order, then de-duplicate overlapping windows ──
     moments.sort(key=lambda m: (m.start_frame, m.end_frame))
     moments = _dedupe_overlaps(moments)
@@ -408,6 +439,21 @@ def build_reel(
         logger.error(f"Could not read dimensions from {video}.")
         sys.exit(1)
 
+    # ── Frame-coordinate reconciliation ──
+    # stats.json frames are ABSOLUTE source-video frames (it carries `frame_range`
+    # = [start_frame, end_frame] of the analyzed window). But the *annotated* video
+    # file only contains that window, so its on-disk frame index 0 == frame_range[0].
+    # Subtract frame_range[0] (default 0) to map stats-frames -> annotated-file-frames,
+    # then clamp to the file's real frame count.
+    frame_range = stats.get("frame_range") or [0, info["n_frames"]]
+    frame_offset = int(frame_range[0])
+    max_file_frame = info["n_frames"]  # exclusive upper bound of the annotated file
+    if frame_offset and frame_offset != 0:
+        logger.info(
+            f"Annotated file starts at source frame {frame_offset} "
+            f"(frame_range={frame_range}); offsetting moment frames by {-frame_offset}."
+        )
+
     moments = select_moments(
         stats, top_rallies=top_rallies,
         top_best_shots=top_best_shots, top_review=top_review,
@@ -458,12 +504,18 @@ def build_reel(
                 card_path = tmpdir / f"card_{idx:02d}.mp4"
                 _write_card_clip(card_path, m.label, m.note, w, h, fps, card_s)
                 concat_lines.append(f"file '{card_path}'")
-            # segment
+            # segment: map stats-absolute frames -> annotated-file frames, clamp to file.
+            sf = max(0, min(m.start_frame - frame_offset, max_file_frame - 1))
+            ef = max(sf, min(m.end_frame - frame_offset, max_file_frame - 1))
+            if ef <= sf:
+                logger.warning(f"  [{idx}] moment outside annotated file after offset; skipped.")
+                continue
             seg_path = tmpdir / f"seg_{idx:02d}.mp4"
-            _extract_segment(video, m.start_frame, m.end_frame, fps, seg_path)
+            _extract_segment(video, sf, ef, fps, seg_path)
             concat_lines.append(f"file '{seg_path}'")
-            logger.info(f"  [{idx}] {m.label:16s} frames [{m.start_frame},{m.end_frame}] "
-                        f"({(m.end_frame-m.start_frame+1)/fps:.1f}s) — {m.note}")
+            logger.info(f"  [{idx}] {m.label:16s} file-frames [{sf},{ef}] "
+                        f"(src {m.start_frame}-{m.end_frame}) "
+                        f"({(ef-sf+1)/fps:.1f}s) — {m.note}")
 
         # ─── Concat (demuxer; segments share fps/size/pixfmt) ───
         concat_path = tmpdir / "concat.txt"

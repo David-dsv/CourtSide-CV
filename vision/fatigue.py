@@ -146,13 +146,19 @@ def analyze_fatigue(shots: Sequence[dict], frame_range: Sequence[int], fps: floa
     quality_slope_flag = slope_quality <= -QUALITY_SLOPE_NEG_RATIO * 100.0
     drop_flag = drop_pct >= DROP_PCT_FLAG
 
-    # Fatigue is "probable" when the trend slope flags it OR there is a clear
-    # first-third → last-third drop.
-    fatigued = bool((speed_slope_flag or quality_slope_flag) or drop_flag)
+    # The fatigue FLAG is driven by the SPEED signal (spec): a significantly
+    # negative speed slope OR a clear first-third → last-third speed drop.
+    # Quality decline is reported (slope_quality_per_min) and used to *raise*
+    # confidence when it agrees with the speed signal, but a quality-only decline
+    # with flat speed does NOT flag fatigue on its own (avoids false positives on
+    # clips where the player simply hits more defensively).
+    fatigued = bool(speed_slope_flag or drop_flag)
 
-    # Confidence: high when two independent signals agree (slope + sizeable drop);
-    # low when only one weak signal fires; none when not fatigued.
-    if fatigued and ((speed_slope_flag and drop_flag) or drop_pct >= DROP_PCT_HIGH_CONFIDENCE):
+    # Confidence:
+    #   high  — speed signal fires AND quality agrees (or the speed drop is large)
+    #   low   — speed signal fires but quality doesn't corroborate
+    #   none  — not fatigued
+    if fatigued and (quality_slope_flag or drop_pct >= DROP_PCT_HIGH_CONFIDENCE):
         confidence = "high"
     elif fatigued:
         confidence = "low"

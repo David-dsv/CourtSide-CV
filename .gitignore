@@ -41,6 +41,8 @@ data/
 # but DO track small web demo assets (landing-page hero clips)
 !web/public/demo/*.mp4
 !web/public/demo/*.webm
+# and DO track the real annotated sample videos (project detail scrubber)
+!web/public/annotated/*.mp4
 
 # Weights and Models
 weights/

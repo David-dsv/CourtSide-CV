@@ -41,10 +41,8 @@ export default async function OverviewPage({
 
   return (
     <div className="flex flex-col gap-6">
-      {/* sticky scrubber */}
-      <div className="sticky top-16 z-30">
-        <VideoScrubber project={project} />
-      </div>
+      {/* scrubber — scrolls with the page (no longer sticky) */}
+      <VideoScrubber project={project} />
 
       <SectionHeading
         title="Vue d'ensemble"

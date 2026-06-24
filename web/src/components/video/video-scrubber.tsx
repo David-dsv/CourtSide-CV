@@ -4,19 +4,23 @@ import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { useFrame } from "@/components/video/video-frame-context";
 import { frameToTimecode } from "@/lib/format";
-import { Pause, Play, SkipBack, SkipForward, Repeat } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { Pause, Play, SkipBack, SkipForward, Repeat, Clapperboard, Pencil } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { Project } from "@/lib/types";
 
 /**
- * Mock video scrubber — no real video this sprint. A poster placeholder + a
- * frame slider bound to the shared VideoFrameContext. The whole dashboard
- * reacts to frame changes (frame-as-truth).
+ * Video scrubber. Two display modes, toggled by the "Vidéo réelle / Mock" switch:
+ *  - "real" (default): a real <video> element served from /annotated/<id>_annotated.mp4,
+ *    synced to the shared VideoFrameContext (frame ↔ currentTime).
+ *  - "mock": the original SVG court preview (the previous behaviour).
+ *
+ * Both modes honor the shared VideoFrameContext: the slider, play/pause, and the
+ * optional playbackRange loop (used by the highlight "Replay" button).
  *
  * Playback range (loop): an optional `[start, end]` window can be supplied two
  * ways — via the `playbackRange` prop (controlled) or via the shared
- * `VideoFrameContext` (e.g. the highlight "Replay" button). When active, play
- * loops inside the window instead of the full range. Pass null / omit to clear.
+ * `VideoFrameContext`. When active, play loops inside the window instead of the
+ * full range. Pass null / omit to clear.
  */
 export function VideoScrubber({
   project,
@@ -33,6 +37,7 @@ export function VideoScrubber({
   const { frame, setFrame, frameRange, frameCount, playbackRange, setPlaybackRange, playing, setPlaying } = useFrame();
   const rafRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fps = project.stats.fps;
+  const [realVideo, setRealVideo] = useState(true);
 
   // Keep the context's range in sync with the controlled prop, if provided.
   useEffect(() => {
@@ -72,10 +77,14 @@ export function VideoScrubber({
     <div className="panel-raised overflow-hidden rounded-2xl">
       {/* poster area */}
       <div className="relative aspect-video w-full court-bg">
-        {/* fake court + ball overlay */}
-        <CourtPosterMock project={project} pct={pct} />
-        <div className="absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs text-ball backdrop-blur">
-          ● MOCK PREVIEW
+        {realVideo ? (
+          <RealVideo project={project} />
+        ) : (
+          /* fake court + ball overlay */
+          <CourtPosterMock project={project} pct={pct} />
+        )}
+        <div className={`absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs backdrop-blur ${realVideo ? "text-court-green" : "text-ball"}`}>
+          {realVideo ? "● VIDÉO RÉELLE" : "● MOCK PREVIEW"}
         </div>
         <div className="absolute right-3 top-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs text-white backdrop-blur">
           {frameToTimecode(frame, fps)} · f{frame}
@@ -129,7 +138,18 @@ export function VideoScrubber({
               Sortir du replay
             </Button>
           )}
-          <span className="ml-auto font-mono text-xs text-muted-foreground">
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-8 gap-1.5 px-2 text-xs"
+            onClick={() => setRealVideo((v) => !v)}
+            title={realVideo ? "Basculer vers le mock SVG" : "Basculer vers la vidéo réelle"}
+            aria-pressed={realVideo}
+          >
+            {realVideo ? <Pencil className="h-3.5 w-3.5" /> : <Clapperboard className="h-3.5 w-3.5" />}
+            {realVideo ? "Mock" : "Vidéo"}
+          </Button>
+          <span className="font-mono text-xs text-muted-foreground">
             {frameToTimecode(frame, fps)} / {frameToTimecode(frameRange[1], fps)}
           </span>
         </div>
@@ -143,6 +163,86 @@ export function VideoScrubber({
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * Real annotated <video>, synced to the shared frame context.
+ *
+ * Two-way binding:
+ *  - context.frame → video.currentTime (when the user scrubs / jumps via stats).
+ *  - video.timeupdate → context.frame (when the video plays natively).
+ * Native play() / pause() / loop honor the context's `playing` + `playbackRange`.
+ */
+function RealVideo({ project }: { project: Project }) {
+  const { frame, setFrame, frameRange, fps, playing, playbackRange } = useFrame();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  // Avoid fighting the user's native seeking: ignore timeupdate while we drive.
+  const driving = useRef(false);
+
+  // Source: the real annotated sample served from /public/annotated/.
+  // The annotated file starts at frame frame_range[0], so currentTime 0 == that frame.
+  const src = `/annotated/${project.id}_annotated.mp4`;
+
+  // frame → currentTime (scrub / jump).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const target = (frame - frameRange[0]) / fps;
+    if (Math.abs(v.currentTime - target) > 0.06) {
+      driving.current = true;
+      v.currentTime = target;
+    }
+  }, [frame, frameRange, fps]);
+
+  // playing → video.play()/pause().
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (playing) {
+      v.play().catch(() => {/* autoplay may be blocked until first interaction */});
+    } else {
+      v.pause();
+    }
+  }, [playing]);
+
+  // currentTime → frame (native playback progress).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onTime = () => {
+      if (driving.current) { driving.current = false; return; }
+      setFrame(Math.round(frameRange[0] + v.currentTime * fps));
+    };
+    v.addEventListener("timeupdate", onTime);
+    return () => v.removeEventListener("timeupdate", onTime);
+  }, [setFrame, frameRange, fps]);
+
+  // Loop window: when playbackRange is active, clamp + loop inside it.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (!playbackRange) return;
+    const onTime = () => {
+      const start = (playbackRange[0] - frameRange[0]) / fps;
+      const end = (playbackRange[1] - frameRange[0]) / fps;
+      if (v.currentTime < start - 0.1) v.currentTime = start;
+      else if (v.currentTime >= end) v.currentTime = start;
+    };
+    v.addEventListener("timeupdate", onTime);
+    return () => v.removeEventListener("timeupdate", onTime);
+  }, [playbackRange, frameRange, fps]);
+
+  return (
+    <video
+      ref={videoRef}
+      src={src}
+      className="h-full w-full object-contain"
+      playsInline
+      muted
+      preload="auto"
+      onError={(e) => console.warn("annotated video missing:", src, e)}
+    />
   );
 }
 

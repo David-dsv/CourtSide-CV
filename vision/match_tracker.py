@@ -247,7 +247,8 @@ class MatchTracker:
         if not self._seeded and assignment[1] and assignment[2]:
             self._segment_side = {h: self._side_of(assignment[h]) for h in (1, 2)}
             self._seeded = True
-            self._seed_frame = len(self._human_poses[1]) - 1
+            # index the CURRENT frame will occupy once appended below
+            self._seed_frame = len(self._human_poses[1])
 
         # record + update per-human state
         for h in (1, 2):
@@ -491,7 +492,13 @@ def human_id_for_side(match_result, side, frame_idx):
     sbh = match_result.get("side_by_human_frame")
     if not sbh:
         return None
-    side = "far" if side in ("far", _FAR, 1) else "near"
+    # normalise side; unknown/None (e.g. an override strike with no side) → give up
+    if side in ("far", _FAR, 1):
+        side = "far"
+    elif side in ("near", _NEAR, 2):
+        side = "near"
+    else:
+        return None
     for h in (1, 2):
         seq = sbh.get(h, [])
         if frame_idx < len(seq) and seq[frame_idx] == side:

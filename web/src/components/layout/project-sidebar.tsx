@@ -11,6 +11,7 @@ import {
   Map,
   Users,
   ClipboardList,
+  LineChart,
 } from "lucide-react";
 
 const NAV = [
@@ -21,6 +22,7 @@ const NAV = [
   { href: "minimap", label: "Court radar", icon: Map },
   { href: "player-compare", label: "Joueurs", icon: Users },
   { href: "coach-plan", label: "Plan coach", icon: ClipboardList },
+  { href: "profile", label: "Profil & tendances", icon: LineChart },
 ];
 
 export function ProjectSidebar({ projectId }: { projectId: string }) {

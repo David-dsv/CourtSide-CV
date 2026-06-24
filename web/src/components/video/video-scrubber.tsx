@@ -63,7 +63,7 @@ export function VideoScrubber({
     return () => {
       if (rafRef.current) clearInterval(rafRef.current);
     };
-  }, [playing, setFrame, playbackRange, loopStart, loopEnd, fps]);
+  }, [playing, setFrame, setPlaying, playbackRange, loopStart, loopEnd, fps]);
 
   const pct = frameCount > 0 ? ((frame - frameRange[0]) / frameCount) * 100 : 0;
   const looping = playbackRange !== null;

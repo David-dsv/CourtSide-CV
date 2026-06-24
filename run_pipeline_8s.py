@@ -23,6 +23,11 @@ from models.yolo_detector import TennisYOLODetector
 from utils.video_utils import VideoReader, VideoWriter
 from utils.drawing import draw_player_bbox, draw_bounce_marker, draw_court_overlay, create_legend
 
+# Derived analytics (Session B): fatigue trend + per-rally outcome.
+# These are pure functions over the stats dicts; they add no rendering.
+from vision.fatigue import analyze_fatigue
+from vision.rally_outcome import classify_rally_outcome
+
 # COCO skeleton connections (fixed, not video-dependent)
 BODY_BONES = [(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
 HEAD_BONES = [(0,1),(0,2),(1,3),(2,4)]
@@ -1235,6 +1240,22 @@ def main():
             bh = sum(1 for s in shot_by_frame.values() if s["fhb"] == "backhand")
             logger.info(f"Strokes: {len(shot_by_frame)} hits — forehand={fh}, backhand={bh}")
 
+        # ─── Derived analytics (Session B): per-rally outcome + fatigue ───
+        # Enrich each rally with a geometric outcome label (winner / forced_error /
+        # unforced_error / neutral). Note: forced_error is LOW confidence — the
+        # frontend treats it as such. Both modules are pure functions over the
+        # shots/bounces and degrade gracefully (no shots → no outcome, fatigue none).
+        stats_shots = [{"frame": int(start_frame + f), "x": s["x"], "y": s["y"],
+                        "player_side": s["side"], "stroke": s["fhb"],
+                        "quality": s["quality"], "speed_kmh": round(s["speed"], 1)}
+                       for f, s in sorted(shot_by_frame.items())]
+        stats_bounces = [{"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
+                          "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
+                         for f, v in sorted(bounce_by_frame.items())]
+        for r in rallies:
+            r["outcome"] = classify_rally_outcome(r, stats_shots, stats_bounces, fps)
+        stats_fatigue = analyze_fatigue(stats_shots, [start_frame, end_frame], fps)
+
         # ─── Structured stats JSON (the actionable data output) ───
         stats = {
             "video": video_path,
@@ -1256,19 +1277,21 @@ def main():
                              "backhand": sum(1 for s in shot_by_frame.values() if s["fhb"] == "backhand")}
                             if shot_by_frame else {}),
             },
-            "bounces": [{"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
-                         "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
-                        for f, v in sorted(bounce_by_frame.items())],
-            "shots": [{"frame": int(start_frame + f), "x": s["x"], "y": s["y"],
-                       "player_side": s["side"], "stroke": s["fhb"],
-                       "quality": s["quality"], "speed_kmh": round(s["speed"], 1)}
-                      for f, s in sorted(shot_by_frame.items())],
+            "bounces": stats_bounces,
+            "shots": stats_shots,
             "rallies": rallies,
+            "fatigue": stats_fatigue,
         }
         stats_path = str(Path(output_path).with_suffix("")) + "_stats.json"
-        with open(stats_path, "w") as f:
-            json.dump(stats, f, indent=2)
-        logger.info(f"Stats written to: {stats_path}")
+        try:
+            with open(stats_path, "w") as f:
+                json.dump(stats, f, indent=2)
+            logger.info(f"Stats written to: {stats_path} "
+                        f"(fatigue: {stats_fatigue['confidence']}, "
+                        f"rallies: {len(rallies)})")
+        except Exception as exc:  # never let stats emission break the video output
+            logger.warning(f"Stats JSON not written: {exc}")
+
 
     logger.info(f"Done! Video saved to: {output_path}")
 

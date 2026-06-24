@@ -51,6 +51,7 @@ export default function ProjectsPage() {
                   showConfidenceBadge={false}
                   source={p.stats.speed_source}
                   confidence={p.stats.homography_confidence}
+                  H={p.H}
                   className="rounded-none border-0"
                 />
               </div>

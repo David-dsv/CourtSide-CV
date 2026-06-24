@@ -43,6 +43,7 @@ export default async function PlayerComparePage({ params }: { params: Promise<{ 
           showTrajectory={false}
           source={project.stats.speed_source}
           confidence={project.stats.homography_confidence}
+          H={project.H}
           className="mx-auto max-w-[260px]"
         />
       </div>

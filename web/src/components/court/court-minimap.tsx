@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { pxToMeters, projectMeters, onRadar } from "@/lib/court/projection";
+import { pxToMeters, projectMeters, onRadar, depthFromMeters, clampToCourt } from "@/lib/court/projection";
 import { COURT_LINES, NET_LINE, toPx, PLAYER_HEX } from "@/lib/court/court-geometry";
 import { ConfidenceBadge } from "@/components/core/confidence-badge";
 import { depthHex } from "@/lib/format";
@@ -19,6 +19,14 @@ export interface CourtMinimapProps {
   players?: PlayerPosition[];
   confidence?: HomographyConfidence;
   source?: string;
+  /** optional court homography 3x3 (image px → court meters, row-major).
+   *  When present, projections are metric-exact (no ~approx). When absent,
+   *  falls back to the geometric perspective estimate. */
+  H?: number[][];
+  /** source frame width/height (px) the bounce/trajectory x,y are expressed in.
+   *  Defaults to 1920x1080 (the clips in web/public/annotated). */
+  frameW?: number;
+  frameH?: number;
   /** show the ball trajectory comet */
   showTrajectory?: boolean;
   /** show player pucks */
@@ -44,6 +52,9 @@ export function CourtMinimap({
   players,
   confidence,
   source,
+  H,
+  frameW = 1920,
+  frameH = 1080,
   showTrajectory = true,
   showPlayers = true,
   frame,
@@ -51,28 +62,28 @@ export function CourtMinimap({
   className,
   showConfidenceBadge = true,
 }: CourtMinimapProps) {
-  const hasH = source?.startsWith("homography");
+  // metric-exact projection is available when we have a homography to apply.
+  // (We check H directly rather than `source`, so the prop alone controls it.)
+  const hasH = Boolean(H) || source?.startsWith("homography");
 
   // project bounces to court meters then to tile px
   const bounceTiles = useMemo(() => {
     return bounces
       .map((b) => {
-        const { Xm, Ym } = pxToMeters(b.x, b.y, undefined, 1920, 1080);
+        const { Xm, Ym } = pxToMeters(b.x, b.y, H, frameW, frameH);
         return { bounce: b, Xm, Ym };
       })
       .filter((p) => onRadar(p.Xm, p.Ym));
-    // pxToMeters uses the geometric fallback here (H wiring is a follow-up);
-    // see lib/mock/fixtures.ts for the per-project H used in production.
-  }, [bounces]);
+  }, [bounces, H, frameW, frameH]);
 
   const trajTiles = useMemo(() => {
     if (!showTrajectory || !trajectory) return [] as { x: number; y: number; frame: number }[];
     return trajectory.map((p) => {
-      const { Xm, Ym } = pxToMeters(p.x, p.y, undefined, 1920, 1080);
+      const { Xm, Ym } = pxToMeters(p.x, p.y, H, frameW, frameH);
       const [tx, ty] = projectMeters(Xm, Ym, VIEW_W, VIEW_H);
       return { x: tx, y: ty, frame: p.frame };
     });
-  }, [trajectory, showTrajectory]);
+  }, [trajectory, showTrajectory, H, frameW, frameH]);
 
   const playerTiles = useMemo(() => {
     if (!showPlayers || !players) return [];
@@ -86,11 +97,15 @@ export function CourtMinimap({
       }
     }
     return Object.values(byPlayer).filter(Boolean).map((p) => {
-      const { Xm, Ym } = pxToMeters(p!.x, p!.y, undefined, 1920, 1080);
+      const raw = pxToMeters(p!.x, p!.y, H, frameW, frameH);
+      // synthetic puck positions are derived from shot pixels and can fall just
+      // outside the calibrated court region on grazing clips — clamp to the pad
+      // bounds so the puck stays on the map (shown on the edge, never off-court).
+      const { Xm, Ym } = clampToCourt(raw.Xm, raw.Ym);
       const [tx, ty] = projectMeters(Xm, Ym, VIEW_W, VIEW_H);
       return { id: p!.id, x: tx, y: ty };
     });
-  }, [players, showPlayers, frame]);
+  }, [players, showPlayers, frame, H, frameW, frameH]);
 
   return (
     <div
@@ -176,10 +191,12 @@ export function CourtMinimap({
           <CurrentBall trajTiles={trajTiles} frame={frame} />
         )}
 
-        {/* bounces */}
+        {/* bounces — color is reclassified from the projected |Ym| so it always
+            agrees with the vertical placement (the pipeline's _stats.json depth
+            label is kept for lists/stats, not for the map). */}
         {bounceTiles.map(({ bounce, Xm, Ym }) => {
           const [tx, ty] = projectMeters(Xm, Ym, VIEW_W, VIEW_H);
-          const color = depthHex(bounce.depth);
+          const color = depthHex(depthFromMeters(Ym));
           return (
             <g
               key={bounce.frame}

@@ -58,25 +58,45 @@ function synthPlayers(stats: PipelineStats): PlayerPosition[] {
 }
 
 /**
- * Plausible homography H (image px → court meters), row-major 3x3.
- * For a standard behind-baseline camera these map roughly:
- *   image center → court center (0,0), image-top → far baseline (+Y).
- * These are illustrative (the real ones come from court_calibrator.py).
+ * Mock court homography H (image px → court meters), row-major 3x3.
+ *
+ * ⚠️ These are CALIBRATED AFFINE APPROXIMATIONS for the demo, not real
+ * projective homographies. They were fit so that every bounce pixel in the
+ * mock `_stats.json` lands inside the court rectangle with a depth ordering
+ * that respects the pipeline's `depth` label (deep → toward a baseline,
+ * short → near the net). An affine is used deliberately: grazing/oblique
+ * clips (felix) are ill-conditioned for a 4-corner projective solve (see
+ * `models/court_calibrator.py` + memory courtside-felix-grazing-angle), so a
+ * projective H fitted to noisy bounce centroids extrapolates wildly for points
+ * off the centroid — an affine cannot.
+ *
+ * In production the REAL projective homography comes from `court_calibrator.py`
+ * (4+ clicked court corners → cv2.findHomography) and is stored on `Project.H`;
+ * these affines only stand in for the mock fixtures. Direction: image center →
+ * court center (0,0), image-top (small y) → far side (+Y), image-bottom → near
+ * side (−Y), image-left/right → −/+X.
+ *
+ * Calibration source: the bounce (x,y,depth) triples in src/lib/mock/raw/*.json
+ * (real pipeline outputs). Constants verified to map 100% of bounces in-court
+ * (|Xm| ≤ doubles-half-width+pad, |Ym| ≤ half-length+pad).
  */
 function H_standard(): number[][] {
-  // affine-ish, scaled so that frame corners map sensibly to court meters
+  // Broadcast/standard angle (tennis-demo). Calibrated on tennis.json (9 bounces).
+  // ax = 3.7 / max|x-dev| (maps the spread to singles half-width), Ym spans +8..−2.
   return [
-    [0.012, 0.0, -11.0],
-    [0.0, -0.022, 13.0],
+    [0.009840425531914894, 0.0, -9.446808510638299],
+    [0.0, -0.021367521367521368, 14.858974358974361],
     [0.0, 0.0, 1.0],
   ];
 }
 
 function H_grazing(): number[][] {
-  // weaker conditioning for the low-confidence grazing case
+  // Grazing/oblique angle (sota, same felix.mp4 geometry). Calibrated on sota.json
+  // (20 bounces). Tighter x-scale than broadcast (perspective compression) and a
+  // steeper y-scale (the visible half-court is foreshortened).
   return [
-    [0.011, 0.002, -10.5],
-    [0.001, -0.020, 12.0],
+    [0.005417276720351391, 0.0, -5.200585651537335],
+    [0.0, -0.05714285714285715, 37.31428571428572],
     [0.0, 0.0, 1.0],
   ];
 }

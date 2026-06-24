@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { pxToMeters, projectMeters } from "@/lib/court/projection";
+import { pxToMeters, projectMeters, depthFromMeters } from "@/lib/court/projection";
 import type { Bounce, PipelineStats, Stroke, Depth } from "@/lib/types";
 
 /**
@@ -58,6 +58,9 @@ export function PlacementHeatmap({
   filter = "all",
   width = 360,
   height = 760,
+  H,
+  frameW = 1920,
+  frameH = 1080,
   className,
 }: {
   bounces: Bounce[];
@@ -65,6 +68,12 @@ export function PlacementHeatmap({
   filter?: HeatmapFilter;
   width?: number;
   height?: number;
+  /** optional court homography 3x3 (image px → court meters). Metric-exact when
+   *  present; geometric fallback otherwise. Keep this in sync with the CourtMinimap
+   *  on the same page so the heatmap and the radar dots overlap. */
+  H?: number[][];
+  frameW?: number;
+  frameH?: number;
   className?: string;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -76,7 +85,13 @@ export function PlacementHeatmap({
     const sortedBounces = [...bounces].sort((a, b) => a.frame - b.frame);
 
     if (filter === "deep" || filter === "mid" || filter === "short") {
-      return bounces.filter((b) => b.depth === (filter as Depth));
+      // reclassify from the projected |Ym| — same source of truth as the dot
+      // color on the minimap, so the heatmap and the radar agree.
+      const want = filter as Depth;
+      return bounces.filter((b) => {
+        const { Ym } = pxToMeters(b.x, b.y, H, frameW, frameH);
+        return depthFromMeters(Ym) === want;
+      });
     }
     // stroke filter: bounces that are the result of a user (near) shot of this stroke
     const stroke = filter as Stroke;
@@ -87,7 +102,7 @@ export function PlacementHeatmap({
       if (nb) resultFrames.add(nb.frame);
     }
     return bounces.filter((b) => resultFrames.has(b.frame));
-  }, [bounces, stats, filter]);
+  }, [bounces, stats, filter, H, frameW, frameH]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -104,7 +119,7 @@ export function PlacementHeatmap({
     // project bounces to court meters → tile px
     const pts = filtered
       .map((b) => {
-        const { Xm, Ym } = pxToMeters(b.x, b.y, undefined, 1920, 1080);
+        const { Xm, Ym } = pxToMeters(b.x, b.y, H, frameW, frameH);
         return projectMeters(Xm, Ym, width, height);
       })
       .filter(([x, y]) => x >= 0 && x <= width && y >= 0 && y <= height);
@@ -160,7 +175,7 @@ export function PlacementHeatmap({
     ctx.globalAlpha = 0.85;
     ctx.drawImage(off, 0, 0, width, height);
     ctx.globalAlpha = 1;
-  }, [filtered, width, height]);
+  }, [filtered, width, height, H, frameW, frameH]);
 
   return (
     <canvas

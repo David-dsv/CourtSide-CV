@@ -206,6 +206,8 @@ class MatchTracker:
         # baseline side of each human at the start of the current segment
         self._segment_side = {1: None, 2: None}
         self._pending = None
+        self._seed_frame = None  # frame index where the segment baseline was set
+        self._locked_in = False  # baseline confirmed authoritative (post warm-up)
         # per-frame cache of candidate appearance signatures (id(p) -> sig),
         # populated at the top of add_frame and consumed by _associate.
         self._candidate_sig_cache = {}
@@ -238,10 +240,14 @@ class MatchTracker:
         # associate detections to stable humans (side-agnostic continuity)
         assignment = self._associate(cand)
 
-        # seed human<->side on the first frame both humans are seen
+        # seed human<->side on the first frame both humans are seen (tentative —
+        # the divider EMA is still self-centering, so this baseline is only
+        # AUTHORITATIVE once it's re-confirmed after the warm-up window; see
+        # _update_swap_state's locked-in logic).
         if not self._seeded and assignment[1] and assignment[2]:
             self._segment_side = {h: self._side_of(assignment[h]) for h in (1, 2)}
             self._seeded = True
+            self._seed_frame = len(self._human_poses[1]) - 1
 
         # record + update per-human state
         for h in (1, 2):
@@ -368,6 +374,28 @@ class MatchTracker:
         d = self.swap_dwell
         if N < d:
             return
+
+        # Warm-up guard: the divider EMA + the per-human signatures take a few
+        # frames to stabilise after the seed. During that window a player's
+        # _side_of reading can flicker as the divider self-centers, which would
+        # register a spurious swap at the very start of the clip. We wait at
+        # least 2*dwell frames, then LOCK IN the baseline to whatever
+        # arrangement actually settled (one-time) — only after that do we begin
+        # detecting swaps against a trustworthy baseline.
+        if self._seed_frame is not None and (N - 1 - self._seed_frame) < 2 * d:
+            return
+        if not self._locked_in:
+            # require a full dwell window of a consistent, two-sided arrangement
+            window = self._human_side_seq[1][N - d:], self._human_side_seq[2][N - d:]
+            s1s, s2s = window
+            if (all(x is not None for x in s1s) and all(x is not None for x in s2s)
+                    and len(set(s1s)) == 1 and len(set(s2s)) == 1
+                    and s1s[0] != s2s[0]):
+                self._segment_side = {1: self._side_val(s1s[0]),
+                                      2: self._side_val(s2s[0])}
+                self._locked_in = True
+                self._seed_frame = N - 1
+            return  # don't detect swaps until locked in
 
         def both_swapped_at(i):
             s1 = self._human_side_seq[1][i]

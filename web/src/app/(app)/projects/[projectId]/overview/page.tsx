@@ -8,6 +8,7 @@ import { SectionHeading } from "@/components/core/section-heading";
 import { FrameJumpLink } from "@/components/core/frame-jump-link";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
 import { HighlightCard } from "@/components/analysis/highlight-card";
+import { MatchModeNotice } from "@/components/core/match-mode-notice";
 import { MomentumChart } from "@/components/analysis/momentum-chart";
 import { deriveHighlights, deriveMomentum } from "@/lib/analysis/highlights";
 import { depthColorClass, depthLabel, fmtKmh, strokeLabel } from "@/lib/format";
@@ -50,6 +51,8 @@ export default async function OverviewPage({
         icon={<Activity className="h-4 w-4" />}
         actions={<FrameAwareFrame />}
       />
+
+      {project.matchType === "match" && <MatchModeNotice />}
 
       {/* KPI grid */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

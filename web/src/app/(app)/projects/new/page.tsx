@@ -6,15 +6,40 @@ import { GlassCard } from "@/components/core/glass-card";
 import { ConfidenceBadge } from "@/components/core/confidence-badge";
 import { Button } from "@/components/ui/button";
 import { useMockProcessing, STEPS } from "@/hooks/use-mock-processing";
-import { Upload, FileVideo, CheckCircle2, Loader2, Camera, Ruler, Zap, CircleDot } from "lucide-react";
+import { Upload, FileVideo, CheckCircle2, Loader2, Camera, Ruler, Zap, CircleDot, Users } from "lucide-react";
 import { toast } from "sonner";
+import type { MatchType } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const STEP_ICONS = [Upload, Camera, Zap];
+
+type ModeOption = {
+  value: MatchType;
+  label: string;
+  hint: string;
+  icon: typeof Camera;
+};
+
+const MODES: ModeOption[] = [
+  {
+    value: "training",
+    label: "Entraînement",
+    hint: "Caméra fixe, pas de changement de côté.",
+    icon: Camera,
+  },
+  {
+    value: "match",
+    label: "Match",
+    hint: "Les joueurs changent de côté entre jeux (analyse plus longue).",
+    icon: Users,
+  },
+];
 
 export default function NewProjectPage() {
   const router = useRouter();
   const { state, progress, start } = useMockProcessing();
   const [filename, setFilename] = useState<string | null>(null);
+  const [matchType, setMatchType] = useState<MatchType>("training");
 
   function onDemo() {
     setFilename("felix.mp4");
@@ -25,7 +50,7 @@ export default function NewProjectPage() {
     const f = e.target.files?.[0];
     if (f) {
       setFilename(f.name);
-      toast.success(`${f.name} sélectionné`);
+      toast.success(`${f.name} sélectionné · ${matchType === "match" ? "Match" : "Entraînement"}`);
       start();
     }
   }
@@ -114,6 +139,43 @@ export default function NewProjectPage() {
           Uploadez une vidéo de tennis. Calibre le court une fois, on s&apos;occupe du reste.
         </p>
       </div>
+
+      {/* Sélecteur de type d'analyse — explicite avant la soumission.
+          training = caméra fixe (verrou P1/P2 actuel) ; match = side-swap. */}
+      <fieldset className="mb-6">
+        <legend className="mb-2 text-sm font-medium">Type d&apos;analyse</legend>
+        <div className="grid grid-cols-2 gap-3">
+          {MODES.map((m) => {
+            const Icon = m.icon;
+            const selected = matchType === m.value;
+            return (
+              <button
+                key={m.value}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setMatchType(m.value)}
+                className={cn(
+                  "flex flex-col items-start gap-2 rounded-xl border p-4 text-left transition-colors",
+                  selected
+                    ? "border-court-green/60 bg-court-green/10 glow-green"
+                    : "border-white/10 bg-white/[0.02] hover:border-court-green/40",
+                )}
+              >
+                <span
+                  className={cn(
+                    "flex h-8 w-8 items-center justify-center rounded-lg",
+                    selected ? "bg-court-green/15 text-court-green" : "bg-white/5 text-muted-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="text-sm font-medium">{m.label}</span>
+                <span className="text-xs text-muted-foreground">{m.hint}</span>
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
 
       <label htmlFor="video-upload" className="block cursor-pointer">
         <GlassCard

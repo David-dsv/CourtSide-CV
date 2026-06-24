@@ -87,6 +87,7 @@ export const felixProject: Project = {
   video: "felix.mp4",
   createdAt: "2026-06-12T18:30:00Z",
   status: "ready",
+  matchType: "training",
   stats: felixStats,
   trajectory: synthTrajectory(felixStats),
   players: synthPlayers(felixStats),
@@ -100,6 +101,7 @@ export const tennisProject: Project = {
   video: "tennis_1min.mp4",
   createdAt: "2026-06-18T14:10:00Z",
   status: "ready",
+  matchType: "training",
   stats: tennisStats,
   trajectory: synthTrajectory(tennisStats),
   players: synthPlayers(tennisStats),
@@ -113,6 +115,7 @@ export const sotaProject: Project = {
   video: "felix.mp4",
   createdAt: "2026-06-19T09:45:00Z",
   status: "ready",
+  matchType: "training",
   stats: sotaStats,
   trajectory: synthTrajectory(sotaStats),
   players: synthPlayers(sotaStats),
@@ -120,4 +123,38 @@ export const sotaProject: Project = {
   posterFrame: sotaStats.bounces[0]?.frame ?? 0,
 };
 
-export const mockProjects: Project[] = [tennisProject, sotaProject, felixProject];
+/**
+ * tennis-full — la vidéo tennis COMPLÈTE en mode "match" (les joueurs changent
+ * de côté entre jeux). Démo de la logique side-swap (gérée côté backend,
+ * feat/match-mode — PAS encore branchée ici).
+ *
+ * TODO(backend/feat/match-mode): les stats ci-dessous sont un PLACEHOLDER — on
+ * réutilise tennisStats (le clip 1 min) parce que le _stats.json réel pour la
+ * vidéo complète n'existe pas encore. Quand le pipeline aura tourné sur les
+ * ~11760 frames, remplacer tennisFullStats par le vrai data/output/*.json et
+ * supprimer le clone. frame_range [0, 11760] (≈235 s @ 50 fps) reflète déjà la
+ * durée cible ; les positions des bounces/frappes restent celles du clip court.
+ * La vidéo annotée réelle est web/public/annotated/tennis-full_annotated.mp4
+ * (aujourd'hui = copie byte-pour-byte de tennis_annotated.mp4 en attendant).
+ */
+const tennisFullStats: PipelineStats = {
+  ...tennisStats,
+  video: "tennis.mp4",
+  frame_range: [0, 11760],
+};
+
+export const tennisFullProject: Project = {
+  id: "tennis-full",
+  name: "Match démo — tennis complet",
+  video: "tennis.mp4",
+  createdAt: "2026-06-24T10:00:00Z",
+  status: "ready",
+  matchType: "match",
+  stats: tennisFullStats,
+  trajectory: synthTrajectory(tennisFullStats),
+  players: synthPlayers(tennisFullStats),
+  H: H_standard(),
+  posterFrame: tennisFullStats.bounces[0]?.frame ?? 0,
+};
+
+export const mockProjects: Project[] = [tennisProject, tennisFullProject, sotaProject, felixProject];

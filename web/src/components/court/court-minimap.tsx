@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { pxToMeters, projectMeters, onRadar } from "@/lib/court/projection";
+import { pxToMeters, projectMeters, onRadar, depthFromMeters, clampToCourt } from "@/lib/court/projection";
 import { COURT_LINES, NET_LINE, toPx, PLAYER_HEX } from "@/lib/court/court-geometry";
 import { ConfidenceBadge } from "@/components/core/confidence-badge";
 import { depthHex } from "@/lib/format";
@@ -97,7 +97,11 @@ export function CourtMinimap({
       }
     }
     return Object.values(byPlayer).filter(Boolean).map((p) => {
-      const { Xm, Ym } = pxToMeters(p!.x, p!.y, H, frameW, frameH);
+      const raw = pxToMeters(p!.x, p!.y, H, frameW, frameH);
+      // synthetic puck positions are derived from shot pixels and can fall just
+      // outside the calibrated court region on grazing clips — clamp to the pad
+      // bounds so the puck stays on the map (shown on the edge, never off-court).
+      const { Xm, Ym } = clampToCourt(raw.Xm, raw.Ym);
       const [tx, ty] = projectMeters(Xm, Ym, VIEW_W, VIEW_H);
       return { id: p!.id, x: tx, y: ty };
     });
@@ -187,10 +191,12 @@ export function CourtMinimap({
           <CurrentBall trajTiles={trajTiles} frame={frame} />
         )}
 
-        {/* bounces */}
+        {/* bounces — color is reclassified from the projected |Ym| so it always
+            agrees with the vertical placement (the pipeline's _stats.json depth
+            label is kept for lists/stats, not for the map). */}
         {bounceTiles.map(({ bounce, Xm, Ym }) => {
           const [tx, ty] = projectMeters(Xm, Ym, VIEW_W, VIEW_H);
-          const color = depthHex(bounce.depth);
+          const color = depthHex(depthFromMeters(Ym));
           return (
             <g
               key={bounce.frame}

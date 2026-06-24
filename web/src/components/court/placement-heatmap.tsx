@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { pxToMeters, projectMeters } from "@/lib/court/projection";
+import { pxToMeters, projectMeters, depthFromMeters } from "@/lib/court/projection";
 import type { Bounce, PipelineStats, Stroke, Depth } from "@/lib/types";
 
 /**
@@ -85,7 +85,13 @@ export function PlacementHeatmap({
     const sortedBounces = [...bounces].sort((a, b) => a.frame - b.frame);
 
     if (filter === "deep" || filter === "mid" || filter === "short") {
-      return bounces.filter((b) => b.depth === (filter as Depth));
+      // reclassify from the projected |Ym| — same source of truth as the dot
+      // color on the minimap, so the heatmap and the radar agree.
+      const want = filter as Depth;
+      return bounces.filter((b) => {
+        const { Ym } = pxToMeters(b.x, b.y, H, frameW, frameH);
+        return depthFromMeters(Ym) === want;
+      });
     }
     // stroke filter: bounces that are the result of a user (near) shot of this stroke
     const stroke = filter as Stroke;
@@ -96,7 +102,7 @@ export function PlacementHeatmap({
       if (nb) resultFrames.add(nb.frame);
     }
     return bounces.filter((b) => resultFrames.has(b.frame));
-  }, [bounces, stats, filter]);
+  }, [bounces, stats, filter, H, frameW, frameH]);
 
   useEffect(() => {
     const canvas = ref.current;

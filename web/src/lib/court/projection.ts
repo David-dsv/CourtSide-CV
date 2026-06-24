@@ -3,6 +3,7 @@
  * Court coordinate system: origin at court center, +X right, +Y toward the far
  * baseline (half-length 11.885 m), doubles half-width 5.485 m.
  */
+import type { Depth } from "@/lib/types";
 
 export const COURT = {
   DOUBLES_HALF_W: 5.485,
@@ -77,4 +78,47 @@ export function onRadar(Xm: number, Ym: number): boolean {
     Math.abs(Xm) <= COURT.DOUBLES_HALF_W + COURT.PAD_M + 2.5 &&
     Math.abs(Ym) <= COURT.HALF_LEN + COURT.PAD_M + 3.0
   );
+}
+
+/**
+ * Depth band from the projected court coordinate. The geometric position is the
+ * single source of truth for what is shown ON THE MAP: the dot color and its
+ * vertical placement always agree because both derive from |Ym| (distance from
+ * the net at Ym=0).
+ *
+ * ITF-derived bands (court half-length 11.885 m, service line 6.4 m from net):
+ *   short : |Ym| < 4 m   — between net and mid-service area
+ *   mid   : 4 ≤ |Ym| < 7 m — service box region
+ *   deep  : |Ym| ≥ 7 m   — past the service line, toward the baseline
+ *
+ * NOTE: this intentionally ignores `bounce.depth` from the pipeline `_stats.json`
+ * for MAP rendering (that label is kept for lists/stats). The Python
+ * `classify_bounce_depth` will be aligned to the same |Ym| bands in a separate
+ * pass; until then the frontend reclassifies from the projected position so the
+ * demo is internally consistent. See PROJET.md / courtside-felix-grazing-angle.
+ */
+export function depthFromMeters(Ym: number): Depth {
+  const d = Math.abs(Ym);
+  if (d < 4) return "short";
+  if (d < 7) return "mid";
+  return "deep";
+}
+
+/**
+ * Clamp a projected court point to the pad-expanded court rectangle. Used for
+ * synthetic puck positions (derived from shot pixels) that can fall just outside
+ * the calibrated court region on grazing clips — we'd rather show the puck on
+ * the edge than off the map.
+ */
+export function clampToCourt(Xm: number, Ym: number): { Xm: number; Ym: number } {
+  return {
+    Xm: Math.max(
+      -(COURT.DOUBLES_HALF_W + COURT.PAD_M),
+      Math.min(COURT.DOUBLES_HALF_W + COURT.PAD_M, Xm),
+    ),
+    Ym: Math.max(
+      -(COURT.HALF_LEN + COURT.PAD_M),
+      Math.min(COURT.HALF_LEN + COURT.PAD_M, Ym),
+    ),
+  };
 }

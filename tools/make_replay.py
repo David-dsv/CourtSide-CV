@@ -249,6 +249,11 @@ def main() -> None:
                     help="Source fps. If omitted, read from the video via ffprobe.")
     ap.add_argument("--slowmo", type=float, default=0.25,
                     help="Playback speed factor in (0, 1.0]. 0.25 = 4× slow.")
+    ap.add_argument("--frame-offset", type=int, default=0,
+                    help="Subtract this from start/end frame before seeking. Use "
+                         "stats.json frame_range[0] when the frames come from stats "
+                         "(stats frames are absolute source frames; the annotated "
+                         "FILE starts at frame_range[0]). Default 0.")
     ap.add_argument("-o", "--out", type=Path, default=None,
                     help="Output path (default: data/output/<stem>_replay_<start>.mp4).")
     args = ap.parse_args()
@@ -266,7 +271,8 @@ def main() -> None:
         logger.error(f"--slowmo must be in (0, 1.0]; got {args.slowmo}")
         sys.exit(1)
 
-    make_replay(args.video, args.start_frame, args.end_frame, fps, args.slowmo, args.out)
+    make_replay(args.video, args.start_frame - args.frame_offset,
+                args.end_frame - args.frame_offset, fps, args.slowmo, args.out)
 
 
 if __name__ == "__main__":

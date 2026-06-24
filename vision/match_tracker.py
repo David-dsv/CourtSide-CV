@@ -331,7 +331,6 @@ class MatchTracker:
 
         # exact 2x2 (or 2x1) assignment
         if len(anchored) == 2 and len(cand) == 2:
-            import itertools
             h1, h2 = anchored
             c1, c2 = cand
             best, best_cost = None, None

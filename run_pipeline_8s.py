@@ -115,6 +115,53 @@ import vision.fx as fx  # noqa: E402  — cinematic visual effects (glow, glass 
 from vision.court_track import h_at  # noqa: E402  — per-frame homography lookup (track-camera)
 
 
+def _merge_solo_rallies(rallies):
+    """Re-attribute any 1-shot rally ("solo") into its nearest neighbour.
+
+    Mirrors mergeSoloRallies in web/src/lib/analysis/highlights.ts exactly, so
+    the pipeline JSON and the front-end-derived rallies stay in sync. A solo is
+    absorbed into whichever neighbour (prev/next) is closer by gap; ties go to
+    the previous (chronological). Returns a new list.
+    """
+    if len(rallies) <= 1:
+        return rallies
+    out = [
+        {
+            "start_frame": r["start_frame"],
+            "end_frame": r["end_frame"],
+            "shot_frames": list(r["shot_frames"]),
+            "bounce_frames": list(r["bounce_frames"]),
+            "n_shots": r["n_shots"],
+        }
+        for r in rallies
+    ]
+    i = 0
+    while i < len(out):
+        r = out[i]
+        if r["n_shots"] != 1:
+            i += 1
+            continue
+        prev = out[i - 1] if i - 1 >= 0 else None
+        nxt = out[i + 1] if i + 1 < len(out) else None
+        gap_prev = (r["start_frame"] - prev["end_frame"]) if prev else float("inf")
+        gap_next = (nxt["start_frame"] - r["end_frame"]) if nxt else float("inf")
+        if gap_prev <= gap_next and prev:
+            prev["shot_frames"].extend(r["shot_frames"])
+            prev["bounce_frames"].extend(r["bounce_frames"])
+            prev["end_frame"] = max(prev["end_frame"], r["end_frame"])
+            prev["n_shots"] += r["n_shots"]
+            out.pop(i)
+        elif nxt:
+            nxt["shot_frames"] = list(r["shot_frames"]) + nxt["shot_frames"]
+            nxt["bounce_frames"] = list(r["bounce_frames"]) + nxt["bounce_frames"]
+            nxt["start_frame"] = min(nxt["start_frame"], r["start_frame"])
+            nxt["n_shots"] += r["n_shots"]
+            out.pop(i)
+        else:
+            i += 1
+    return out
+
+
 def estimate_px_per_meter(court_zones, frame_height):
     """
     Estimate the scale factor (pixels per meter) from court zones or frame geometry.
@@ -1233,6 +1280,13 @@ def main():
                 })
             logger.info(f"Rallies: {len(rallies)} "
                         f"(longest={max((r['n_shots'] for r in rallies), default=0)} shots)")
+
+            # Merge solo (1-shot) rallies into their nearest neighbour. A solo
+            # arises when a strike sits >gap from both neighbours — a genuine
+            # isolated hit — but surfacing it as its own point is noise in the
+            # highlights. Must match web/src/lib/analysis/highlights.ts
+            # mergeSoloRallies so the pipeline JSON and the front-end agree.
+            rallies = _merge_solo_rallies(rallies)
 
         # Shot-type stats
         if shot_by_frame:

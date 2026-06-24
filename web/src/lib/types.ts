@@ -54,6 +54,29 @@ export interface Rally {
   bounce_frames: number[];
   /** number of shots — the natural "length" of a rally */
   n_shots: number;
+  /** server-computed geometric outcome (vision/rally_outcome.py). Absent on
+   * legacy fixtures → the front-end may derive a fallback winner heuristic. */
+  outcome?: RallyOutcomeInfo;
+}
+
+/**
+ * Per-rally geometric outcome, computed by vision/rally_outcome.py and emitted
+ * on each rally in the pipeline _stats.json. This is the SINGLE source of truth
+ * for winner/forced/unforced — the front-end reads it instead of re-deriving.
+ *
+ * Confidence note: `forced_error` is geometrically unreliable (can't tell
+ * "player overwhelmed" from "bad shot"). The UI treats it as low-confidence
+ * (grouped with neutral / distinct badge). `winner`, `unforced_error`, and
+ * `neutral` are the solid labels.
+ */
+export type RallyOutcome = "winner" | "forced_error" | "unforced_error" | "neutral";
+
+export interface RallyOutcomeInfo {
+  outcome: RallyOutcome;
+  /** frame to point the UI at (the defining shot/bounce) */
+  defining_frame: number;
+  /** human-readable justification (FR/EN), directly displayable */
+  reason: string;
 }
 
 /** Highlight categories surfaced in the post-analysis summary. */

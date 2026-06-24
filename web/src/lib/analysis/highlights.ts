@@ -54,7 +54,7 @@ export function deriveRallies(stats: PipelineStats): Rally[] {
   }
   groups.push(cur);
 
-  return groups.map((gf) => {
+  const rallies = groups.map((gf) => {
     const start = gf[0];
     const end = gf[gf.length - 1];
     const bf = bounceFrames.filter((f) => f >= start && f <= end + gapFrames);
@@ -66,6 +66,52 @@ export function deriveRallies(stats: PipelineStats): Rally[] {
       n_shots: gf.length,
     };
   });
+
+  return mergeSoloRallies(rallies);
+}
+
+/**
+ * Re-attribute any 1-shot rally ("solo") into its nearest neighbour (prev or
+ * next), absorbing its bounces. A solo arises when a shot sits >gap from both
+ * neighbours — i.e. a genuine isolated strike — but surfacing it as its own
+ * point is noise in the highlights. Merging keeps the break detection honest
+ * (the gap was real) while avoiding single-shot "rallies" in the summary.
+ * If the solo is equidistant from prev/next it goes to the previous (chronological).
+ */
+function mergeSoloRallies(rallies: Rally[]): Rally[] {
+  if (rallies.length <= 1) return rallies;
+  // Work on mutable copies.
+  const out = rallies.map((r) => ({
+    ...r,
+    shot_frames: [...r.shot_frames],
+    bounce_frames: [...r.bounce_frames],
+  }));
+  for (let i = 0; i < out.length; i++) {
+    const r = out[i];
+    if (r.n_shots !== 1) continue;
+    const prev = out[i - 1];
+    const next = out[i + 1];
+    const gapPrev = prev ? r.start_frame - prev.end_frame : Infinity;
+    const gapNext = next ? next.start_frame - r.end_frame : Infinity;
+    // Absorb into whichever neighbour is closer.
+    if (gapPrev <= gapNext && prev) {
+      prev.shot_frames.push(...r.shot_frames);
+      prev.bounce_frames.push(...r.bounce_frames);
+      prev.end_frame = Math.max(prev.end_frame, r.end_frame);
+      prev.n_shots += r.n_shots;
+      out.splice(i, 1);
+      i--; // re-examine this index (shifted)
+    } else if (next) {
+      next.shot_frames = [...r.shot_frames, ...next.shot_frames];
+      next.bounce_frames = [...r.bounce_frames, ...next.bounce_frames];
+      next.start_frame = Math.min(next.start_frame, r.start_frame);
+      next.n_shots += r.n_shots;
+      out.splice(i, 1);
+      i--;
+    }
+    // If neither neighbour exists (shouldn't happen with length>1), leave it.
+  }
+  return out;
 }
 
 /** Attach each shot to the bounce that follows it (the shot's result). */
@@ -181,33 +227,95 @@ export function deriveHighlights(stats: PipelineStats): Highlight[] {
     }
   }
 
-  // ── Winners: last user shot that is fast AND the following bounce is deep ──
-  for (const s of [...stats.shots].sort((a, b) => b.frame - a.frame)) {
-    if (s.player_side !== "near") continue;
-    const r = shotRally.get(s.frame);
-    if (!r) continue;
-    const isLast = r.shot_frames[r.shot_frames.length - 1] === s.frame;
-    if (!isLast) continue;
-    const followingBounce = stats.bounces.find((b) => b.frame > s.frame && b.frame <= r.end_frame + 5 * fps);
-    if (!followingBounce) continue;
-    // winner heuristic: fast shot + deep result + the rally ends soon after
-    if (s.speed_kmh >= 110 && followingBounce.depth === "deep" && s.quality >= 55) {
+  // ── Winner highlight ──
+  // Single source of truth: if the backend classified a rally outcome, use it
+  // (vision/rally_outcome.py). Only fall back to the local heuristic when no
+  // outcome is present (legacy fixtures). Pick the most recent winner rally.
+  const winnerFromBackend = rallies.findLast?.((r) => r.outcome?.outcome === "winner");
+  const winnerRally = winnerFromBackend ?? null;
+
+  if (winnerRally?.outcome) {
+    const o = winnerRally.outcome;
+    out.push({
+      type: "winner",
+      title: "Coup gagnant",
+      reason: o.reason,
+      frame: o.defining_frame,
+      window: [winnerRally.start_frame, winnerRally.end_frame],
+      chips: [{ label: "Échange", value: `${winnerRally.n_shots} frappes` }],
+    });
+  } else {
+    // Fallback heuristic (legacy fixtures without backend outcome): last user
+    // shot that is fast AND whose following bounce is deep.
+    for (const s of [...stats.shots].sort((a, b) => b.frame - a.frame)) {
+      if (s.player_side !== "near") continue;
+      const r = shotRally.get(s.frame);
+      if (!r) continue;
+      const isLast = r.shot_frames[r.shot_frames.length - 1] === s.frame;
+      if (!isLast) continue;
+      const followingBounce = stats.bounces.find((b) => b.frame > s.frame && b.frame <= r.end_frame + 5 * fps);
+      if (!followingBounce) continue;
+      if (s.speed_kmh >= 110 && followingBounce.depth === "deep" && s.quality >= 55) {
+        out.push({
+          type: "winner",
+          title: "Coup gagnant probable",
+          reason: `Dernière frappe de l'échange à ${Math.round(s.speed_kmh)} km/h, balle profonde (qualité ${s.quality}).`,
+          frame: s.frame,
+          window: [Math.max(0, s.frame - lead), followingBounce.frame],
+          chips: [
+            { label: "Vitesse", value: `${Math.round(s.speed_kmh)} km/h` },
+            { label: "Profondeur", value: "Profond" },
+          ],
+        });
+        break; // one winner highlight is enough
+      }
+    }
+  }
+
+  // ── Unforced-error highlight (the solid complement to the winner) ──
+  // Driven by the backend outcome (the reliable label). We deliberately do NOT
+  // surface `forced_error` as a highlight — it's geometrically unreliable
+  // (see OUTCOME_CONFIDENCE below). Pick the most recent unforced_error rally.
+  const ueRally = rallies.findLast?.((r) => r.outcome?.outcome === "unforced_error");
+  if (ueRally?.outcome) {
+    const o = ueRally.outcome;
+    // Avoid duplicating the worst_point card when it already points at the same rally.
+    const worstFrame = out.find((h) => h.type === "worst_point")?.frame;
+    const dupesWorst =
+      worstFrame !== undefined &&
+      ueRally.shot_frames.includes(worstFrame);
+    if (!dupesWorst) {
       out.push({
-        type: "winner",
-        title: "Coup gagnant probable",
-        reason: `Dernière frappe de l'échange à ${Math.round(s.speed_kmh)} km/h, balle profonde (qualité ${s.quality}).`,
-        frame: s.frame,
-        window: [Math.max(0, s.frame - lead), followingBounce.frame],
-        chips: [
-          { label: "Vitesse", value: `${Math.round(s.speed_kmh)} km/h` },
-          { label: "Profondeur", value: followingBounce.depth === "deep" ? "Profond" : "—" },
-        ],
+        type: "worst_point",
+        title: "Erreur non forcée",
+        reason: o.reason,
+        frame: o.defining_frame,
+        window: [ueRally.start_frame, ueRally.end_frame],
+        chips: [{ label: "Échange", value: `${ueRally.n_shots} frappes` }],
       });
-      break; // one winner highlight is enough
     }
   }
 
   return out;
+}
+
+/**
+ * Confidence level for each rally outcome label. `forced_error` is the only
+ * LOW-confidence label — geometrically we can't reliably distinguish "the
+ * player was overwhelmed" from "they misplayed". The UI should treat LOW as
+ * grouped-with-neutral or a distinct, de-emphasised badge. The other three are
+ * solid (HIGH) and can be surfaced as highlights.
+ */
+export const OUTCOME_CONFIDENCE: Record<import("@/lib/types").RallyOutcome, "high" | "low"> = {
+  winner: "high",
+  unforced_error: "high",
+  neutral: "high",
+  forced_error: "low",
+};
+
+/** True for outcome labels that are reliable enough to surface/promote. */
+export function isSolidOutcome(o: import("@/lib/types").RallyOutcome): boolean {
+  return OUTCOME_CONFIDENCE[o] === "high";
 }
 
 /**

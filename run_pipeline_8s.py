@@ -22,6 +22,11 @@ from models.yolo_detector import TennisYOLODetector
 from utils.video_utils import VideoReader, VideoWriter
 from utils.drawing import draw_player_bbox, draw_bounce_marker, draw_court_overlay, create_legend
 
+# Derived analytics (Session B): fatigue trend + per-rally outcome.
+# These are pure functions over the stats dicts; they add no rendering.
+from vision.fatigue import analyze_fatigue
+from vision.rally_outcome import classify_rally_outcome
+
 # COCO skeleton connections (fixed, not video-dependent)
 BODY_BONES = [(5,6),(5,7),(7,9),(6,8),(8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
 HEAD_BONES = [(0,1),(0,2),(1,3),(2,4)]
@@ -1008,6 +1013,78 @@ def main():
                     f"max={np.max(quals_arr):.0f}, "
                     f"min={np.min(quals_arr):.0f}, "
                     f"high (>=70): {high_q}/{n} ({100*high_q/n:.0f}%)")
+
+    # ─── Structured stats JSON (Session B: derived analytics) ──────────────
+    # Emit _stats.json alongside the video. This is the data contract consumed by
+    # the frontend. We add two derived layers on top of the raw shots/bounces:
+    #   * "fatigue"      : analyze_fatigue() trend for the near player
+    #   * per-rally "outcome": classify_rally_outcome() for each rally
+    #
+    # NOTE on shots/rallies: main's pipeline detects bounces but not strokes, so
+    # `shots`/`rallies` are empty here on main. The fatigue/rally-outcome modules
+    # degrade gracefully (fatigue → confidence "none"; no rallies → no outcomes).
+    # On the accuracy-overhaul branch (which has stroke detection) these lists
+    # are populated and the same block produces full results unchanged.
+    stats_shots = []  # populated by stroke detection if present
+    stats_bounces = [
+        {"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
+         "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
+        for f, v in sorted(bounce_by_frame.items())
+    ]
+
+    # Rally segmentation: group events by a >2.5s gap (a fraction of fps — zero
+    # hardcoding). Builds from shots when available; empty otherwise.
+    stats_rallies = []
+    if stats_shots:
+        rally_gap_frames = 2.5 * fps
+        sf_sorted = sorted(s["frame"] - start_frame for s in stats_shots)
+        grouped, cur = [], [sf_sorted[0]]
+        for sf in sf_sorted[1:]:
+            if sf - cur[-1] > rally_gap_frames:
+                grouped.append(cur)
+                cur = []
+            cur.append(sf)
+        grouped.append(cur)
+        bf_sorted = sorted(b - start_frame for b in bounce_by_frame)
+        for g in grouped:
+            start = g[0]
+            end = max(g[-1], max([bf for bf in bf_sorted if start <= bf <= g[-1] + rally_gap_frames],
+                                  default=g[-1]))
+            bframes = [bf for bf in bf_sorted if start <= bf <= end]
+            stats_rallies.append({
+                "start_frame": int(start_frame + start),
+                "end_frame": int(start_frame + end),
+                "shot_frames": [int(start_frame + sf) for sf in g],
+                "bounce_frames": [int(start_frame + bf) for bf in bframes],
+                "n_shots": len(g),
+            })
+
+    # Enrich each rally with a geometric outcome label.
+    for r in stats_rallies:
+        r["outcome"] = classify_rally_outcome(r, stats_shots, stats_bounces, fps)
+
+    # Near-player fatigue trend (confidence "none" when too few near shots).
+    stats_fatigue = analyze_fatigue(stats_shots, [start_frame, end_frame], fps)
+
+    stats = {
+        "video": video_path,
+        "fps": fps,
+        "frame_range": [start_frame, end_frame],
+        "bounces": stats_bounces,
+        "shots": stats_shots,
+        "rallies": stats_rallies,
+        "fatigue": stats_fatigue,
+    }
+    stats_path = str(Path(output_path).with_suffix("")) + "_stats.json"
+    try:
+        import json
+        with open(stats_path, "w") as f:
+            json.dump(stats, f, indent=2)
+        logger.info(f"Stats written to: {stats_path} "
+                    f"(fatigue: {stats_fatigue['confidence']}, "
+                    f"rallies: {len(stats_rallies)})")
+    except Exception as exc:  # never let stats emission break the video output
+        logger.warning(f"Stats JSON not written: {exc}")
 
     logger.info(f"Done! Video saved to: {output_path}")
 

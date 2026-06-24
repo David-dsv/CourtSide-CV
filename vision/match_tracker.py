@@ -269,17 +269,41 @@ class MatchTracker:
         # detect / confirm a side-swap from the human side sequence
         self._update_swap_state()
 
-    def _associate(self, cand):
-        """Assign the (<=2) candidates to stable human ids 1/2 by centroid +
-        appearance continuity, side-agnostic. Returns {1: pose|None, 2: pose|None}.
+    def _pair_cost(self, h, p):
+        """Cost of assigning candidate ``p`` to human ``h``. Appearance is the
+        DOMINANT term: during a side-change the two players' centroids cross, so
+        centroid distance is actively misleading there — only the jersey colour
+        is invariant. Position (centroid + IoU) breaks ties and rescues the
+        ambiguous-jersey case. A candidate far outside the centroid gate incurs a
+        penalty but is NOT excluded (appearance can still win)."""
+        last = self._human_last[h]
+        lc = _box_centroid(last["box"])
+        d = float(np.linalg.norm(_box_centroid(p["box"]) - lc) / self.fw)
+        iou = _iou(p["box"], last["box"])
+        sig = self._candidate_sig_cache.get(id(p))
+        ap = _signature_distance(sig, self._human_sig[h])
+        grow = 1.0 + min(self._misses[h], self._base.max_gap) * 0.20
+        gate = self.max_step * grow
+        # gate penalty: linearly ramp past the gate so a distant candidate can
+        # still win on a near-perfect colour match (a side-change), but a distant
+        # candidate with a mediocre colour match loses to a close one.
+        gate_pen = max(0.0, (d - gate / self.fw)) * 2.0 if d > gate / self.fw else 0.0
+        return (ap                                  # appearance (dominant, in [0,1])
+                + 0.20 * d                          # centroid proximity
+                - 0.15 * iou                        # box overlap bonus
+                + gate_pen)                         # outside continuity gate
 
-        Greedy over the 2x2 cost matrix (exact for 2 humans): cost = centroid
-        distance (normalised) - IoU - appearance similarity bonus, gated by
-        max_step (widened as the gap grows, like the base tracker)."""
+    def _associate(self, cand):
+        """Assign the (<=2) candidates to stable human ids 1/2 GLOBALLY.
+
+        For exactly 2 humans × 2 candidates we enumerate both permutations and
+        pick the lowest total cost — exact and symmetric (no greedy bias). With
+        fewer anchors/candidates we fall back to per-human nearest+appearance.
+
+        Returns {1: pose|None, 2: pose|None}."""
         out = {1: None, 2: None}
         if not cand:
             return out
-        # humans with a last-seen anchor to match against
         anchored = [h for h in (1, 2) if self._human_last[h] is not None]
         if not anchored:
             # first frame ever: assign by side (human1 = far, human2 = near) so
@@ -292,7 +316,6 @@ class MatchTracker:
                 out[1] = max(by_side[_FAR], key=lambda p: p["box"][3] - p["box"][1])
             if _NEAR in by_side:
                 out[2] = max(by_side[_NEAR], key=lambda p: p["box"][3] - p["box"][1])
-            # if both candidates landed on the same side, split them 1/2 by area
             placed = {id(p) for p in out.values() if p is not None}
             leftover = [p for p in cand if id(p) not in placed]
             for h in (1, 2):
@@ -300,57 +323,35 @@ class MatchTracker:
                     out[h] = leftover.pop(0)
             return out
 
-        # build cost matrix [human x cand]
-        humans = anchored
-        costs = {}
-        for h in humans:
-            last = self._human_last[h]
-            lc = _box_centroid(last["box"])
-            grow = 1.0 + min(self._misses[h], self._base.max_gap) * 0.20
-            gate = self.max_step * grow
-            for p in cand:
-                d = np.linalg.norm(_box_centroid(p["box"]) - lc) / self.fw
-                iou = _iou(p["box"], last["box"])
-                # appearance: distance between candidate torso and the human's EMA
-                sig = self._candidate_sig_cache.get(id(p))
-                ap = _signature_distance(sig, self._human_sig[h])
-                cost = (d
-                        - 0.5 * iou
-                        + self.appearance_weight * ap)
-                costs[(h, id(p))] = (cost, d, gate)
-        # greedy: repeatedly take the lowest-cost (human, cand) pair, respecting
-        # the centroid gate (a candidate can't claim a human it's too far from
-        # AND too dissimilar in appearance — but appearance can rescue a far-but-
-        # same-colour candidate during a side-change).
-        used_c, used_h = set(), set()
-        for (h, pid), (cost, d, gate) in sorted(costs.items(), key=lambda kv: kv[1][0]):
-            if h in used_h or pid in used_c:
+        # exact 2x2 (or 2x1) assignment
+        if len(anchored) == 2 and len(cand) == 2:
+            import itertools
+            h1, h2 = anchored
+            c1, c2 = cand
+            best, best_cost = None, None
+            for perm in ((c1, c2), (c2, c1)):  # perm[0]->h1, perm[1]->h2
+                cost = (self._pair_cost(h1, perm[0]) + self._pair_cost(h2, perm[1]))
+                if best_cost is None or cost < best_cost:
+                    best_cost, best = cost, perm
+            out[h1], out[h2] = best[0], best[1]
+            return out
+
+        # asymmetric case (one anchor, or !=2 candidates): per-human greedy best
+        used = set()
+        for h in anchored:
+            avail = [p for p in cand if id(p) not in used]
+            if not avail:
                 continue
-            _, dval, gval = costs[(h, pid)]
-            if dval > gval:
-                continue  # outside the continuity gate
-            pobj = next(p for p in cand if id(p) == pid)
-            out[h] = pobj
-            used_h.add(h)
-            used_c.add(pid)
-        # any leftover candidate + unassigned human: try a looser appearance-only
-        # match (a human mid side-change may be outside the centroid gate but the
-        # jersey still matches). Only ONE such rescue per clip frame to avoid
-        # grabbing a stranger.
-        for h in humans:
-            if out[h] is not None:
-                continue
-            best, best_ap = None, 1.0
-            for p in cand:
-                if id(p) in used_c:
-                    continue
-                sig = self._candidate_sig_cache.get(id(p))
-                ap = _signature_distance(sig, self._human_sig[h])
-                if ap < best_ap and ap < 0.5:  # strong colour match rescues
-                    best, best_ap = p, ap
-            if best is not None:
-                out[h] = best
-                used_c.add(id(best))
+            best = min(avail, key=lambda p: self._pair_cost(h, p))
+            out[h] = best
+            used.add(id(best))
+        # unassigned human (no anchor yet) takes any leftover candidate
+        for h in (1, 2):
+            if out[h] is None:
+                leftover = [p for p in cand if id(p) not in used]
+                if leftover:
+                    out[h] = leftover[0]
+                    used.add(id(leftover[0]))
         return out
 
     # -- swap detection ---------------------------------------------------

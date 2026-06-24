@@ -4,20 +4,44 @@ import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { useFrame } from "@/components/video/video-frame-context";
 import { frameToTimecode } from "@/lib/format";
-import { Pause, Play, SkipBack, SkipForward } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Pause, Play, SkipBack, SkipForward, Repeat } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { Project } from "@/lib/types";
 
 /**
  * Mock video scrubber — no real video this sprint. A poster placeholder + a
  * frame slider bound to the shared VideoFrameContext. The whole dashboard
  * reacts to frame changes (frame-as-truth).
+ *
+ * Playback range (loop): an optional `[start, end]` window can be supplied two
+ * ways — via the `playbackRange` prop (controlled) or via the shared
+ * `VideoFrameContext` (e.g. the highlight "Replay" button). When active, play
+ * loops inside the window instead of the full range. Pass null / omit to clear.
  */
-export function VideoScrubber({ project }: { project: Project }) {
-  const { frame, setFrame, frameRange, frameCount } = useFrame();
-  const [playing, setPlaying] = useState(false);
+export function VideoScrubber({
+  project,
+  playbackRange: playbackRangeProp,
+}: {
+  project: Project;
+  /**
+   * Optional loop window `[start, end]`. When set, mirrors it into the shared
+   * context so the loop survives re-renders and any "play" toggle honors it.
+   * Pass null to clear. Left unspecified → the context range (if any) is used.
+   */
+  playbackRange?: [number, number] | null;
+}) {
+  const { frame, setFrame, frameRange, frameCount, playbackRange, setPlaybackRange, playing, setPlaying } = useFrame();
   const rafRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fps = project.stats.fps;
+
+  // Keep the context's range in sync with the controlled prop, if provided.
+  useEffect(() => {
+    if (playbackRangeProp !== undefined) {
+      setPlaybackRange(playbackRangeProp);
+    }
+  }, [playbackRangeProp, setPlaybackRange]);
+
+  const [loopStart, loopEnd] = playbackRange ?? frameRange;
 
   useEffect(() => {
     if (!playing) {
@@ -26,17 +50,23 @@ export function VideoScrubber({ project }: { project: Project }) {
     }
     rafRef.current = setInterval(() => {
       setFrame((prev) => {
-        const next = Math.min(prev + Math.max(1, Math.round(fps / 20)), frameRange[1]);
-        if (next >= frameRange[1]) setPlaying(false);
+        const next = prev + Math.max(1, Math.round(fps / 20));
+        // Loop inside the active window, or stop at the full-range end.
+        if (next > loopEnd) {
+          if (playbackRange) return loopStart;
+          setPlaying(false);
+          return loopEnd;
+        }
         return next;
       });
     }, 50);
     return () => {
       if (rafRef.current) clearInterval(rafRef.current);
     };
-  }, [playing, setFrame, frameRange, fps]);
+  }, [playing, setFrame, playbackRange, loopStart, loopEnd, fps]);
 
   const pct = frameCount > 0 ? ((frame - frameRange[0]) / frameCount) * 100 : 0;
+  const looping = playbackRange !== null;
 
   return (
     <div className="panel-raised overflow-hidden rounded-2xl">
@@ -50,6 +80,11 @@ export function VideoScrubber({ project }: { project: Project }) {
         <div className="absolute right-3 top-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs text-white backdrop-blur">
           {frameToTimecode(frame, fps)} · f{frame}
         </div>
+        {looping && (
+          <div className="absolute left-1/2 top-3 -translate-x-1/2 rounded-md bg-court-green/15 px-2 py-1 font-mono text-xs text-court-green backdrop-blur">
+            ↻ rejoue {frameToTimecode(loopStart, fps)} – {frameToTimecode(loopEnd, fps)}
+          </div>
+        )}
       </div>
 
       {/* controls */}
@@ -81,7 +116,20 @@ export function VideoScrubber({ project }: { project: Project }) {
           >
             <SkipForward className="h-4 w-4" />
           </Button>
-          <span className="ml-1 font-mono text-xs text-muted-foreground">
+          {looping && (
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-8 gap-1.5 px-2 text-xs"
+              onClick={() => setPlaybackRange(null)}
+              title="Lecture normale (sortir du replay)"
+              aria-pressed
+            >
+              <Repeat className="h-3.5 w-3.5" />
+              Sortir du replay
+            </Button>
+          )}
+          <span className="ml-auto font-mono text-xs text-muted-foreground">
             {frameToTimecode(frame, fps)} / {frameToTimecode(frameRange[1], fps)}
           </span>
         </div>

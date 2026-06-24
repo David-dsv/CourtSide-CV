@@ -48,6 +48,7 @@ export default function MinimapPage({ params }: { params: Promise<{ projectId: s
             players={project.players}
             source={project.stats.speed_source}
             confidence={project.stats.homography_confidence}
+            H={project.H}
             showTrajectory={showTraj}
             showPlayers={showPlayers}
             frame={frame}
@@ -56,7 +57,7 @@ export default function MinimapPage({ params }: { params: Promise<{ projectId: s
           />
           {showHeat && (
             <div className="pointer-events-none absolute inset-0 mx-auto max-w-[440px]">
-              <PlacementHeatmap bounces={project.stats.bounces} stats={project.stats} filter={heatFilter} width={360} height={760} className="h-full w-full opacity-70" />
+              <PlacementHeatmap bounces={project.stats.bounces} stats={project.stats} filter={heatFilter} H={project.H} width={360} height={760} className="h-full w-full opacity-70" />
             </div>
           )}
         </div>

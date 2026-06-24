@@ -125,6 +125,7 @@ export default async function OverviewPage({
             players={project.players}
             source={speed_source}
             confidence={homography_confidence}
+            H={project.H}
             className="mx-auto max-w-[320px]"
           />
         </div>

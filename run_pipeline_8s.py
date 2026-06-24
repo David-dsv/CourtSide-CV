@@ -383,6 +383,11 @@ def parse_args():
                              "calibrations/<name>.court.json) used for the metric homography.")
     parser.add_argument("--no-fx", action="store_true",
                         help="Disable cinematic FX (glow trail, glass HUD, shockwaves). FX on by default.")
+    parser.add_argument("--match-mode", action="store_true",
+                        help="Stable P1/P2 HUMAN identity across side-changes (match play). Without it, "
+                             "P1=far / P2=near (net-side identity) — the training default, unchanged. With it, "
+                             "players keep their id when they swap ends between games (HSV jersey re-id + "
+                             "continuity), and each shot/rally carries a stable human_id on top of player_side.")
     args = parser.parse_args()
     # Player boxes default OFF (user feedback: boxes distract / a stale box looks
     # fixed). --player-boxes opts back in; --no-player-boxes is the explicit default.
@@ -930,6 +935,9 @@ def main():
     # pose pass is reused by the shot pre-pass and Pass 2 (no redundant inference).
     logger.info("=== PASS 1.5: Pose + lock P1/P2 ===")
     from vision.player_track import TwoPlayerTracker
+    match_mode = bool(args.match_mode)
+    if match_mode:
+        from vision.match_tracker import MatchTracker, human_id_for_side
     players_per_frame = [None] * max_frames
     rdr = VideoReader(video_path)
     if start_frame > 0:
@@ -938,7 +946,13 @@ def main():
     if court_zones:
         from vision.pose import _net_y
         net_y_seed = _net_y(court_zones, frame_height)
-    ptracker = TwoPlayerTracker(frame_width, frame_height, net_y_seed, fps)
+    if match_mode:
+        # In match mode P1/P2 are STABLE HUMANS (not net sides): a side-change
+        # between games no longer inverts the identity, so per-human stats stay
+        # correct across the whole clip. See vision/match_tracker.py.
+        ptracker = MatchTracker(frame_width, frame_height, net_y_seed, fps)
+    else:
+        ptracker = TwoPlayerTracker(frame_width, frame_height, net_y_seed, fps)
     for i, frame in enumerate(tqdm(rdr.iter_frames(), total=max_frames,
                                    desc="Pass 1.5: pose")):
         if i >= max_frames:
@@ -948,13 +962,29 @@ def main():
             ball_xy=all_ball_centers[i] if i < len(all_ball_centers) else None,
             court_zones=court_zones if court_zones else None)
         players_per_frame[i] = players
-        ptracker.add_frame(players)
+        if match_mode:
+            ptracker.add_frame(players, frame)   # frame needed for HSV re-id
+        else:
+            ptracker.add_frame(players)
     rdr.release()
-    # locked, gap-filled, smoothed tracks: {1: [pose|None]*N, 2: [pose|None]*N}
-    player_tracks = ptracker.finalize()
-    cov = ptracker.coverage()
-    logger.info(f"Player tracks locked: P1 coverage={cov[1]*100:.1f}%, "
-                f"P2 coverage={cov[2]*100:.1f}% (gap-filled)")
+    # locked, gap-filled, smoothed tracks: {1: [pose|None]*N, 2: [pose|None]*N}.
+    # In match mode keys are stable HUMAN ids; in training mode they are sides.
+    match_result = None
+    if match_mode:
+        match_result = ptracker.finalize()
+        player_tracks = match_result["tracks"]
+        n_swaps = len(match_result["swaps"])
+        c1 = (sum(1 for p in player_tracks[1] if p is not None) / len(player_tracks[1])
+              if player_tracks[1] else 0.0)
+        c2 = (sum(1 for p in player_tracks[2] if p is not None) / len(player_tracks[2])
+              if player_tracks[2] else 0.0)
+        logger.info(f"Player tracks locked (MATCH MODE): P1 {c1*100:.1f}%, "
+                    f"P2 {c2*100:.1f}%, side-swaps detected: {n_swaps}")
+    else:
+        player_tracks = ptracker.finalize()
+        cov = ptracker.coverage()
+        logger.info(f"Player tracks locked: P1 coverage={cov[1]*100:.1f}%, "
+                    f"P2 coverage={cov[2]*100:.1f}% (gap-filled)")
 
     # ─── Shot pre-pass: detect hits, attribute to player, classify FH/BH, score ───
     # A hit is a ball vertical-direction reversal near a player. Reuses the Pass 1.5
@@ -982,7 +1012,9 @@ def main():
                 b_speed, q = 0.0, 0
             shot_by_frame[h["frame"]] = {
                 "side": h["player_side"], "fhb": fhb, "quality": q,
-                "speed": b_speed, "x": h["x"], "y": h["y"]}
+                "speed": b_speed, "x": h["x"], "y": h["y"],
+                "human_id": (human_id_for_side(match_result, h["player_side"], h["frame"])
+                             if match_mode else None)}
         logger.info(f"Shots: {len(shot_by_frame)} detected "
                     f"({sum(1 for s in shot_by_frame.values() if s['fhb']=='forehand')} FH, "
                     f"{sum(1 for s in shot_by_frame.values() if s['fhb']=='backhand')} BH)")
@@ -1301,13 +1333,24 @@ def main():
         # shots/bounces and degrade gracefully (no shots → no outcome, fatigue none).
         stats_shots = [{"frame": int(start_frame + f), "x": s["x"], "y": s["y"],
                         "player_side": s["side"], "stroke": s["fhb"],
-                        "quality": s["quality"], "speed_kmh": round(s["speed"], 1)}
+                        "quality": s["quality"], "speed_kmh": round(s["speed"], 1),
+                        "human_id": s.get("human_id")}
                        for f, s in sorted(shot_by_frame.items())]
         stats_bounces = [{"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
                           "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
                          for f, v in sorted(bounce_by_frame.items())]
         for r in rallies:
             r["outcome"] = classify_rally_outcome(r, stats_shots, stats_bounces, fps)
+            # In match mode, tag the rally with the stable human_id of its last
+            # striker (the rally-ending player) on top of the near/far side. The
+            # outcome label still uses player_side (handled by rally_outcome.py).
+            if match_mode:
+                last_shot_frame = r["shot_frames"][-1] if r.get("shot_frames") else None
+                last_rel = (last_shot_frame - start_frame) if last_shot_frame is not None else None
+                if last_rel is not None and last_rel in shot_by_frame:
+                    r["human_id"] = shot_by_frame[last_rel].get("human_id")
+                else:
+                    r["human_id"] = None
         stats_fatigue = analyze_fatigue(stats_shots, [start_frame, end_frame], fps)
 
         # ─── Structured stats JSON (the actionable data output) ───
@@ -1316,6 +1359,10 @@ def main():
             "fps": fps,
             "frame_range": [start_frame, end_frame],
             "speed_source": speed_source,
+            "match_mode": match_mode,
+            "match": ({"side_swaps": (match_result["swaps"] if match_result else []),
+                       "n_swaps": (len(match_result["swaps"]) if match_result else 0)}
+                      if match_mode else None),
             "homography_confidence": (court_homography.get("confidence")
                                       if court_homography else "none"),
             "summary": {

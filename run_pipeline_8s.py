@@ -113,7 +113,10 @@ from vision.pose import estimate_players_pose  # noqa: E402
 from vision.minimap import draw_minimap  # noqa: E402
 import vision.fx as fx  # noqa: E402  — cinematic visual effects (glow, glass HUD, shockwave)
 from vision.court_track import h_at  # noqa: E402  — per-frame homography lookup (track-camera)
-from vision.shot_guard import compute_court_visibility_mask, non_court_spans  # noqa: E402
+from vision.shot_guard import (  # noqa: E402
+    compute_court_visibility_mask_streaming,
+    non_court_spans,
+)
 
 
 def _court_frames_between(mask, a, b):
@@ -596,14 +599,18 @@ def main():
         sg_reader = VideoReader(video_path)
         if start_frame > 0:
             sg_reader.seek(start_frame)
-        sg_frames = []
-        for j, fr in enumerate(sg_reader.iter_frames()):
-            if j >= max_frames:
-                break
-            sg_frames.append(fr)
+
+        def _sg_frames():
+            # stream frames one at a time so the mask computation never buffers
+            # the whole clip in RAM (11761×1080p ≈ 70 GB would OOM-kill us).
+            for j, fr in enumerate(sg_reader.iter_frames()):
+                if j >= max_frames:
+                    break
+                yield fr
+
+        court_visible_mask = compute_court_visibility_mask_streaming(
+            _sg_frames(), fps)
         sg_reader.release()
-        court_visible_mask = compute_court_visibility_mask(sg_frames, fps)
-        del sg_frames  # free before Pass 1
         non_court_spans_rel = non_court_spans(court_visible_mask)
         n_court = sum(court_visible_mask)
         logger.info(f"Pass 0.5 (shot-guard): {n_court}/{len(court_visible_mask)} court frames "

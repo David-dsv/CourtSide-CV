@@ -8,6 +8,7 @@ from here so the production path and the tests exercise the exact same code.
 from .bounce import detect_bounces_from_trajectory, smooth_ball_trajectory
 from .shot_guard import (
     compute_court_visibility_mask,
+    compute_court_visibility_mask_streaming,
     frame_court_visible,
     non_court_spans,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "detect_bounces_from_trajectory",
     "smooth_ball_trajectory",
     "compute_court_visibility_mask",
+    "compute_court_visibility_mask_streaming",
     "frame_court_visible",
     "non_court_spans",
 ]

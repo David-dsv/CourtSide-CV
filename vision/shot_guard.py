@@ -105,11 +105,35 @@ def compute_court_visibility_mask(frames, fps, min_line_frac=DEFAULT_MIN_LINE_FR
     Runs ``frame_court_visible`` per frame, then dwell-hysteresis (``dwell =
     round(dwell_s * fps)`` frames). Returns a list[bool] aligned with the input.
     ``dwell`` is an fps-fraction (zero-hardcoding): ~0.3 s — shorter than any
-    real close-up/replay, longer than a transition flicker."""
+    real close-up/replay, longer than a transition flicker.
+
+    NOTE: this materialises the raw signal list, but it only keeps the booleans
+    (not the frames) — so memory is O(n) bools, not O(n) frames. For very long
+    clips prefer ``compute_court_visibility_mask_streaming`` which never buffers
+    the frames at all."""
     dwell = max(1, int(round(dwell_s * fps)))
     raw = [frame_court_visible(f, min_line_frac=min_line_frac,
                                line_threshold=line_threshold)
            for f in frames]
+    return _apply_hysteresis(raw, dwell)
+
+
+def compute_court_visibility_mask_streaming(frame_iter, fps,
+                                            min_line_frac=DEFAULT_MIN_LINE_FRAC,
+                                            line_threshold=DEFAULT_LINE_THRESHOLD,
+                                            dwell_s=0.3):
+    """Streaming variant: consumes frames one at a time from ``frame_iter`` (a
+    generator/iterable of BGR frames, NOT a list), computing only the per-frame
+    boolean and discarding the frame immediately. Returns the cleaned mask.
+
+    Use this for long clips — buffering every frame (1080p × N) in RAM OOM-kills
+    the process (e.g. tennis.mp4's 11761 frames ≈ 70 GB). This keeps memory flat."""
+    dwell = max(1, int(round(dwell_s * fps)))
+    raw = []
+    for f in frame_iter:
+        raw.append(frame_court_visible(f, min_line_frac=min_line_frac,
+                                       line_threshold=line_threshold))
+        del f  # drop the frame ref before pulling the next one
     return _apply_hysteresis(raw, dwell)
 
 

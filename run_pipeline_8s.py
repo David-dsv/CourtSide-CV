@@ -131,6 +131,96 @@ def _court_frames_between(mask, a, b):
     return sum(1 for k in range(a + 1, b) if 0 <= k < len(mask) and mask[k])
 
 
+def _kept_time_intervals(mask, fps, start_frame):
+    """Contiguous runs of court-visible frames → [(start_sec, end_sec), ...] in the
+    ORIGINAL timeline. These are the audio segments to keep so the soundtrack stays
+    in sync with a cut (shorter) annotated video. mask is window-relative; the
+    absolute original time of frame i is (start_frame + i) / fps."""
+    intervals = []
+    n = len(mask)
+    i = 0
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            # frames [i, j-1] kept → seconds [(start_frame+i)/fps, (start_frame+j)/fps)
+            intervals.append(((start_frame + i) / fps, (start_frame + j) / fps))
+            i = j
+        else:
+            i += 1
+    return intervals
+
+
+def _remux_audio(video_path, annotated_path, mask, fps, start_frame):
+    """Re-attach the source audio to the (silent) annotated video, CUT to the same
+    kept spans as the video so it stays perfectly in sync. Best-effort: a missing
+    ffmpeg / no-audio source / any failure leaves the silent video untouched (never
+    breaks the already-produced output). Returns True iff audio was muxed in.
+
+    The annotated video drops non-court frames, so a plain `-c:a copy` of the full
+    original audio would drift. We build an audio filtergraph that keeps only the
+    kept time intervals (atrim per run + concat) and mux that onto the video."""
+    import shutil
+    import subprocess
+    import tempfile
+    if shutil.which("ffmpeg") is None:
+        logger.warning("ffmpeg not found → annotated video has NO audio.")
+        return False
+    # Does the source even have an audio stream?
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path],
+            capture_output=True, text=True, timeout=30)
+        if "audio" not in (probe.stdout or ""):
+            logger.info("Source has no audio stream → annotated video stays silent.")
+            return False
+    except Exception as exc:
+        logger.warning(f"ffprobe failed ({exc}) → skipping audio remux.")
+        return False
+
+    intervals = _kept_time_intervals(mask, fps, start_frame)
+    if not intervals:
+        return False
+    # Build the audio filtergraph: trim each kept span, then concat them in order.
+    # Audio comes from input 1 (the ORIGINAL video); input 0 is the silent
+    # annotated video. atrim each kept span off [1:a], then concat in order.
+    parts = []
+    for k, (s, e) in enumerate(intervals):
+        parts.append(f"[1:a]atrim=start={s:.6f}:end={e:.6f},asetpts=PTS-STARTPTS[a{k}]")
+    concat_in = "".join(f"[a{k}]" for k in range(len(intervals)))
+    filtergraph = ";".join(parts) + f";{concat_in}concat=n={len(intervals)}:v=0:a=1[aout]"
+
+    out_fd, tmp_out = tempfile.mkstemp(suffix=".mp4",
+                                       dir=str(Path(annotated_path).parent))
+    import os as _os
+    _os.close(out_fd)
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", annotated_path,    # 0:v — the silent annotated video (kept frames)
+        "-i", video_path,        # 1:a — the original audio (full timeline)
+        "-filter_complex", filtergraph,
+        "-map", "0:v:0", "-map", "[aout]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+        "-shortest", tmp_out,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=1800)
+        _os.replace(tmp_out, annotated_path)  # atomic swap onto the final path
+        logger.info(f"Audio re-attached (cut to {len(intervals)} kept spans) → "
+                    f"{annotated_path}")
+        return True
+    except Exception as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        logger.warning(f"Audio remux failed ({exc}) {stderr[:300]} → video stays silent.")
+        try:
+            _os.path.exists(tmp_out) and _os.remove(tmp_out)
+        except Exception:
+            pass
+        return False
+
+
 def _merge_solo_rallies(rallies):
     """Re-attribute any 1-shot rally ("solo") into its nearest neighbour.
 
@@ -1855,6 +1945,11 @@ def main():
             logger.info(f"Clip-index written to: {clip_path} "
                         f"({clip_index['annotated_total']}/{clip_index['original_total']} kept)")
 
+    # ─── Re-attach the source audio, CUT to the same kept spans (perfect sync) ───
+    # The pipeline's VideoWriter produces a silent video; we mux the original audio
+    # back on, trimmed to the kept time intervals so it never drifts past a cut.
+    # With shot-guard off the mask is all-True → one full span → the whole audio.
+    _remux_audio(video_path, output_path, court_visible_mask, fps, start_frame)
 
     logger.info(f"Done! Video saved to: {output_path}")
 

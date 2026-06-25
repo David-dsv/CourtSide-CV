@@ -1,0 +1,2365 @@
+{
+  "video": "tennis.mp4",
+  "fps": 50.0,
+  "frame_range": [
+    0,
+    11750
+  ],
+  "speed_source": "scalar",
+  "match_mode": true,
+  "match": {
+    "side_swaps": [
+      {
+        "frame": 60,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.812
+      },
+      {
+        "frame": 76,
+        "confidence": 0.859,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.619
+      },
+      {
+        "frame": 251,
+        "confidence": 0.933,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.767
+      },
+      {
+        "frame": 271,
+        "confidence": 0.894,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.689
+      },
+      {
+        "frame": 445,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.942
+      },
+      {
+        "frame": 936,
+        "confidence": 0.931,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.761
+      },
+      {
+        "frame": 1113,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.873
+      },
+      {
+        "frame": 2939,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.939
+      },
+      {
+        "frame": 3012,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.861
+      },
+      {
+        "frame": 5426,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.845
+      },
+      {
+        "frame": 5763,
+        "confidence": 0.838,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.576
+      },
+      {
+        "frame": 7976,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.883
+      },
+      {
+        "frame": 8297,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.968
+      },
+      {
+        "frame": 9091,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.841
+      },
+      {
+        "frame": 9466,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.85
+      },
+      {
+        "frame": 9485,
+        "confidence": 0.79,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.48
+      },
+      {
+        "frame": 9630,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.909
+      },
+      {
+        "frame": 9658,
+        "confidence": 0.94,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.781
+      },
+      {
+        "frame": 10838,
+        "confidence": 0.95,
+        "ambiguous_jerseys": false,
+        "jersey_distance": 0.929
+      }
+    ],
+    "n_swaps": 19
+  },
+  "homography_confidence": "none",
+  "summary": {
+    "total_bounces": 38,
+    "depth": {
+      "deep": 10,
+      "mid": 8,
+      "short": 20
+    },
+    "speed_kmh": {
+      "avg": 76.3525992491197,
+      "max": 128.5321790228642,
+      "min": 27.22051745867753
+    },
+    "quality": {
+      "avg": 50.63157894736842,
+      "max": 98,
+      "high_count": 10
+    },
+    "strokes": {
+      "forehand": 51,
+      "backhand": 12
+    }
+  },
+  "bounces": [
+    {
+      "frame": 57,
+      "x": 1027,
+      "y": 709,
+      "depth": "mid",
+      "speed_kmh": 126.4,
+      "quality": 67
+    },
+    {
+      "frame": 161,
+      "x": 1032,
+      "y": 379,
+      "depth": "mid",
+      "speed_kmh": 66.5,
+      "quality": 49
+    },
+    {
+      "frame": 232,
+      "x": 1283,
+      "y": 789,
+      "depth": "deep",
+      "speed_kmh": 80.5,
+      "quality": 83
+    },
+    {
+      "frame": 370,
+      "x": 673,
+      "y": 467,
+      "depth": "short",
+      "speed_kmh": 44.0,
+      "quality": 25
+    },
+    {
+      "frame": 416,
+      "x": 584,
+      "y": 457,
+      "depth": "short",
+      "speed_kmh": 27.2,
+      "quality": 20
+    },
+    {
+      "frame": 681,
+      "x": 777,
+      "y": 471,
+      "depth": "short",
+      "speed_kmh": 77.9,
+      "quality": 35
+    },
+    {
+      "frame": 773,
+      "x": 970,
+      "y": 577,
+      "depth": "short",
+      "speed_kmh": 86.6,
+      "quality": 37
+    },
+    {
+      "frame": 909,
+      "x": 648,
+      "y": 426,
+      "depth": "short",
+      "speed_kmh": 92.5,
+      "quality": 39
+    },
+    {
+      "frame": 960,
+      "x": 1089,
+      "y": 321,
+      "depth": "mid",
+      "speed_kmh": 51.3,
+      "quality": 45
+    },
+    {
+      "frame": 1807,
+      "x": 1265,
+      "y": 368,
+      "depth": "mid",
+      "speed_kmh": 51.8,
+      "quality": 45
+    },
+    {
+      "frame": 1868,
+      "x": 1177,
+      "y": 691,
+      "depth": "mid",
+      "speed_kmh": 63.0,
+      "quality": 48
+    },
+    {
+      "frame": 2046,
+      "x": 653,
+      "y": 714,
+      "depth": "mid",
+      "speed_kmh": 65.0,
+      "quality": 49
+    },
+    {
+      "frame": 2180,
+      "x": 739,
+      "y": 615,
+      "depth": "short",
+      "speed_kmh": 96.3,
+      "quality": 40
+    },
+    {
+      "frame": 2344,
+      "x": 659,
+      "y": 715,
+      "depth": "mid",
+      "speed_kmh": 78.2,
+      "quality": 53
+    },
+    {
+      "frame": 2929,
+      "x": 905,
+      "y": 457,
+      "depth": "short",
+      "speed_kmh": 32.7,
+      "quality": 21
+    },
+    {
+      "frame": 3160,
+      "x": 1326,
+      "y": 609,
+      "depth": "short",
+      "speed_kmh": 73.6,
+      "quality": 33
+    },
+    {
+      "frame": 3278,
+      "x": 684,
+      "y": 505,
+      "depth": "short",
+      "speed_kmh": 101.1,
+      "quality": 42
+    },
+    {
+      "frame": 3328,
+      "x": 1188,
+      "y": 420,
+      "depth": "short",
+      "speed_kmh": 60.3,
+      "quality": 29
+    },
+    {
+      "frame": 3903,
+      "x": 711,
+      "y": 276,
+      "depth": "deep",
+      "speed_kmh": 41.0,
+      "quality": 72
+    },
+    {
+      "frame": 4106,
+      "x": 552,
+      "y": 762,
+      "depth": "deep",
+      "speed_kmh": 107.2,
+      "quality": 91
+    },
+    {
+      "frame": 4503,
+      "x": 1349,
+      "y": 968,
+      "depth": "deep",
+      "speed_kmh": 128.5,
+      "quality": 98
+    },
+    {
+      "frame": 4702,
+      "x": 1103,
+      "y": 590,
+      "depth": "short",
+      "speed_kmh": 111.0,
+      "quality": 45
+    },
+    {
+      "frame": 4966,
+      "x": 1258,
+      "y": 498,
+      "depth": "short",
+      "speed_kmh": 53.4,
+      "quality": 27
+    },
+    {
+      "frame": 5463,
+      "x": 943,
+      "y": 445,
+      "depth": "short",
+      "speed_kmh": 47.7,
+      "quality": 26
+    },
+    {
+      "frame": 6074,
+      "x": 1267,
+      "y": 418,
+      "depth": "short",
+      "speed_kmh": 49.0,
+      "quality": 26
+    },
+    {
+      "frame": 6120,
+      "x": 1281,
+      "y": 490,
+      "depth": "short",
+      "speed_kmh": 30.0,
+      "quality": 20
+    },
+    {
+      "frame": 6630,
+      "x": 852,
+      "y": 567,
+      "depth": "short",
+      "speed_kmh": 109.8,
+      "quality": 44
+    },
+    {
+      "frame": 6921,
+      "x": 1131,
+      "y": 761,
+      "depth": "deep",
+      "speed_kmh": 128.1,
+      "quality": 98
+    },
+    {
+      "frame": 7390,
+      "x": 813,
+      "y": 262,
+      "depth": "deep",
+      "speed_kmh": 34.1,
+      "quality": 70
+    },
+    {
+      "frame": 7614,
+      "x": 754,
+      "y": 444,
+      "depth": "short",
+      "speed_kmh": 50.3,
+      "quality": 26
+    },
+    {
+      "frame": 7658,
+      "x": 692,
+      "y": 498,
+      "depth": "short",
+      "speed_kmh": 34.9,
+      "quality": 22
+    },
+    {
+      "frame": 8179,
+      "x": 1090,
+      "y": 814,
+      "depth": "deep",
+      "speed_kmh": 119.0,
+      "quality": 95
+    },
+    {
+      "frame": 8414,
+      "x": 576,
+      "y": 922,
+      "depth": "deep",
+      "speed_kmh": 126.2,
+      "quality": 97
+    },
+    {
+      "frame": 8435,
+      "x": 203,
+      "y": 914,
+      "depth": "deep",
+      "speed_kmh": 112.8,
+      "quality": 93
+    },
+    {
+      "frame": 8572,
+      "x": 1065,
+      "y": 414,
+      "depth": "short",
+      "speed_kmh": 41.1,
+      "quality": 24
+    },
+    {
+      "frame": 8700,
+      "x": 739,
+      "y": 394,
+      "depth": "mid",
+      "speed_kmh": 73.1,
+      "quality": 51
+    },
+    {
+      "frame": 9468,
+      "x": 495,
+      "y": 762,
+      "depth": "deep",
+      "speed_kmh": 125.5,
+      "quality": 97
+    },
+    {
+      "frame": 9750,
+      "x": 1082,
+      "y": 499,
+      "depth": "short",
+      "speed_kmh": 103.5,
+      "quality": 42
+    }
+  ],
+  "shots": [
+    {
+      "frame": 87,
+      "x": 978,
+      "y": 514,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 39,
+      "speed_kmh": 66.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 153,
+      "x": 957,
+      "y": 294,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 39,
+      "speed_kmh": 66.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 218,
+      "x": 1226,
+      "y": 523,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 68,
+      "speed_kmh": 80.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 280,
+      "x": 1559,
+      "y": 918,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 29,
+      "speed_kmh": 44.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 351,
+      "x": 696,
+      "y": 338,
+      "player_side": "far",
+      "stroke": "unknown",
+      "quality": 29,
+      "speed_kmh": 44.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 388,
+      "x": 646,
+      "y": 393,
+      "player_side": "far",
+      "stroke": "unknown",
+      "quality": 28,
+      "speed_kmh": 27.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 436,
+      "x": 557,
+      "y": 428,
+      "player_side": "far",
+      "stroke": "unknown",
+      "quality": 33,
+      "speed_kmh": 77.9,
+      "human_id": "P1"
+    },
+    {
+      "frame": 556,
+      "x": 1257,
+      "y": 694,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 33,
+      "speed_kmh": 77.9,
+      "human_id": "P1"
+    },
+    {
+      "frame": 589,
+      "x": 828,
+      "y": 647,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 33,
+      "speed_kmh": 77.9,
+      "human_id": "P1"
+    },
+    {
+      "frame": 636,
+      "x": 753,
+      "y": 533,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 33,
+      "speed_kmh": 77.9,
+      "human_id": "P1"
+    },
+    {
+      "frame": 714,
+      "x": 1027,
+      "y": 364,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 30,
+      "speed_kmh": 86.6,
+      "human_id": "P1"
+    },
+    {
+      "frame": 809,
+      "x": 803,
+      "y": 628,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 40,
+      "speed_kmh": 92.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 842,
+      "x": 765,
+      "y": 349,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 40,
+      "speed_kmh": 92.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 939,
+      "x": 768,
+      "y": 321,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 37,
+      "speed_kmh": 51.3,
+      "human_id": "P2"
+    },
+    {
+      "frame": 1025,
+      "x": 1277,
+      "y": 629,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P2"
+    },
+    {
+      "frame": 1137,
+      "x": 1037,
+      "y": 576,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1237,
+      "x": 1063,
+      "y": 529,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1330,
+      "x": 1316,
+      "y": 584,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1365,
+      "x": 1106,
+      "y": 458,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1429,
+      "x": 820,
+      "y": 546,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1464,
+      "x": 909,
+      "y": 748,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1502,
+      "x": 1042,
+      "y": 281,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1547,
+      "x": 832,
+      "y": 573,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1581,
+      "x": 694,
+      "y": 689,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1620,
+      "x": 793,
+      "y": 347,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1672,
+      "x": 732,
+      "y": 313,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1726,
+      "x": 642,
+      "y": 704,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 43,
+      "speed_kmh": 51.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1842,
+      "x": 1212,
+      "y": 368,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 43,
+      "speed_kmh": 63.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1877,
+      "x": 1177,
+      "y": 691,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 46,
+      "speed_kmh": 65.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1910,
+      "x": 1122,
+      "y": 680,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 46,
+      "speed_kmh": 65.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 1949,
+      "x": 759,
+      "y": 334,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 46,
+      "speed_kmh": 65.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2008,
+      "x": 678,
+      "y": 277,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 46,
+      "speed_kmh": 65.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2064,
+      "x": 602,
+      "y": 711,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 96.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2096,
+      "x": 787,
+      "y": 486,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 96.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2217,
+      "x": 609,
+      "y": 602,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 49,
+      "speed_kmh": 78.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2245,
+      "x": 982,
+      "y": 308,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 49,
+      "speed_kmh": 78.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2305,
+      "x": 935,
+      "y": 251,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 49,
+      "speed_kmh": 78.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2358,
+      "x": 608,
+      "y": 678,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2395,
+      "x": 644,
+      "y": 632,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2466,
+      "x": 1338,
+      "y": 607,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2501,
+      "x": 1408,
+      "y": 771,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2533,
+      "x": 981,
+      "y": 541,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2568,
+      "x": 1096,
+      "y": 568,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2788,
+      "x": 888,
+      "y": 518,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2831,
+      "x": 997,
+      "y": 610,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2875,
+      "x": 916,
+      "y": 484,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2913,
+      "x": 943,
+      "y": 432,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 19,
+      "speed_kmh": 32.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 2939,
+      "x": 921,
+      "y": 434,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 73.6,
+      "human_id": "P2"
+    },
+    {
+      "frame": 3013,
+      "x": 989,
+      "y": 642,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 73.6,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3045,
+      "x": 886,
+      "y": 650,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 73.6,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3097,
+      "x": 982,
+      "y": 236,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 73.6,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3128,
+      "x": 1140,
+      "y": 293,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 73.6,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3154,
+      "x": 1287,
+      "y": 529,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 73.6,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3189,
+      "x": 1365,
+      "y": 585,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 41,
+      "speed_kmh": 101.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3222,
+      "x": 1005,
+      "y": 332,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 41,
+      "speed_kmh": 101.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3295,
+      "x": 720,
+      "y": 485,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 31,
+      "speed_kmh": 60.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3470,
+      "x": 1317,
+      "y": 697,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3506,
+      "x": 1098,
+      "y": 526,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3538,
+      "x": 1133,
+      "y": 443,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3715,
+      "x": 982,
+      "y": 573,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3758,
+      "x": 1005,
+      "y": 572,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3795,
+      "x": 859,
+      "y": 282,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3838,
+      "x": 1184,
+      "y": 699,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3868,
+      "x": 1214,
+      "y": 738,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 57,
+      "speed_kmh": 41.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3909,
+      "x": 711,
+      "y": 276,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 77,
+      "speed_kmh": 107.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3942,
+      "x": 885,
+      "y": 331,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 77,
+      "speed_kmh": 107.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 3977,
+      "x": 1235,
+      "y": 692,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 77,
+      "speed_kmh": 107.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4022,
+      "x": 1118,
+      "y": 354,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 77,
+      "speed_kmh": 107.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4061,
+      "x": 1008,
+      "y": 169,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 77,
+      "speed_kmh": 107.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4094,
+      "x": 667,
+      "y": 466,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 77,
+      "speed_kmh": 107.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4137,
+      "x": 472,
+      "y": 722,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 81,
+      "speed_kmh": 128.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4180,
+      "x": 918,
+      "y": 286,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 81,
+      "speed_kmh": 128.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4340,
+      "x": 978,
+      "y": 465,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 81,
+      "speed_kmh": 128.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4392,
+      "x": 332,
+      "y": 301,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 81,
+      "speed_kmh": 128.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4477,
+      "x": 690,
+      "y": 340,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 81,
+      "speed_kmh": 128.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4524,
+      "x": 1098,
+      "y": 508,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 39,
+      "speed_kmh": 111.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4584,
+      "x": 1007,
+      "y": 485,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 39,
+      "speed_kmh": 111.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4620,
+      "x": 1008,
+      "y": 477,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 39,
+      "speed_kmh": 111.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4736,
+      "x": 1253,
+      "y": 584,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 31,
+      "speed_kmh": 53.4,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4832,
+      "x": 700,
+      "y": 749,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 31,
+      "speed_kmh": 53.4,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4867,
+      "x": 882,
+      "y": 424,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 31,
+      "speed_kmh": 53.4,
+      "human_id": "P1"
+    },
+    {
+      "frame": 4989,
+      "x": 1273,
+      "y": 491,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 21,
+      "speed_kmh": 47.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 5021,
+      "x": 1380,
+      "y": 522,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 21,
+      "speed_kmh": 47.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 5070,
+      "x": 1117,
+      "y": 271,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 21,
+      "speed_kmh": 47.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 5114,
+      "x": 1235,
+      "y": 196,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 21,
+      "speed_kmh": 47.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 5139,
+      "x": 1288,
+      "y": 206,
+      "player_side": "far",
+      "stroke": "unknown",
+      "quality": 21,
+      "speed_kmh": 47.7,
+      "human_id": "P2"
+    },
+    {
+      "frame": 5225,
+      "x": 1363,
+      "y": 187,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 21,
+      "speed_kmh": 47.7,
+      "human_id": "P1"
+    },
+    {
+      "frame": 5471,
+      "x": 944,
+      "y": 452,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 31,
+      "speed_kmh": 49.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 6128,
+      "x": 1281,
+      "y": 490,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6158,
+      "x": 1288,
+      "y": 460,
+      "player_side": "far",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P2"
+    },
+    {
+      "frame": 6227,
+      "x": 1257,
+      "y": 666,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6266,
+      "x": 1174,
+      "y": 667,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6541,
+      "x": 866,
+      "y": 465,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6575,
+      "x": 1095,
+      "y": 376,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6619,
+      "x": 999,
+      "y": 394,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 38,
+      "speed_kmh": 109.8,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6645,
+      "x": 892,
+      "y": 522,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 74,
+      "speed_kmh": 128.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6781,
+      "x": 856,
+      "y": 662,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 74,
+      "speed_kmh": 128.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6820,
+      "x": 1069,
+      "y": 306,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 74,
+      "speed_kmh": 128.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6947,
+      "x": 894,
+      "y": 581,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 52,
+      "speed_kmh": 34.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 6990,
+      "x": 651,
+      "y": 554,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 52,
+      "speed_kmh": 34.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7196,
+      "x": 785,
+      "y": 520,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 52,
+      "speed_kmh": 34.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7222,
+      "x": 453,
+      "y": 603,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 52,
+      "speed_kmh": 34.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7342,
+      "x": 1226,
+      "y": 634,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 52,
+      "speed_kmh": 34.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7435,
+      "x": 706,
+      "y": 392,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 28,
+      "speed_kmh": 50.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7476,
+      "x": 672,
+      "y": 776,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 28,
+      "speed_kmh": 50.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7516,
+      "x": 906,
+      "y": 314,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 28,
+      "speed_kmh": 50.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7582,
+      "x": 865,
+      "y": 186,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 28,
+      "speed_kmh": 50.3,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7631,
+      "x": 758,
+      "y": 439,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 26,
+      "speed_kmh": 34.9,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7756,
+      "x": 1560,
+      "y": 518,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7830,
+      "x": 952,
+      "y": 552,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7921,
+      "x": 324,
+      "y": 855,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P1"
+    },
+    {
+      "frame": 7981,
+      "x": 254,
+      "y": 775,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 8034,
+      "x": 870,
+      "y": 377,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 8075,
+      "x": 386,
+      "y": 604,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 8153,
+      "x": 1016,
+      "y": 365,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 71,
+      "speed_kmh": 119.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 8189,
+      "x": 1047,
+      "y": 698,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 80,
+      "speed_kmh": 126.2,
+      "human_id": "P2"
+    },
+    {
+      "frame": 8232,
+      "x": 807,
+      "y": 315,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 80,
+      "speed_kmh": 126.2,
+      "human_id": "P2"
+    },
+    {
+      "frame": 8348,
+      "x": 1077,
+      "y": 181,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 80,
+      "speed_kmh": 126.2,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8450,
+      "x": 247,
+      "y": 535,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 22,
+      "speed_kmh": 41.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8488,
+      "x": 921,
+      "y": 461,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 22,
+      "speed_kmh": 41.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8542,
+      "x": 716,
+      "y": 15,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 22,
+      "speed_kmh": 41.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8590,
+      "x": 1065,
+      "y": 414,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 45,
+      "speed_kmh": 73.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8618,
+      "x": 948,
+      "y": 220,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 45,
+      "speed_kmh": 73.1,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8720,
+      "x": 739,
+      "y": 394,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 83,
+      "speed_kmh": 125.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8749,
+      "x": 829,
+      "y": 260,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 83,
+      "speed_kmh": 125.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 8879,
+      "x": 1268,
+      "y": 291,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 83,
+      "speed_kmh": 125.5,
+      "human_id": "P1"
+    },
+    {
+      "frame": 9185,
+      "x": 1255,
+      "y": 501,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 83,
+      "speed_kmh": 125.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9222,
+      "x": 1713,
+      "y": 797,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 83,
+      "speed_kmh": 125.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9371,
+      "x": 907,
+      "y": 386,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 83,
+      "speed_kmh": 125.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9497,
+      "x": 673,
+      "y": 547,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 37,
+      "speed_kmh": 103.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9540,
+      "x": 777,
+      "y": 848,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 37,
+      "speed_kmh": 103.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9572,
+      "x": 887,
+      "y": 667,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 37,
+      "speed_kmh": 103.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9743,
+      "x": 1001,
+      "y": 390,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 37,
+      "speed_kmh": 103.5,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9783,
+      "x": 1478,
+      "y": 613,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 9975,
+      "x": 1155,
+      "y": 673,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10010,
+      "x": 1092,
+      "y": 281,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10051,
+      "x": 948,
+      "y": 297,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10088,
+      "x": 734,
+      "y": 564,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10127,
+      "x": 699,
+      "y": 305,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10165,
+      "x": 871,
+      "y": 581,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10193,
+      "x": 926,
+      "y": 630,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10273,
+      "x": 1073,
+      "y": 530,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10311,
+      "x": 1049,
+      "y": 261,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10371,
+      "x": 1621,
+      "y": 35,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10444,
+      "x": 1446,
+      "y": 64,
+      "player_side": "near",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10474,
+      "x": 1026,
+      "y": 487,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10653,
+      "x": 659,
+      "y": 1074,
+      "player_side": "near",
+      "stroke": "forehand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10689,
+      "x": 659,
+      "y": 1074,
+      "player_side": "near",
+      "stroke": "backhand",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    },
+    {
+      "frame": 10858,
+      "x": 716,
+      "y": 471,
+      "player_side": "far",
+      "stroke": "unknown",
+      "quality": 0,
+      "speed_kmh": 0.0,
+      "human_id": "P2"
+    }
+  ],
+  "rallies": [
+    {
+      "start_frame": 87,
+      "end_frame": 2568,
+      "shot_frames": [
+        87,
+        153,
+        218,
+        280,
+        351,
+        388,
+        436,
+        556,
+        589,
+        636,
+        714,
+        809,
+        842,
+        939,
+        1025,
+        1137,
+        1237,
+        1330,
+        1365,
+        1429,
+        1464,
+        1502,
+        1547,
+        1581,
+        1620,
+        1672,
+        1726,
+        1842,
+        1877,
+        1910,
+        1949,
+        2008,
+        2064,
+        2096,
+        2217,
+        2245,
+        2305,
+        2358,
+        2395,
+        2466,
+        2501,
+        2533,
+        2568
+      ],
+      "bounce_frames": [
+        161,
+        232,
+        370,
+        416,
+        681,
+        773,
+        909,
+        960,
+        1807,
+        1868,
+        2046,
+        2180,
+        2344
+      ],
+      "n_shots": 43,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 2568,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 2788,
+      "end_frame": 3328,
+      "shot_frames": [
+        2788,
+        2831,
+        2875,
+        2913,
+        2939,
+        3013,
+        3045,
+        3097,
+        3128,
+        3154,
+        3189,
+        3222,
+        3295
+      ],
+      "bounce_frames": [
+        2929,
+        3160,
+        3278,
+        3328
+      ],
+      "n_shots": 13,
+      "outcome": {
+        "outcome": "unforced_error",
+        "defining_frame": 3295,
+        "reason": "rally ended on a weak near shot (quality < 45) with a poor placement (short/out), no opponent return"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 3470,
+      "end_frame": 3538,
+      "shot_frames": [
+        3470,
+        3506,
+        3538
+      ],
+      "bounce_frames": [],
+      "n_shots": 3,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 3538,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 3715,
+      "end_frame": 4180,
+      "shot_frames": [
+        3715,
+        3758,
+        3795,
+        3838,
+        3868,
+        3909,
+        3942,
+        3977,
+        4022,
+        4061,
+        4094,
+        4137,
+        4180
+      ],
+      "bounce_frames": [
+        3903,
+        4106
+      ],
+      "n_shots": 13,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 4180,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 4340,
+      "end_frame": 5471,
+      "shot_frames": [
+        4340,
+        4392,
+        4477,
+        4524,
+        4584,
+        4620,
+        4736,
+        4832,
+        4867,
+        4989,
+        5021,
+        5070,
+        5114,
+        5139,
+        5225,
+        5471
+      ],
+      "bounce_frames": [
+        4503,
+        4702,
+        4966
+      ],
+      "n_shots": 16,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 5471,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P2"
+    },
+    {
+      "start_frame": 6128,
+      "end_frame": 6266,
+      "shot_frames": [
+        6128,
+        6158,
+        6227,
+        6266
+      ],
+      "bounce_frames": [],
+      "n_shots": 4,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 6266,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 6541,
+      "end_frame": 6645,
+      "shot_frames": [
+        6541,
+        6575,
+        6619,
+        6645
+      ],
+      "bounce_frames": [
+        6630
+      ],
+      "n_shots": 4,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 6645,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 6781,
+      "end_frame": 6921,
+      "shot_frames": [
+        6781,
+        6820
+      ],
+      "bounce_frames": [
+        6921
+      ],
+      "n_shots": 2,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 6820,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 6947,
+      "end_frame": 6990,
+      "shot_frames": [
+        6947,
+        6990
+      ],
+      "bounce_frames": [],
+      "n_shots": 2,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 6990,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 7196,
+      "end_frame": 8879,
+      "shot_frames": [
+        7196,
+        7222,
+        7342,
+        7435,
+        7476,
+        7516,
+        7582,
+        7631,
+        7756,
+        7830,
+        7921,
+        7981,
+        8034,
+        8075,
+        8153,
+        8189,
+        8232,
+        8348,
+        8450,
+        8488,
+        8542,
+        8590,
+        8618,
+        8720,
+        8749,
+        8879
+      ],
+      "bounce_frames": [
+        7390,
+        7614,
+        7658,
+        8179,
+        8414,
+        8435,
+        8572,
+        8700
+      ],
+      "n_shots": 26,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 8879,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P1"
+    },
+    {
+      "start_frame": 9185,
+      "end_frame": 9222,
+      "shot_frames": [
+        9185,
+        9222
+      ],
+      "bounce_frames": [],
+      "n_shots": 2,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 9222,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P2"
+    },
+    {
+      "start_frame": 9371,
+      "end_frame": 9572,
+      "shot_frames": [
+        9371,
+        9497,
+        9540,
+        9572
+      ],
+      "bounce_frames": [
+        9468
+      ],
+      "n_shots": 4,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 9572,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P2"
+    },
+    {
+      "start_frame": 9743,
+      "end_frame": 9783,
+      "shot_frames": [
+        9743,
+        9783
+      ],
+      "bounce_frames": [
+        9750
+      ],
+      "n_shots": 2,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 9783,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P2"
+    },
+    {
+      "start_frame": 9975,
+      "end_frame": 10474,
+      "shot_frames": [
+        9975,
+        10010,
+        10051,
+        10088,
+        10127,
+        10165,
+        10193,
+        10273,
+        10311,
+        10371,
+        10444,
+        10474
+      ],
+      "bounce_frames": [],
+      "n_shots": 12,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 10474,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P2"
+    },
+    {
+      "start_frame": 10653,
+      "end_frame": 10858,
+      "shot_frames": [
+        10653,
+        10689,
+        10858
+      ],
+      "bounce_frames": [],
+      "n_shots": 3,
+      "outcome": {
+        "outcome": "neutral",
+        "defining_frame": 10858,
+        "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+      },
+      "human_id": "P2"
+    }
+  ],
+  "fatigue": {
+    "slope_kmh_per_min": -2.498,
+    "slope_quality_per_min": -3.004,
+    "first_third_avg_speed": 60.6,
+    "last_third_avg_speed": 62.2,
+    "drop_pct": -0.027,
+    "fatigued": false,
+    "confidence": "none",
+    "sample_frame": 9783,
+    "n_near_shots": 143
+  }
+}

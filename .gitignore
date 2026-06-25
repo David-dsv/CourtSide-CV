@@ -43,6 +43,9 @@ data/
 !web/public/demo/*.webm
 # and DO track the real annotated sample videos (project detail scrubber)
 !web/public/annotated/*.mp4
+# ...EXCEPT the full-match render (133 MB) — too heavy for git. Served locally
+# only; regenerate via: python run_pipeline_8s.py tennis.mp4 -s 0 -d 235 --match-mode
+web/public/annotated/tennis-full_annotated.mp4
 
 # Weights and Models
 weights/

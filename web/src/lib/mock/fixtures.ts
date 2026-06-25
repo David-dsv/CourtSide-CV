@@ -9,6 +9,7 @@ import type { Project, PipelineStats, TrajectoryPoint, PlayerPosition } from "@/
 import felixRaw from "./raw/felix.json";
 import tennisRaw from "./raw/tennis.json";
 import sotaRaw from "./raw/sota.json";
+import tennisFullRaw from "./raw/tennis-full.json";
 
 const felixStats = felixRaw as unknown as PipelineStats;
 const tennisStats = tennisRaw as unknown as PipelineStats;
@@ -146,22 +147,20 @@ export const sotaProject: Project = {
 /**
  * tennis-full — la vidéo tennis COMPLÈTE en mode "match" (les joueurs changent
  * de côté entre jeux). Démo de la logique side-swap (gérée côté backend,
- * feat/match-mode — PAS encore branchée ici).
+ * feat/match-mode).
  *
- * TODO(backend/feat/match-mode): les stats ci-dessous sont un PLACEHOLDER — on
- * réutilise tennisStats (le clip 1 min) parce que le _stats.json réel pour la
- * vidéo complète n'existe pas encore. Quand le pipeline aura tourné sur les
- * ~11760 frames, remplacer tennisFullStats par le vrai data/output/*.json et
- * supprimer le clone. frame_range [0, 11760] (≈235 s @ 50 fps) reflète déjà la
- * durée cible ; les positions des bounces/frappes restent celles du clip court.
- * La vidéo annotée réelle est web/public/annotated/tennis-full_annotated.mp4
- * (aujourd'hui = copie byte-pour-byte de tennis_annotated.mp4 en attendant).
+ * Stats RÉELLES : généré par `run_pipeline_8s.py tennis.mp4 -s 0 -d 235
+ * --match-mode --device cpu` sur les 11 750 frames (235 s @ 50 fps). Le JSON
+ * brut est web/src/lib/mock/raw/tennis-full.json (copié de data/output/). Il
+ * porte les champs match-mode : `match_mode: true`, `match.side_swaps` (19
+ * changements de côté détectés), et un `human_id` stable sur chaque shot/rally.
+ * Ces champs ne sont pas encore lus par le frontend (le type PipelineStats ne
+ * les déclare pas → tolérés via le cast `as unknown`), mais la source de stats
+ * est désormais réelle (38 bounces / 149 shots / 15 rallies), plus le clone du
+ * clip court. La vidéo annotée réelle est
+ * web/public/annotated/tennis-full_annotated.mp4.
  */
-const tennisFullStats: PipelineStats = {
-  ...tennisStats,
-  video: "tennis.mp4",
-  frame_range: [0, 11760],
-};
+const tennisFullStats = tennisFullRaw as unknown as PipelineStats;
 
 export const tennisFullProject: Project = {
   id: "tennis-full",

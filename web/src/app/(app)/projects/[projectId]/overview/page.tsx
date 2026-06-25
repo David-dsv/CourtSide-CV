@@ -8,6 +8,7 @@ import { SectionHeading } from "@/components/core/section-heading";
 import { FrameJumpLink } from "@/components/core/frame-jump-link";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
 import { HighlightCard } from "@/components/analysis/highlight-card";
+import { EventGlyph } from "@/components/analysis/event-glyph";
 import { MatchModeNotice } from "@/components/core/match-mode-notice";
 import { MomentumChart } from "@/components/analysis/momentum-chart";
 import { deriveHighlights, deriveMomentum } from "@/lib/analysis/highlights";
@@ -147,7 +148,8 @@ export default async function OverviewPage({
                   <FrameJumpLink frame={b.frame} className="font-mono text-xs text-muted-foreground hover:text-court-green">
                     f{b.frame}
                   </FrameJumpLink>
-                  <span className={`text-sm font-medium ${depthColorClass(b.depth)}`}>
+                  <span className={`flex items-center gap-2 text-sm font-medium ${depthColorClass(b.depth)}`}>
+                    <EventGlyph kind="bounce" depth={b.depth} />
                     {depthLabel(b.depth)}
                   </span>
                   <span className="ml-auto flex items-center gap-3 text-sm">
@@ -172,7 +174,10 @@ export default async function OverviewPage({
                   <FrameJumpLink frame={s.frame} className="font-mono text-xs text-muted-foreground hover:text-court-green">
                     f{s.frame}
                   </FrameJumpLink>
-                  <span className="text-sm font-medium">{strokeLabel(s.stroke)}</span>
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    <EventGlyph kind="shot" stroke={s.stroke} />
+                    {strokeLabel(s.stroke)}
+                  </span>
                   <span className="text-xs text-muted-foreground">{s.player_side === "near" ? "proche" : "lointain"}</span>
                   <span className="ml-auto flex items-center gap-3 text-sm">
                     <span className="flex items-center gap-1 text-muted-foreground">

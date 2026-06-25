@@ -254,7 +254,8 @@ def _draw_heat(tile, pts_tile, colors):
 
 def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
                  homography=None, players_img=None, scale=0.30, margin=None,
-                 pulse=0.0, ground_path=None, now_frame=None):
+                 pulse=0.0, ground_path=None, now_frame=None,
+                 single_bounce=False):
     """Composite the premium COURT RADAR onto the bottom-right of ``frame``.
 
     Parameters
@@ -288,6 +289,13 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
         the in-flight comet — the only points that translate honestly to a top-down
         map. The live-ball dot then sits at the most recent ground point. Backward-
         compatible: omit (or pass None) to keep the legacy ``ball_trail_img`` comet.
+    single_bounce : when True, the radar shows AT MOST ONE bounce — the LAST element
+        of ``bounces_img`` — as a single highlighted marker (glow + pulsing ring,
+        depth-colored). The cumulative placement heatmap and the multi-marker loop
+        are both skipped, so a new bounce REPLACES the previous one instead of
+        accumulating. An empty ``bounces_img`` draws no bounce at all. Default False
+        keeps the legacy behaviour (heatmap + a glow dot for every bounce) fully
+        intact — no other caller is affected.
     """
     H, Wf = frame.shape[:2]
     if margin is None:
@@ -342,9 +350,13 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
         Ym = max(-span_y, min(span_y, Ym))
         return to_tile(Xm, Ym)
 
-    # 1) bounce placement heat layer (subtle), under everything
+    # 1) bounces. Legacy: every bounce feeds a cumulative placement-heat layer
+    #    (under everything) + a glow marker (step 3). single_bounce mode: keep ONLY
+    #    the last bounce, drop the heatmap entirely — the radar then shows one clean
+    #    "latest bounce" marker that a new bounce replaces.
+    bounce_src = bounces_img[-1:] if single_bounce else bounces_img
     bounce_tpts, bounce_cols, bounce_depths = [], [], []
-    for b in bounces_img:
+    for b in bounce_src:
         x, y, depth = b[0], b[1], b[2]
         p = proj_tile(x, y)
         if p is None:
@@ -352,7 +364,7 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
         bounce_tpts.append(p)
         bounce_cols.append(BOUNCE_COLORS.get(depth, (255, 255, 255)))
         bounce_depths.append(depth)
-    if len(bounce_tpts) >= 2:
+    if not single_bounce and len(bounce_tpts) >= 2:
         _draw_heat(tile, bounce_tpts, bounce_cols)
 
     # 2) ball trajectory — a GROUND-PATH arc when ground_path is provided (bounces +
@@ -425,10 +437,24 @@ def draw_minimap(frame, ball_trail_img, bounces_img, frame_w, frame_h,
         fx.comet_trail(tile, trail_pts, base_color=TRAIL_COLOR,
                        max_thickness=max(3, int(tw / 50)), glow=True)
 
-    # 3) bounce markers — glowing depth-colored dots with a white core
-    br = max(3, int(tw / 60))
-    for (p, col) in zip(bounce_tpts, bounce_cols):
-        fx.glow_marker(tile, p, color=col, radius=br, pulse=0.0)
+    # 3) bounce markers. Legacy: a glowing depth-colored dot per bounce. single_bounce:
+    #    a SINGLE highlighted "latest bounce" marker — a bigger glow dot under an
+    #    animated pulsing depth-colored ring, so it reads instantly as the current
+    #    impact (and visibly breathes frame-to-frame via ``pulse``).
+    if single_bounce:
+        if bounce_tpts:
+            p, col = bounce_tpts[-1], bounce_cols[-1]
+            br = max(4, int(tw / 46))
+            fx.glow_marker(tile, p, color=col, radius=br, pulse=pulse)
+            # expanding pulse ring around the marker (radius + thickness breathe)
+            ring_r = int(round(br * (2.0 + 0.6 * np.sin(pulse))))
+            ring_th = max(_SS, int(round(_SS * (1.6 + 0.8 * (0.5 + 0.5 * np.sin(pulse))))))
+            cv2.circle(tile, _ipt(p), max(1, ring_r),
+                       tuple(int(c) for c in col), ring_th, cv2.LINE_AA)
+    else:
+        br = max(3, int(tw / 60))
+        for (p, col) in zip(bounce_tpts, bounce_cols):
+            fx.glow_marker(tile, p, color=col, radius=br, pulse=0.0)
 
     # 4) players — larger glowing pucks with a white ring + ID, so they're clearly
     #    distinct from bounce dots (optional kwarg; off by default).

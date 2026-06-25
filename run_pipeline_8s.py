@@ -113,6 +113,22 @@ from vision.pose import estimate_players_pose  # noqa: E402
 from vision.minimap import draw_minimap  # noqa: E402
 import vision.fx as fx  # noqa: E402  — cinematic visual effects (glow, glass HUD, shockwave)
 from vision.court_track import h_at  # noqa: E402  — per-frame homography lookup (track-camera)
+from vision.shot_guard import (  # noqa: E402  — court-visibility gate (cut non-play frames)
+    compute_court_visibility_mask_streaming, non_court_spans)
+from vision.annot_clip import (  # noqa: E402  — CUT bookkeeping: keep-list + clip-index sidecar
+    frames_to_annotate, write_clip_index)
+
+
+def _court_frames_between(mask, a, b):
+    """Count court-visible (True) frames strictly between window-relative indices a and b.
+
+    Used by rally segmentation so a multi-second non-court span (a replay between
+    two real shots) doesn't falsely split one rally: the gap is measured in COURT
+    frames only, treating the cut span as if it weren't there. When shot-guard is
+    off, callers pass the plain frame delta instead."""
+    if b <= a + 1:
+        return 0
+    return sum(1 for k in range(a + 1, b) if 0 <= k < len(mask) and mask[k])
 
 
 def _merge_solo_rallies(rallies):
@@ -162,7 +178,7 @@ def _merge_solo_rallies(rallies):
     return out
 
 
-def segment_rallies_relative(shot_by_frame, bounce_by_frame, fps):
+def segment_rallies_relative(shot_by_frame, bounce_by_frame, fps, court_mask=None):
     """Segment shots into rallies in RELATIVE (clip-local) frame coordinates.
 
     This mirrors the post-Pass-2 absolute-frame segmentation (gap > 2.5s between
@@ -182,7 +198,11 @@ def segment_rallies_relative(shot_by_frame, bounce_by_frame, fps):
     grouped = []
     cur = [sorted_sf[0]]
     for sf in sorted_sf[1:]:
-        if sf - cur[-1] > rally_gap_frames:
+        # shot-guard: measure the gap in COURT frames only, so a replay/close-up
+        # between two real shots doesn't falsely split one rally in two.
+        gap = (_court_frames_between(court_mask, cur[-1], sf)
+               if court_mask is not None else sf - cur[-1])
+        if gap > rally_gap_frames:
             grouped.append(cur)
             cur = []
         cur.append(sf)
@@ -496,6 +516,12 @@ def parse_args():
                              "calibrations/<name>.court.json) used for the metric homography.")
     parser.add_argument("--no-fx", action="store_true",
                         help="Disable cinematic FX (glow trail, glass HUD, shockwaves). FX on by default.")
+    parser.add_argument("--no-shot-guard", action="store_true",
+                        help="Disable the court-visibility gate (shot-guard). By default, frames where the "
+                             "full court is NOT visible (camera close-ups, replays, graphics) are detected and "
+                             "CUT from the annotated output — no pose/ball/overlay/write spent on them (0 CPU) "
+                             "and the video is shorter. A <output>_clipindex.json sidecar maps annotated→original "
+                             "frames so the front re-aligns the timeline. The ORIGINAL video is never modified.")
     parser.add_argument("--match-mode", action="store_true",
                         help="Stable P1/P2 HUMAN identity across side-changes (match play). Without it, "
                              "P1=far / P2=near (net-side identity) — the training default, unchanged. With it, "
@@ -691,6 +717,35 @@ def main():
         else:
             logger.warning("No court zones (no homography and YOLO returned nothing)")
 
+    # ─── Pass 0.5: shot-guard — court-visibility mask + CUT bookkeeping ───
+    # By default, frames where the full court is not visible (close-ups, replays,
+    # graphics) are CUT from the annotated output: every per-frame pass skips them
+    # (no detect/pose/overlay/write → 0 CPU) and the video comes out shorter. A
+    # clip-index sidecar maps annotated→original frames for the front. The ORIGINAL
+    # video is only read, never rewritten. --no-shot-guard disables (mask all-True
+    # → identity clip-index, nothing cut). See vision/shot_guard.py + annot_clip.py.
+    shot_guard_enabled = not args.no_shot_guard
+    court_visible_mask = [True] * max_frames        # window-relative
+    non_court_spans_rel = []
+    keep_set = set(range(max_frames))               # window-relative indices to annotate
+    if shot_guard_enabled and max_frames > 0:
+        sg_reader = VideoReader(video_path)
+        if start_frame > 0:
+            sg_reader.seek(start_frame)
+        def _sg_frames():
+            for j, fr in enumerate(sg_reader.iter_frames()):
+                if j >= max_frames:
+                    break
+                yield fr
+        court_visible_mask = compute_court_visibility_mask_streaming(_sg_frames(), fps)
+        sg_reader.release()
+        non_court_spans_rel = non_court_spans(court_visible_mask)
+        keep_set = set(frames_to_annotate(court_visible_mask))
+        n_keep = len(keep_set)
+        logger.info(f"=== Pass 0.5 (shot-guard CUT): annotating {n_keep}/{max_frames} frames "
+                    f"({100 * n_keep / max(1, max_frames):.1f}%), "
+                    f"{max_frames - n_keep} cut, {len(non_court_spans_rel)} non-court spans ===")
+
     # ─── Pass 1: Detect ball positions + bounces ───
     logger.info("=== PASS 1: Detect ball ===")
     ball_conf_thresh = 0.15  # low threshold — we filter by motion, not confidence
@@ -713,6 +768,12 @@ def main():
             tracker = HeatmapBallTracker(args.wasb_weights, device=device)
             logger.info("Tracking ball with WASB heatmap model...")
             raw_ball_centers = tracker.track_ball(wasb_frames)
+            # shot-guard CUT: WASB can hallucinate a heatmap blob on a close-up;
+            # null its output on non-court frames so no ball is fabricated there.
+            if shot_guard_enabled:
+                raw_ball_centers = [
+                    None if (i not in keep_set) else c
+                    for i, c in enumerate(raw_ball_centers)]
             ball_speeds_px = [0.0] * len(raw_ball_centers)  # filled below
             raw_detections = None
         except Exception as e:
@@ -729,6 +790,12 @@ def main():
         for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 1a: detect"):
             if frame_count >= max_frames:
                 break
+            # shot-guard CUT: no detection on a non-court frame (it won't be written
+            # nor counted). Keep the per-frame array aligned with an empty slot.
+            if shot_guard_enabled and frame_count not in keep_set:
+                raw_detections.append([])
+                frame_count += 1
+                continue
             det = detector.detect(frame, classes=[32])
             ball_mask = det["class_ids"] == 32
             candidates = []
@@ -1070,10 +1137,15 @@ def main():
                                    desc="Pass 1.5: pose")):
         if i >= max_frames:
             break
-        players = estimate_players_pose(
-            detector.person_model, pose_model, frame, device,
-            ball_xy=all_ball_centers[i] if i < len(all_ball_centers) else None,
-            court_zones=court_zones if court_zones else None)
+        # shot-guard CUT: no pose on a non-court frame (no skeleton will be drawn
+        # nor written). Empty list keeps the tracker + per-frame array aligned.
+        if shot_guard_enabled and i not in keep_set:
+            players = []
+        else:
+            players = estimate_players_pose(
+                detector.person_model, pose_model, frame, device,
+                ball_xy=all_ball_centers[i] if i < len(all_ball_centers) else None,
+                court_zones=court_zones if court_zones else None)
         players_per_frame[i] = players
         if match_mode:
             ptracker.add_frame(players, frame)   # frame needed for HSV re-id
@@ -1230,7 +1302,8 @@ def main():
     # progress and can recompute that rally's own FH/BH/shot/bounce counts + peak.
     sorted_shot_frames = sorted(shot_by_frame.keys())
     sorted_bounce_frames = sorted(bounce_by_frame.keys())
-    rallies_rel = segment_rallies_relative(shot_by_frame, bounce_by_frame, fps)
+    rallies_rel = segment_rallies_relative(shot_by_frame, bounce_by_frame, fps,
+                                           court_mask=court_visible_mask if shot_guard_enabled else None)
     rally_at_frame = build_rally_at_frame(rallies_rel, max_frames)
 
     # Outcome per rally, computed ONCE up front (the geometric classifier expects
@@ -1284,6 +1357,14 @@ def main():
     for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 2"):
         if frame_idx >= max_frames:
             break
+        # shot-guard CUT: a non-court frame (close-up / replay / graphic) is dropped
+        # from the annotated output entirely — no overlay, no write, no CPU. We still
+        # advance frame_idx so every per-frame lookup (bounce/rally/homography, all
+        # keyed on the ORIGINAL window-relative index) stays correct; only the
+        # WRITTEN video compresses, and the clip-index sidecar records the mapping.
+        if shot_guard_enabled and frame_idx not in keep_set:
+            frame_idx += 1
+            continue
         out = frame.copy()
 
         # 1. Court zone overlay (background layer) — redrive from the per-frame
@@ -1652,7 +1733,11 @@ def main():
             grouped = []
             cur = [sorted_sf[0]]
             for sf in sorted_sf[1:]:
-                if sf - cur[-1] > rally_gap_frames:
+                # shot-guard: court-frames-only gap (mirror segment_rallies_relative)
+                # so the JSON rallies match the live HUD numbering exactly.
+                gap = (_court_frames_between(court_visible_mask, cur[-1], sf)
+                       if shot_guard_enabled else sf - cur[-1])
+                if gap > rally_gap_frames:
                     grouped.append(cur)
                     cur = []
                 cur.append(sf)
@@ -1737,6 +1822,15 @@ def main():
                              "backhand": sum(1 for s in shot_by_frame.values() if s["fhb"] == "backhand")}
                             if shot_by_frame else {}),
             },
+            "shot_guard": {
+                "enabled": shot_guard_enabled,
+                "court_frames": int(sum(court_visible_mask)),
+                "total_frames": int(len(court_visible_mask)),
+                "cut_frames": int(len(court_visible_mask) - sum(court_visible_mask)) if shot_guard_enabled else 0,
+                "non_court_ratio": (1.0 - sum(court_visible_mask) / max(1, len(court_visible_mask)))
+                                   if shot_guard_enabled else 0.0,
+                "non_court_spans": non_court_spans_rel,
+            },
             "bounces": stats_bounces,
             "shots": stats_shots,
             "rallies": rallies,
@@ -1751,6 +1845,15 @@ def main():
                         f"rallies: {len(rallies)})")
         except Exception as exc:  # never let stats emission break the video output
             logger.warning(f"Stats JSON not written: {exc}")
+
+        # ─── Clip-index sidecar (annotated↔original frame mapping for the front) ───
+        # Always emitted (identity mapping when shot-guard is off / nothing cut), so
+        # the front can treat "no sidecar" and "identity sidecar" the same.
+        clip_path, clip_index = write_clip_index(output_path, court_visible_mask,
+                                                 fps, start_frame)
+        if clip_path:
+            logger.info(f"Clip-index written to: {clip_path} "
+                        f"({clip_index['annotated_total']}/{clip_index['original_total']} kept)")
 
 
     logger.info(f"Done! Video saved to: {output_path}")

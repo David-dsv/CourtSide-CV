@@ -162,6 +162,67 @@ def _merge_solo_rallies(rallies):
     return out
 
 
+def segment_rallies_relative(shot_by_frame, bounce_by_frame, fps):
+    """Segment shots into rallies in RELATIVE (clip-local) frame coordinates.
+
+    This mirrors the post-Pass-2 absolute-frame segmentation (gap > 2.5s between
+    consecutive shots → new rally, then ``_merge_solo_rallies``) EXACTLY, but
+    keeps frame numbers relative so the result indexes ``shot_by_frame`` /
+    ``bounce_by_frame`` directly. It is run BEFORE the render loop so the live
+    per-rally HUD can know, at every frame, which rally is in progress.
+
+    Returns a list of rally dicts with relative ``start_frame``/``end_frame``/
+    ``shot_frames``/``bounce_frames``/``n_shots`` (same keys ``_merge_solo_rallies``
+    expects), 1-based by list position.
+    """
+    if not shot_by_frame:
+        return []
+    rally_gap_frames = 2.5 * fps
+    sorted_sf = sorted(shot_by_frame.keys())
+    grouped = []
+    cur = [sorted_sf[0]]
+    for sf in sorted_sf[1:]:
+        if sf - cur[-1] > rally_gap_frames:
+            grouped.append(cur)
+            cur = []
+        cur.append(sf)
+    grouped.append(cur)
+    sorted_bf = sorted(bounce_by_frame.keys())
+    rallies = []
+    for g in grouped:
+        start = g[0]
+        end = max(g[-1], max([bf for bf in sorted_bf if start <= bf <= g[-1] + rally_gap_frames],
+                             default=g[-1]))
+        bframes = [bf for bf in sorted_bf if start <= bf <= end]
+        rallies.append({
+            "start_frame": int(start),
+            "end_frame": int(end),
+            "shot_frames": [int(sf) for sf in g],
+            "bounce_frames": [int(bf) for bf in bframes],
+            "n_shots": len(g),
+        })
+    # Same solo-merge as the absolute path so the HUD's rally count and the JSON
+    # output agree (no off-by-one between what the video shows and what's exported).
+    return _merge_solo_rallies(rallies)
+
+
+def build_rally_at_frame(rallies, max_frames):
+    """Map every frame index → 0-based rally index (or None between/around rallies).
+
+    A frame belongs to a rally if it lies within [start_frame, end_frame]. The
+    inter-rally gap frames map to None (no active point → the HUD freezes the last
+    rally's tag rather than inventing an "ÉCHANGE 0"). Built from RELATIVE rally
+    frames (see ``segment_rallies_relative``).
+    """
+    rally_at = [None] * max_frames
+    for ri, r in enumerate(rallies):
+        lo = max(0, int(r["start_frame"]))
+        hi = min(max_frames - 1, int(r["end_frame"]))
+        for f in range(lo, hi + 1):
+            rally_at[f] = ri
+    return rally_at
+
+
 def estimate_px_per_meter(court_zones, frame_height):
     """
     Estimate the scale factor (pixels per meter) from court zones or frame geometry.
@@ -1070,11 +1131,58 @@ def main():
         legend_items["Quality 70+"] = (0, 200, 0)
         legend_items["Quality <40"] = (0, 0, 220)
 
-    # Precompute cumulative match stats per frame for the live HUD card (running
-    # FH/BH counts, rally length = bounces in the current point, max/avg speed).
+    # ── Per-rally HUD scaffolding (#3) ──────────────────────────────────────
+    # The live stat card must reset every NEW rally (échange) and tag the current
+    # rally number, instead of cumulative counters since the clip start. Segment
+    # the rallies NOW (in relative frame coords, mirroring the post-loop absolute
+    # segmentation + solo-merge) so we know, at every frame_idx, which rally is in
+    # progress and can recompute that rally's own FH/BH/shot/bounce counts + peak.
     sorted_shot_frames = sorted(shot_by_frame.keys())
     sorted_bounce_frames = sorted(bounce_by_frame.keys())
-    peak_speed = 0.0
+    rallies_rel = segment_rallies_relative(shot_by_frame, bounce_by_frame, fps)
+    rally_at_frame = build_rally_at_frame(rallies_rel, max_frames)
+
+    # Outcome per rally, computed ONCE up front (the geometric classifier expects
+    # ABSOLUTE frames, so feed it absolute-frame rally dicts + shot/bounce lists,
+    # exactly as the post-loop JSON path does). Only shown live once the rally is
+    # OVER (we don't reveal a winner/error mid-point — premature + flickery).
+    rally_outcome_rel = [None] * len(rallies_rel)
+    if rallies_rel:
+        abs_shots = [{"frame": int(start_frame + f), "x": s["x"], "y": s["y"],
+                      "player_side": s["side"], "stroke": s["fhb"],
+                      "quality": s["quality"], "speed_kmh": round(s["speed"], 1)}
+                     for f, s in sorted(shot_by_frame.items())]
+        abs_bounces = [{"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
+                        "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
+                       for f, v in sorted(bounce_by_frame.items())]
+        for ri, r in enumerate(rallies_rel):
+            abs_rally = {
+                "start_frame": int(start_frame + r["start_frame"]),
+                "end_frame": int(start_frame + r["end_frame"]),
+                "shot_frames": [int(start_frame + sf) for sf in r["shot_frames"]],
+                "bounce_frames": [int(start_frame + bf) for bf in r["bounce_frames"]],
+                "n_shots": r["n_shots"],
+            }
+            try:
+                rally_outcome_rel[ri] = classify_rally_outcome(
+                    abs_rally, abs_shots, abs_bounces, fps)
+            except Exception:
+                rally_outcome_rel[ri] = None
+
+    peak_speed = 0.0          # current-rally peak (resets on rally change)
+    hud_rally_idx = None      # which rally the card is currently showing
+
+    # Does the (possibly newer, S3) draw_minimap accept the single_bounce flag?
+    # Introspect ONCE so the per-frame call doesn't pay for it, and so this branch
+    # runs cleanly against both the legacy and the S3 signatures.
+    import inspect as _inspect
+    try:
+        _minimap_accepts_single_bounce = (
+            "single_bounce" in _inspect.signature(draw_minimap).parameters
+            or any(p.kind == _inspect.Parameter.VAR_KEYWORD
+                   for p in _inspect.signature(draw_minimap).parameters.values()))
+    except (ValueError, TypeError):
+        _minimap_accepts_single_bounce = False
 
     frame_idx = 0
     for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 2"):
@@ -1194,8 +1302,15 @@ def main():
             lo = max(0, frame_idx - mm_window)
             mm_trail = [all_ball_centers[j] for j in range(lo, frame_idx + 1)
                         if all_ball_centers[j] is not None]
-            bounces_so_far = [(v[0], v[1], v[2]) for bf, v in bounce_by_frame.items()
-                              if bf <= frame_idx]
+            # #4 — the radar shows ONLY the most-recent bounce, not every bounce
+            # since the clip start. Each new bounce replaces the previous marker
+            # (no cumulative heat). Pick the single latest bounce frame <= now.
+            _latest_bf = max((bf for bf in bounce_by_frame if bf <= frame_idx),
+                             default=None)
+            latest_bounce_img = ([(bounce_by_frame[_latest_bf][0],
+                                    bounce_by_frame[_latest_bf][1],
+                                    bounce_by_frame[_latest_bf][2])]
+                                 if _latest_bf is not None else [])
             # GROUND-PATH for the radar arc: only metrically-trustworthy ground
             # contacts — bounces (true ground impacts) + hit/contact points (≈ground
             # at the player) — in temporal (frame) order, growing over the clip. The
@@ -1211,41 +1326,112 @@ def main():
             ground_path = [(e[1], e[2], e[3]) for e in gp_events]
             # live player feet (bottom-center of each locked P1/P2 box) → radar dots
             players_img = [((b[0] + b[2]) / 2.0, b[3], pid) for pid, b in person_boxes]
-            out = draw_minimap(out, mm_trail, bounces_so_far,
-                               frame_width, frame_height,
-                               homography=h_at(court_homography_by_frame, frame_idx, court_homography),
-                               players_img=players_img,
-                               pulse=frame_idx * 0.5,
-                               ground_path=ground_path,
-                               now_frame=frame_idx)
+            # S3 contract: draw_minimap(..., single_bounce=True) draws at most one
+            # clean bounce marker with NO cumulative heatmap. Pass it only when the
+            # current draw_minimap accepts it (introspected once), so this branch
+            # also runs against the legacy signature — there, the 1-element bounce
+            # list already degenerates to a single dot (heat needs ≥2 points).
+            mm_kwargs = dict(
+                homography=h_at(court_homography_by_frame, frame_idx, court_homography),
+                players_img=players_img,
+                pulse=frame_idx * 0.5,
+                ground_path=ground_path,
+                now_frame=frame_idx,
+            )
+            if _minimap_accepts_single_bounce:
+                mm_kwargs["single_bounce"] = True
+            out = draw_minimap(out, mm_trail, latest_bounce_img,
+                               frame_width, frame_height, **mm_kwargs)
 
         # 6. HUD — speed gauge + live match-stats card, anchored BOTTOM-LEFT so it
         # never collides with a broadcast scoreboard (top corners). On amateur phone
         # footage the top corners are free too; bottom-left is the safe universal slot.
         if not args.no_fx:
-            peak_speed = max(peak_speed, current_speed if bc is not None else 0.0)
             margin = int(frame_height * 0.022)
             gauge_r = int(frame_height * 0.052)
             gauge_box = 2 * gauge_r + 2 * int(gauge_r * 0.42)
             card_w = int(frame_width * 0.135)
-            n_fh = sum(1 for f in sorted_shot_frames
-                       if f <= frame_idx and shot_by_frame[f]["fhb"] == "forehand")
-            n_bh = sum(1 for f in sorted_shot_frames
-                       if f <= frame_idx and shot_by_frame[f]["fhb"] == "backhand")
-            n_rally = sum(1 for f in sorted_bounce_frames if f <= frame_idx)
+
+            # ── Which rally are we in? ──────────────────────────────────────
+            # rally_at_frame is None in the inter-rally gap; freeze the last
+            # rally shown so the card doesn't blank between points. Reset the
+            # per-rally peak when the active rally changes (new ÉCHANGE).
+            cur_idx = rally_at_frame[frame_idx] if frame_idx < len(rally_at_frame) else None
+            if cur_idx is None:
+                cur_idx = hud_rally_idx  # freeze last point's tag in the gap
+            if cur_idx != hud_rally_idx:
+                hud_rally_idx = cur_idx
+                peak_speed = 0.0        # RESET: new échange → fresh peak
+            peak_speed = max(peak_speed, current_speed if bc is not None else 0.0)
+
+            if hud_rally_idx is not None and hud_rally_idx < len(rallies_rel):
+                r = rallies_rel[hud_rally_idx]
+                r_start = r["start_frame"]
+                # current-rally counters: shots/bounces from this rally's start up
+                # to (and including) the current frame — NOT cumulative since clip
+                # start. Reset to 0 the instant a new rally begins.
+                n_fh = sum(1 for f in r["shot_frames"]
+                           if r_start <= f <= frame_idx and shot_by_frame[f]["fhb"] == "forehand")
+                n_bh = sum(1 for f in r["shot_frames"]
+                           if r_start <= f <= frame_idx and shot_by_frame[f]["fhb"] == "backhand")
+                n_strikes = sum(1 for f in r["shot_frames"] if r_start <= f <= frame_idx)
+                n_bounce = sum(1 for f in r["bounce_frames"] if r_start <= f <= frame_idx)
+                rally_label = f"ÉCHANGE {hud_rally_idx + 1}"
+                # outcome only once the point is OVER (don't reveal mid-rally)
+                rally_over = frame_idx >= r["end_frame"]
+                oc = rally_outcome_rel[hud_rally_idx] if rally_over else None
+                outcome_label = oc.get("outcome") if oc else None
+            else:
+                # before the first rally starts: empty card with a neutral tag
+                n_fh = n_bh = n_strikes = n_bounce = 0
+                rally_label = "ÉCHANGE 1"
+                outcome_label = None
+
             card_lines = [
                 ("Forehand", str(n_fh)),
                 ("Backhand", str(n_bh)),
-                ("Rally", str(n_rally)),
+                ("Strikes", str(n_strikes)),
+                ("Bounces", str(n_bounce)),
                 ("Peak", f"{int(peak_speed)} km/h"),
             ]
-            card_h = int(frame_height * 0.022) * 2 + int(frame_height * 0.019 * 1.55) * len(card_lines) + 50
+
+            # Card height must match the renderer's actual layout so the
+            # gauge stacks above it without overlap. fx.stat_card/rally_card use:
+            #   title_sz = max(14, fh*0.022); row_sz = max(12, fh*0.019)
+            #   pad = max(12, width*0.07); row_h = int(row_sz*1.55)
+            #   header_h = title_sz + int(row_sz*0.9)  (title always present here)
+            #   h = pad + header_h + row_h*n_lines + pad
+            _title_sz = max(14, int(frame_height * 0.022))
+            _row_sz = max(12, int(frame_height * 0.019))
+            _pad = max(12, int(card_w * 0.07))
+            _row_h = int(_row_sz * 1.55)
+            _header_h = _title_sz + int(_row_sz * 0.9)
+            # rally_card draws one extra outcome row under the header when present
+            _outcome_rows = 1 if outcome_label else 0
+            card_h = (_pad + _header_h + _row_h * (len(card_lines) + _outcome_rows)
+                      + _pad)
             # stack: gauge on top, stats card under it, bottom-left aligned
             card_y = frame_height - margin - card_h
             gauge_y = card_y - gauge_box - int(frame_height * 0.012)
             fx.speed_gauge(out, margin, gauge_y, current_speed if bc is not None else 0.0,
                            max_kmh=180, label="BALL", radius=gauge_r)
-            fx.stat_card(out, margin, card_y, card_lines, title="Match", width=card_w)
+
+            # Prefer S4's per-rally card variant (header "ÉCHANGE N" + outcome
+            # row) when fx provides it; otherwise fall back to stat_card with the
+            # rally label as the title and an inline outcome row.
+            _rally_card = getattr(fx, "rally_card", None)
+            if callable(_rally_card):
+                try:
+                    _rally_card(out, margin, card_y, rally_index=hud_rally_idx + 1
+                                if hud_rally_idx is not None else 1,
+                                lines=card_lines, outcome=outcome_label, width=card_w)
+                except TypeError:
+                    _rally_card = None  # signature mismatch → fall through
+            if not callable(_rally_card):
+                lines = list(card_lines)
+                if outcome_label:
+                    lines = [("Outcome", outcome_label.replace("_", " ").upper())] + lines
+                fx.stat_card(out, margin, card_y, lines, title=rally_label, width=card_w)
         else:
             out = create_legend(out, legend_items, position="top-right")
 

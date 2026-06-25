@@ -28,6 +28,7 @@ Public API
     shockwave(frame, center, age_frames, max_age, color, max_radius)
     speed_gauge(frame, x, y, value_kmh, max_kmh, label, radius)
     stat_card(frame, x, y, lines, title, width)
+    rally_card(frame, x, y, *, rally_index, lines, outcome, width, title)
     placement_heatmap(frame, points, frame_w, frame_h, alpha, sigma, colormap)
     glow_marker(frame, center, color, radius, pulse)
 """
@@ -578,6 +579,165 @@ def stat_card(frame: np.ndarray, x: int, y: int,
 
 
 # ---------------------------------------------------------------------------
+# 7b. Rally card (per-rally HUD with "ÉCHANGE N" badge + outcome pill)
+# ---------------------------------------------------------------------------
+# Outcome → BGR color mapping (cv2 convention). Keys are the canonical rally
+# outcome labels the pipeline emits; unknown / None outcomes draw nothing.
+#   winner         → green   (a clean point won)
+#   forced_error   → orange  (opponent forced into the error — earned, low-ish)
+#   unforced_error → red     (point lost on own mistake)
+#   neutral        → gray    (rally still open / no decisive outcome)
+_OUTCOME_COLORS: dict[str, tuple[int, int, int]] = {
+    "winner": (90, 210, 90),          # green
+    "forced_error": (60, 165, 245),   # orange
+    "unforced_error": (60, 60, 235),  # red
+    "neutral": (150, 150, 150),       # gray
+}
+# Human-readable labels shown on the pill (kept short; uppercased at draw time).
+_OUTCOME_LABELS: dict[str, str] = {
+    "winner": "WINNER",
+    "forced_error": "FORCED ERR",
+    "unforced_error": "UNFORCED ERR",
+    "neutral": "EN COURS",
+}
+
+
+def rally_card(frame: np.ndarray, x: int, y: int, *,
+               rally_index, lines: Sequence[Sequence[str]],
+               outcome: str | None = None,
+               width: int | None = None, title: str = "ÉCHANGE") -> np.ndarray:
+    """Glassmorphism card for the **current rally**'s live stats (bottom-left HUD).
+
+    Visually a richer sibling of :func:`stat_card`, purpose-built for per-rally
+    telemetry that resets every point: a prominent ``"{title} {rally_index}"``
+    badge header (e.g. ``"ÉCHANGE 3"``), a body of (label, value) stat rows, and
+    an optional colored outcome pill (winner / forced_error / …).
+
+    Parameters
+    ----------
+    rally_index : int | str — the current rally number, rendered after ``title``
+        in the header badge. Stringified, so anything printable works.
+    lines : iterable of (label, value) string pairs — the rally's stats
+        (e.g. ``[("Frappes", "4"), ("Rebonds", "3"), ("Peak", "98 km/h")]``).
+        May be empty (header-only card).
+    outcome : str | None — one of ``_OUTCOME_COLORS``'s keys. When given, a
+        colored pill with the outcome label is drawn under the stats. Unknown or
+        ``None`` → no pill (the card simply omits it).
+    width : panel width in px. Defaults to a frame-height-derived width (same
+        spirit as :func:`stat_card`) so it reads on any resolution.
+    title : header prefix; defaults to ``"ÉCHANGE"``.
+
+    Returns
+    -------
+    The frame, annotated in place (same convention as :func:`stat_card`).
+    """
+    lines = list(lines)
+    fh = frame.shape[0]
+    # Type scale derived from frame height — legible on any resolution.
+    badge_sz = max(17, int(fh * 0.027))   # header is bigger/bolder than rows
+    row_sz = max(12, int(fh * 0.019))
+    pill_sz = max(12, int(fh * 0.018))
+
+    # Width: derive from frame height when not given, with a floor wide enough
+    # for a large rally_index + the longest outcome label to never clip.
+    if width is None:
+        width = max(190, int(fh * 0.26))
+    width = int(width)
+    pad = max(12, int(width * 0.07))
+    row_h = int(row_sz * 1.55)
+
+    # ── Vertical layout budget ──────────────────────────────────────────────
+    # header badge block, then an underline rule, then the stat rows, then the
+    # optional outcome pill. Each segment contributes a fixed, derived height so
+    # the panel size is stable regardless of rally_index magnitude.
+    header_h = badge_sz + int(row_sz * 0.95)
+    rows_h = row_h * len(lines)
+    pill_h = int(pill_sz * 2.1) + int(row_sz * 0.4) if outcome in _OUTCOME_COLORS else 0
+    h = pad + header_h + rows_h + pill_h + pad
+
+    # Glass backing — slightly cooler tint than stat_card so the two cards read
+    # as a family but the rally card stands out as "live".
+    glass_panel(frame, x, y, width, h, tint=(38, 28, 22), alpha=0.52,
+                border=(180, 185, 205), radius=14)
+
+    cy = y + pad
+
+    # ── Header badge: "ÉCHANGE N" ───────────────────────────────────────────
+    # A small accent tick to the left of the title gives it a "live indicator"
+    # feel, then the big bold header text.
+    accent = (245, 195, 95)  # warm amber accent (BGR)
+    tick_w = max(3, int(width * 0.018))
+    tick_h = badge_sz
+    cv2.rectangle(frame, (x + pad, cy + int(badge_sz * 0.08)),
+                  (x + pad + tick_w, cy + int(badge_sz * 0.08) + tick_h),
+                  accent, -1, cv2.LINE_AA)
+    header_text = f"{title} {rally_index}"
+    draw_text(frame, header_text, (x + pad + tick_w + max(6, pad // 2), cy),
+              size=badge_sz, color=(255, 255, 255), font="bold")
+
+    # Underline rule under the header.
+    ry = cy + badge_sz + int(row_sz * 0.30)
+    cv2.line(frame, (x + pad, ry), (x + width - pad, ry),
+             (115, 120, 145), 1, cv2.LINE_AA)
+    cy += header_h
+
+    # ── Stat rows ───────────────────────────────────────────────────────────
+    for label, value in lines:
+        draw_text(frame, str(label), (x + pad, cy), size=row_sz,
+                  color=(210, 215, 225), font="regular")
+        draw_text(frame, str(value), (x + width - pad, cy), size=row_sz,
+                  color=(255, 255, 255), font="bold", anchor="rt")
+        cy += row_h
+
+    # ── Outcome pill ────────────────────────────────────────────────────────
+    if outcome in _OUTCOME_COLORS:
+        col = _OUTCOME_COLORS[outcome]
+        label = _OUTCOME_LABELS.get(outcome, str(outcome).upper())
+        cy += int(row_sz * 0.4)
+        pill_top = cy
+        pill_bottom = cy + int(pill_sz * 1.9)
+        pill_r = (pill_bottom - pill_top) // 2
+        # Rounded pill: a filled rounded-rect, translucent so it sits on glass.
+        pill_x0, pill_x1 = x + pad, x + width - pad
+        _filled_rounded_rect(frame, pill_x0, pill_top, pill_x1, pill_bottom,
+                             pill_r, col, alpha=0.85)
+        # A bright dot on the left of the pill, then the outcome label.
+        dot_cx = pill_x0 + pill_r
+        dot_cy = (pill_top + pill_bottom) // 2
+        cv2.circle(frame, (dot_cx, dot_cy), max(2, pill_r // 3),
+                   (255, 255, 255), -1, cv2.LINE_AA)
+        # Choose text color for contrast against the pill fill.
+        txt_col = (255, 255, 255)
+        draw_text(frame, label, (dot_cx + pill_r, pill_top + int(pill_sz * 0.18)),
+                  size=pill_sz, color=txt_col, font="bold")
+    return frame
+
+
+def _filled_rounded_rect(frame: np.ndarray, x0: int, y0: int, x1: int, y1: int,
+                         radius: int, color: Sequence[int],
+                         alpha: float = 1.0) -> None:
+    """Alpha-blend a filled rounded rectangle (BGR ``color``) onto ``frame``.
+
+    Used by :func:`rally_card`'s outcome pill. Builds a rounded-rect mask, paints
+    a solid color layer, and blends it over the existing ROI at ``alpha`` so the
+    pill reads as a translucent chip on the glass card (not a flat sticker).
+    """
+    H, W = frame.shape[:2]
+    x0 = int(np.clip(x0, 0, W - 1)); x1 = int(np.clip(x1, 0, W))
+    y0 = int(np.clip(y0, 0, H - 1)); y1 = int(np.clip(y1, 0, H))
+    w, h = x1 - x0, y1 - y0
+    if w <= 1 or h <= 1:
+        return
+    mask = _rounded_rect_mask(w, h, int(radius))
+    roi = frame[y0:y1, x0:x1]
+    color_layer = np.empty_like(roi, dtype=np.float32)
+    color_layer[:] = np.array(color, dtype=np.float32)
+    m3 = (mask[..., None].astype(np.float32) / 255.0) * float(np.clip(alpha, 0, 1))
+    frame[y0:y1, x0:x1] = _clip_u8(
+        roi.astype(np.float32) * (1 - m3) + color_layer * m3)
+
+
+# ---------------------------------------------------------------------------
 # 8. Placement heatmap
 # ---------------------------------------------------------------------------
 def placement_heatmap(frame: np.ndarray, points: Sequence[Sequence[float]],
@@ -686,6 +846,6 @@ def glow_marker(frame: np.ndarray, center: Sequence[int],
 
 __all__ = [
     "add_bloom", "comet_trail", "glass_panel", "draw_text", "text_size",
-    "shockwave", "speed_gauge", "stat_card", "placement_heatmap",
+    "shockwave", "speed_gauge", "stat_card", "rally_card", "placement_heatmap",
     "glow_marker", "speed_color",
 ]

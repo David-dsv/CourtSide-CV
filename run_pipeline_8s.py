@@ -223,6 +223,58 @@ def build_rally_at_frame(rallies, max_frames):
     return rally_at
 
 
+def _quality_color(q):
+    """Quality → BGR (green ≥70, amber 40-69, red <40). Shared by labels + HUD."""
+    return ((90, 220, 90) if q >= 70 else
+            (90, 220, 220) if q >= 40 else (90, 90, 230))
+
+
+def draw_event_legend(out, fx):
+    """Persistent top-right key teaching SHAPE = event (color = attribute).
+
+    Drawn under FX too (always on), so the viewer learns the vocabulary:
+      ● flat ellipse + diamond stake = REBOND (ball on the ground)
+      ◗ upright diamond + downward caret = FRAPPE (player strike, in the air)
+    Glyphs are drawn in neutral grey with the SAME cv2 calls as the live events,
+    so the legend matches the overlay exactly. Color is explicitly called out as
+    the depth/stroke channel. Top-right is the only free corner (bottom-left =
+    HUD card, bottom-right = radar, top-left = scoreboard-safe).
+    """
+    H, W = out.shape[:2]
+    U = max(6, int(H * 0.018))
+    pad = int(H * 0.014)
+    pw, ph = int(W * 0.16), int(H * 0.095)
+    x = W - pw - pad
+    y = pad
+    fx.glass_panel(out, x, y, pw, ph, tint=(30, 24, 20), alpha=0.5,
+                   border=(170, 175, 195), radius=12)
+    gx = x + int(2.0 * U)
+    txs = x + int(4.2 * U)
+    neut = (220, 220, 220)
+    # row 1 — REBOND: flat squashed ellipse + diamond stake (ground silhouette)
+    r1 = y + int(ph * 0.30)
+    cv2.ellipse(out, (gx, r1), (int(1.3 * U), int(1.3 * U * 0.40)), 0, 0, 360,
+                neut, 2, cv2.LINE_AA)
+    cv2.drawMarker(out, (gx, r1), neut, cv2.MARKER_DIAMOND, max(7, int(0.6 * U)),
+                   2, cv2.LINE_AA)
+    fx.draw_text(out, "REBOND (sol)", (txs, r1), size=15, color=(225, 225, 230),
+                 font="bold", anchor="lt")
+    # row 2 — FRAPPE: upright diamond + downward caret (air silhouette)
+    r2 = y + int(ph * 0.60)
+    cv2.drawMarker(out, (gx, r2), neut, cv2.MARKER_DIAMOND, int(1.8 * U), 2, cv2.LINE_AA)
+    cv2.line(out, (gx - int(0.7 * U), r2 - int(1.3 * U)), (gx, r2 - int(0.6 * U)),
+             neut, 2, cv2.LINE_AA)
+    cv2.line(out, (gx + int(0.7 * U), r2 - int(1.3 * U)), (gx, r2 - int(0.6 * U)),
+             neut, 2, cv2.LINE_AA)
+    fx.draw_text(out, "FRAPPE (balle)", (txs, r2), size=15, color=(225, 225, 230),
+                 font="bold", anchor="lt")
+    # color key
+    fx.draw_text(out, "couleur = profondeur / coup",
+                 (x + int(1.4 * U), y + int(ph * 0.86)), size=12,
+                 color=(150, 155, 170), font="regular", anchor="lt")
+    return out
+
+
 def estimate_px_per_meter(court_zones, frame_height):
     """
     Estimate the scale factor (pixels per meter) from court zones or frame geometry.
@@ -1110,6 +1162,45 @@ def main():
                     f"({n_replaced} replaced auto hits).")
 
     # ─── Pass 2: Annotate ───
+    #
+    # OVERLAY OVERHAUL (S1 — feat/video-overlay). Three coupled fixes in the
+    # annotation loop, each with a defensive fallback so this branch compiles and
+    # runs standalone AND opportunistically uses the other sessions' work:
+    #
+    #   #1  shot ≠ bounce — orthogonal visual languages (shape+motion+label-
+    #       quadrant; color stays the depth/stroke attribute). Bounce = flat
+    #       ground-mark + outward shockwave; shot = upright diamond + caret that
+    #       pops inward. Labels sit in opposite quadrants (bounce below-left /
+    #       shot above-right), measured via fx.text_size so they never overlap. A
+    #       persistent top-right legend (draw_event_legend) teaches shape=event.
+    #
+    #   #3  HUD card is PER-RALLY (resets each échange) with an "ÉCHANGE N" header
+    #       + colored "Issue" outcome row (shown only once the point is over).
+    #
+    #   #4  the radar receives ONLY the latest bounce, not every bounce so far.
+    #
+    # CONTRACTS expected from sibling sessions (used defensively — getattr/try /
+    # signature-introspection, with a working fallback if absent):
+    #
+    #   S3 (vision/minimap.py):
+    #     draw_minimap(..., bounces_img=<list of 0 or 1 bounce>, single_bounce=True)
+    #       → draws AT MOST one clean bounce marker, NO cumulative placement heat.
+    #       Passed only when draw_minimap's signature accepts `single_bounce`
+    #       (introspected once). Without it, the legacy call still gets a 1-element
+    #       list, which degenerates to a single dot (heat needs ≥2 points) — the
+    #       acceptable transitional behavior.
+    #
+    #   S4 (vision/fx.py):
+    #     fx.rally_card(frame, x, y, *, rally_index:int, lines:list[(label,value)],
+    #                   outcome:str|None=None, width:int) → glassmorphism card with
+    #       an "ÉCHANGE N" header + a colored outcome row. Used when present (the
+    #       `lines` we pass EXCLUDE the Issue row, since rally_card renders outcome
+    #       itself). Fallback: fx.stat_card(title="ÉCHANGE N", ...) + a semantic-
+    #       colored draw_text overdraw of the Issue value (stat_card draws values
+    #       white). NOTE: the gauge-stack height is computed for the stat_card
+    #       fallback layout; if S4's rally_card differs in row count, re-tune
+    #       card_h at integration.
+    #
     logger.info("=== PASS 2: Annotate ===")
     reader = VideoReader(video_path)
     if start_frame > 0:
@@ -1171,6 +1262,11 @@ def main():
 
     peak_speed = 0.0          # current-rally peak (resets on rally change)
     hud_rally_idx = None      # which rally the card is currently showing
+
+    # Event-overlay geometry (constant per clip — resolution-derived, no hardcoding).
+    # U: base shape unit. GAP: label clearance + inter-row pitch around an impact.
+    EV_U = max(6, int(frame_height * 0.018))
+    EV_GAP = max(6, int(frame_height * 0.012))
 
     # Does the (possibly newer, S3) draw_minimap accept the single_bounce flag?
     # Introspect ONCE so the per-frame call doesn't pay for it, and so this branch
@@ -1239,36 +1335,65 @@ def main():
         # 4b. Current ball speed (HUD drawn later, after overlays, as a gauge/card)
         current_speed = ball_speeds_kmh[frame_idx] if frame_idx < len(ball_speeds_kmh) else 0.0
 
-        # 5. Bounce markers — FX shockwave (expanding glow ring) at each impact,
-        # color-coded by depth, with a styled label. Falls back to the plain
-        # marker under --no-fx.
+        # 5. BOUNCE markers — "ground-mark + shockwave". The shockwave ring blooms
+        # OUTWARD (energy) while a FLAT, planted squashed-ellipse + diamond stake
+        # reads as lying ON THE COURT. This flat-on-the-floor silhouette is what
+        # makes a bounce unmistakable from a shot (which is an UPRIGHT diamond +
+        # caret, in the air). Color still carries DEPTH (deep red / mid cyan /
+        # short green). Label goes BELOW-LEFT, right-anchored. (#1)
         DEPTH_COL = {"deep": (60, 60, 255), "mid": (0, 200, 255), "short": (120, 230, 0)}
+        U, GAP, H = EV_U, EV_GAP, frame_height
         if not args.no_bounces:
             for bfi in range(max(0, frame_idx - bounce_display_frames), frame_idx + 1):
                 if bfi in bounce_by_frame:
                     bx, by, depth, b_speed, b_quality = bounce_by_frame[bfi]
+                    bx, by = int(bx), int(by)
                     age = frame_idx - bfi
+                    p = age / float(bounce_display_frames)
+                    fade = 1.0 - p
                     dcol = DEPTH_COL.get(depth, (255, 255, 255))
+                    mw = int(2.4 * U)
+                    mh = max(2, int(mw * 0.40))
                     if not args.no_fx:
+                        # A) expanding bloomed depth-ring — energy (existing primitive)
                         out = fx.shockwave(out, (bx, by), age, bounce_display_frames,
-                                           color=dcol, max_radius=int(frame_height * 0.07))
+                                           color=dcol, max_radius=int(H * 0.075))
+                        # B) FLAT planted ground-mark — never expands (Hawk-Eye signature)
+                        ov = out.copy()
+                        cv2.ellipse(ov, (bx, by), (mw, mh), 0, 0, 360, dcol, -1, cv2.LINE_AA)
+                        a = 0.35 * fade + 0.15
+                        cv2.addWeighted(ov, a, out, 1 - a, 0, dst=out)
+                        cv2.ellipse(out, (bx, by), (mw, mh), 0, 0, 360,
+                                    tuple(int(min(255, c * 1.25)) for c in dcol),
+                                    2, cv2.LINE_AA)
+                        cv2.drawMarker(out, (bx, by), dcol, cv2.MARKER_DIAMOND,
+                                       max(7, int(0.6 * U)), 2, cv2.LINE_AA)
                     else:
-                        alpha = max(0.3, 1.0 - age / bounce_display_frames)
-                        out = draw_bounce_marker(out, bx, by, depth=depth, alpha=alpha)
-                    # styled label (only while fresh, so it doesn't clutter)
+                        cv2.ellipse(out, (bx, by), (mw, mh), 0, 0, 360, dcol, 2, cv2.LINE_AA)
+                        cv2.drawMarker(out, (bx, by), dcol, cv2.MARKER_DIAMOND,
+                                       max(7, int(0.6 * U)), 2, cv2.LINE_AA)
+                    # styled label — BELOW-LEFT, right-anchored, grows DOWN (only
+                    # while fresh). Opposite quadrant from the shot label, so a
+                    # coincident shot+bounce never overlap their text.
                     if age <= bounce_display_frames // 2:
-                        lx, ly = bx + 20, by - 26
-                        if not args.no_fx:
-                            out = fx.draw_text(out, depth.upper(), (lx, ly), size=18,
-                                               color=dcol, font="bold")
-                            out = fx.draw_text(out, f"{int(b_speed)} km/h", (lx, ly + 20),
-                                               size=15, color=(210, 210, 210), font="regular")
-                            qc = ((90, 220, 90) if b_quality >= 70 else
-                                  (90, 220, 220) if b_quality >= 40 else (90, 90, 230))
-                            out = fx.draw_text(out, f"Q {b_quality}", (lx, ly + 39),
-                                               size=15, color=qc, font="bold")
+                        rows_b = [(depth.upper(), 18, dcol, "bold"),
+                                  (f"{int(b_speed)} km/h", 15, (210, 210, 210), "regular"),
+                                  (f"Q {b_quality}", 15, _quality_color(b_quality), "bold")]
+                        hs = [fx.text_size(t, sz, f)[1] for (t, sz, _c, f) in rows_b]
+                        total_b = sum(hs) + GAP * (len(rows_b) - 1)
+                        flip_b = by > H * 0.85          # baseline-bottom → flip ABOVE
+                        ly = (by - GAP - total_b) if flip_b else (by + GAP)
+                        lx = bx - GAP
+                        for (t, sz, c, f), hh in zip(rows_b, hs):
+                            out = fx.draw_text(out, t, (lx, ly), size=sz, color=c,
+                                               font=f, anchor="rt")
+                            ly += hh + GAP
 
-        # 5b. Shot markers (forehand/backhand + quality at the contact frame)
+        # 5b. SHOT markers — "contact diamond + downward caret". An UPRIGHT diamond
+        # outline + a downward chevron above the ball reads as a strike IN THE AIR;
+        # it pops large at contact then settles (inward) — the opposite motion to
+        # the bounce's outward bloom. Color carries STROKE (FH cyan / BH orange).
+        # Label goes ABOVE-RIGHT, left-anchored (opposite quadrant from bounce). (#1)
         if shot_by_frame:
             for sfi in range(max(0, frame_idx - bounce_display_frames), frame_idx + 1):
                 if sfi in shot_by_frame:
@@ -1276,23 +1401,46 @@ def main():
                     age = frame_idx - sfi
                     if age > bounce_display_frames:
                         continue
-                    sx, sy = s["x"], s["y"]
+                    sx, sy = int(s["x"]), int(s["y"])
                     fhb = s["fhb"]
                     tag = {"forehand": "FOREHAND", "backhand": "BACKHAND"}.get(fhb, "SHOT")
                     fcol = (0, 200, 255) if fhb == "forehand" else (255, 150, 0)
+                    p = age / float(bounce_display_frames)
+                    fade = 1.0 - p
+                    # pop large at contact (first 25% of life), then shrink to rest
+                    pop = 1.0 + 0.45 * (1 - min(1.0, age / max(1, bounce_display_frames * 0.25)))
+                    m = int(max(1.4 * U, H * 0.026) * pop)
+                    th = max(2, int(3 * fade + 1))
                     if not args.no_fx:
-                        out = fx.glow_marker(out, (sx, sy), color=fcol, radius=11)
-                        out = fx.draw_text(out, tag, (sx + 18, sy - 8), size=17,
-                                           color=fcol, font="bold")
-                        if s["quality"] > 0:
-                            qc = ((90, 220, 90) if s["quality"] >= 70 else
-                                  (90, 220, 220) if s["quality"] >= 40 else (90, 90, 230))
-                            out = fx.draw_text(out, f"Q {s['quality']}", (sx + 18, sy + 12),
-                                               size=15, color=qc, font="bold")
+                        # tiny white-hot contact spark (NOT a big dot — that's what
+                        # used to be confusable with a bounce)
+                        out = fx.glow_marker(out, (sx, sy), color=fcol, radius=max(3, m // 5))
+                        cv2.drawMarker(out, (sx, sy), fcol, cv2.MARKER_DIAMOND,
+                                       m * 2, th, cv2.LINE_AA)
+                        apex = (sx, sy - int(m * 1.4))
+                        cv2.line(out, (apex[0] - m, apex[1] - m), apex, fcol, th, cv2.LINE_AA)
+                        cv2.line(out, (apex[0] + m, apex[1] - m), apex, fcol, th, cv2.LINE_AA)
                     else:
-                        cv2.circle(out, (sx, sy), 14, fcol, 2, cv2.LINE_AA)
-                        cv2.putText(out, tag, (sx + 16, sy - 6), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.55, fcol, 2, cv2.LINE_AA)
+                        cv2.drawMarker(out, (sx, sy), fcol, cv2.MARKER_DIAMOND,
+                                       m * 2, 2, cv2.LINE_AA)
+                        apex = (sx, sy - int(m * 1.4))
+                        cv2.line(out, (apex[0] - m, apex[1] - m), apex, fcol, 2, cv2.LINE_AA)
+                        cv2.line(out, (apex[0] + m, apex[1] - m), apex, fcol, 2, cv2.LINE_AA)
+                    # label — ABOVE-RIGHT, left-anchored, grows UP (only while fresh)
+                    if age <= bounce_display_frames // 2:
+                        rows_s = [(tag, 17, fcol, "bold")]
+                        if s["quality"] > 0:
+                            rows_s.append((f"Q {s['quality']}", 15,
+                                           _quality_color(s["quality"]), "bold"))
+                        hs = [fx.text_size(t, sz, f)[1] for (t, sz, _c, f) in rows_s]
+                        total_s = sum(hs) + GAP * (len(rows_s) - 1)
+                        flip_s = sy < H * 0.10          # top-of-frame → flip BELOW
+                        ly = (sy + GAP) if flip_s else (sy - GAP - total_s)
+                        rx = sx + GAP
+                        for (t, sz, c, f), hh in zip(rows_s, hs):
+                            out = fx.draw_text(out, t, (rx, ly), size=sz, color=c,
+                                               font=f, anchor="lt")
+                            ly += hh + GAP
 
         # 5c. 2D top-down court minimap (ball trajectory + bounce locations)
         if not args.no_minimap:
@@ -1347,10 +1495,13 @@ def main():
         # never collides with a broadcast scoreboard (top corners). On amateur phone
         # footage the top corners are free too; bottom-left is the safe universal slot.
         if not args.no_fx:
+            # Persistent event-key (shape = event, color = attribute), top-right.
+            out = draw_event_legend(out, fx)
+
             margin = int(frame_height * 0.022)
             gauge_r = int(frame_height * 0.052)
             gauge_box = 2 * gauge_r + 2 * int(gauge_r * 0.42)
-            card_w = int(frame_width * 0.135)
+            card_w = int(frame_width * 0.16)   # wider so "Faute provoquée" fits
 
             # ── Which rally are we in? ──────────────────────────────────────
             # rally_at_frame is None in the inter-rally gap; freeze the last
@@ -1364,6 +1515,7 @@ def main():
                 peak_speed = 0.0        # RESET: new échange → fresh peak
             peak_speed = max(peak_speed, current_speed if bc is not None else 0.0)
 
+            rally_live = False          # is the current rally still in progress?
             if hud_rally_idx is not None and hud_rally_idx < len(rallies_rel):
                 r = rallies_rel[hud_rally_idx]
                 r_start = r["start_frame"]
@@ -1376,27 +1528,44 @@ def main():
                            if r_start <= f <= frame_idx and shot_by_frame[f]["fhb"] == "backhand")
                 n_strikes = sum(1 for f in r["shot_frames"] if r_start <= f <= frame_idx)
                 n_bounce = sum(1 for f in r["bounce_frames"] if r_start <= f <= frame_idx)
-                rally_label = f"ÉCHANGE {hud_rally_idx + 1}"
+                rally_no = hud_rally_idx + 1
                 # outcome only once the point is OVER (don't reveal mid-rally)
-                rally_over = frame_idx >= r["end_frame"]
-                oc = rally_outcome_rel[hud_rally_idx] if rally_over else None
+                rally_live = frame_idx < r["end_frame"]
+                oc = rally_outcome_rel[hud_rally_idx] if not rally_live else None
                 outcome_label = oc.get("outcome") if oc else None
             else:
                 # before the first rally starts: empty card with a neutral tag
                 n_fh = n_bh = n_strikes = n_bounce = 0
-                rally_label = "ÉCHANGE 1"
+                rally_no = 1
                 outcome_label = None
+                rally_live = True
 
+            # Issue (outcome) row: French label + semantic color. Shown as
+            # "En cours" while the point is live; honest "—" if finished without a
+            # decisive geometric signal (we never invent a winner).
+            _ISSUE = {
+                "winner":         ("Coup gagnant",    (90, 220, 90)),
+                "forced_error":   ("Faute provoquée", (90, 220, 220)),  # low-conf → amber
+                "unforced_error": ("Faute directe",   (90, 90, 230)),
+            }
+            if rally_live:
+                issue_text, issue_color = "En cours", (190, 195, 205)
+            elif outcome_label in _ISSUE:
+                issue_text, issue_color = _ISSUE[outcome_label]
+            else:
+                issue_text, issue_color = "—", (190, 195, 205)
+
+            rally_label = f"ÉCHANGE {rally_no}"
             card_lines = [
-                ("Forehand", str(n_fh)),
-                ("Backhand", str(n_bh)),
-                ("Strikes", str(n_strikes)),
-                ("Bounces", str(n_bounce)),
-                ("Peak", f"{int(peak_speed)} km/h"),
+                ("Frappes",   str(n_strikes)),
+                ("CD / RV",   f"{n_fh} / {n_bh}"),
+                ("Rebonds",   str(n_bounce)),
+                ("Balle max", f"{int(peak_speed)} km/h"),
+                ("Issue",     issue_text),
             ]
 
-            # Card height must match the renderer's actual layout so the
-            # gauge stacks above it without overlap. fx.stat_card/rally_card use:
+            # Card height must match the renderer's actual layout so the gauge
+            # stacks above it without overlap. fx.stat_card uses:
             #   title_sz = max(14, fh*0.022); row_sz = max(12, fh*0.019)
             #   pad = max(12, width*0.07); row_h = int(row_sz*1.55)
             #   header_h = title_sz + int(row_sz*0.9)  (title always present here)
@@ -1406,32 +1575,36 @@ def main():
             _pad = max(12, int(card_w * 0.07))
             _row_h = int(_row_sz * 1.55)
             _header_h = _title_sz + int(_row_sz * 0.9)
-            # rally_card draws one extra outcome row under the header when present
-            _outcome_rows = 1 if outcome_label else 0
-            card_h = (_pad + _header_h + _row_h * (len(card_lines) + _outcome_rows)
-                      + _pad)
+            card_h = _pad + _header_h + _row_h * len(card_lines) + _pad
             # stack: gauge on top, stats card under it, bottom-left aligned
             card_y = frame_height - margin - card_h
             gauge_y = card_y - gauge_box - int(frame_height * 0.012)
             fx.speed_gauge(out, margin, gauge_y, current_speed if bc is not None else 0.0,
                            max_kmh=180, label="BALL", radius=gauge_r)
 
-            # Prefer S4's per-rally card variant (header "ÉCHANGE N" + outcome
-            # row) when fx provides it; otherwise fall back to stat_card with the
-            # rally label as the title and an inline outcome row.
+            # Prefer S4's per-rally card variant (header "ÉCHANGE N" + colored
+            # outcome row) when fx provides it; otherwise fall back to stat_card
+            # with the rally label as the title + a semantic-colored Issue overdraw.
             _rally_card = getattr(fx, "rally_card", None)
+            _used_variant = False
             if callable(_rally_card):
                 try:
-                    _rally_card(out, margin, card_y, rally_index=hud_rally_idx + 1
-                                if hud_rally_idx is not None else 1,
-                                lines=card_lines, outcome=outcome_label, width=card_w)
+                    _rally_card(out, margin, card_y, rally_index=rally_no,
+                                lines=card_lines[:-1], outcome=outcome_label,
+                                width=card_w)
+                    _used_variant = True
                 except TypeError:
-                    _rally_card = None  # signature mismatch → fall through
-            if not callable(_rally_card):
-                lines = list(card_lines)
-                if outcome_label:
-                    lines = [("Outcome", outcome_label.replace("_", " ").upper())] + lines
-                fx.stat_card(out, margin, card_y, lines, title=rally_label, width=card_w)
+                    _used_variant = False  # signature mismatch → fall through
+            if not _used_variant:
+                fx.stat_card(out, margin, card_y, card_lines, title=rally_label,
+                             width=card_w)
+                # stat_card draws every value white → overdraw the Issue value in
+                # its semantic color (last row, right-anchored at the value column).
+                _issue_baseline = (card_y + _pad + _header_h
+                                   + _row_h * (len(card_lines) - 1))
+                fx.draw_text(out, issue_text,
+                             (margin + card_w - _pad, _issue_baseline),
+                             size=_row_sz, color=issue_color, font="bold", anchor="rt")
         else:
             out = create_legend(out, legend_items, position="top-right")
 

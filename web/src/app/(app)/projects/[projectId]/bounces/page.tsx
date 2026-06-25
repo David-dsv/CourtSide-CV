@@ -4,8 +4,10 @@ import { GlassCard } from "@/components/core/glass-card";
 import { SectionHeading } from "@/components/core/section-heading";
 import { FrameJumpLink } from "@/components/core/frame-jump-link";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
+import { LiveCourtMinimap } from "@/components/court/live-court-minimap";
+import { EventGlyph } from "@/components/analysis/event-glyph";
 import { fmtKmh, depthColorClass, depthLabel } from "@/lib/format";
-import { CircleDot, Zap } from "lucide-react";
+import { CircleDot, Zap, Map } from "lucide-react";
 import type { Bounce } from "@/lib/types";
 
 export default async function BouncesPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -24,6 +26,30 @@ export default async function BouncesPage({ params }: { params: Promise<{ projec
         icon={<CircleDot className="h-4 w-4" />}
         actions={<FrameAwareFrame />}
       />
+
+      {/* all-placements radar (the exhaustive view; the live radar elsewhere
+          shows only the current bounce) */}
+      {bounces.length > 0 && (
+        <GlassCard>
+          <SectionHeading
+            title="Tous les placements"
+            description="Chaque rebond projeté sur le court. Cliquez un point pour y revenir."
+            icon={<Map className="h-4 w-4" />}
+            className="mb-4"
+          />
+          <LiveCourtMinimap
+            bounces={project.stats.bounces}
+            trajectory={project.trajectory}
+            source={project.stats.speed_source}
+            confidence={project.stats.homography_confidence}
+            H={project.H}
+            showTrajectory={false}
+            showPlayers={false}
+            liveBounceOnly={false}
+            className="mx-auto max-w-[300px]"
+          />
+        </GlassCard>
+      )}
 
       {/* timeline */}
       <GlassCard>
@@ -79,7 +105,10 @@ export default async function BouncesPage({ params }: { params: Promise<{ projec
                     </FrameJumpLink>
                   </td>
                   <td className={`py-3 pr-4 font-medium ${depthColorClass(b.depth)}`}>
-                    {depthLabel(b.depth)}
+                    <span className="flex items-center gap-2">
+                      <EventGlyph kind="bounce" depth={b.depth} />
+                      {depthLabel(b.depth)}
+                    </span>
                   </td>
                   <td className="py-3 pr-4">
                     <span className="flex items-center gap-1 tabular-nums">

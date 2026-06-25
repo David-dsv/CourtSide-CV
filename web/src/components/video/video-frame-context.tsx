@@ -4,17 +4,29 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
 } from "react";
+import type { ClipIndex } from "@/lib/types";
+import {
+  type ClipMapper,
+  clipIndexUrl,
+  identityMapper,
+  mapperFromClipIndex,
+} from "@/lib/video/clip-index";
 
 /**
  * An optional playback window. When set, the VideoScrubber loops playback
  * inside [start, end] instead of the full frame range. Cleared by passing
  * null. Used by the highlight "Replay" button to play a segment.
+ *
+ * Windows, like every frame the app passes around, are in ORIGINAL frame
+ * coordinates (see lib/video/clip-index.ts). The video element converts to
+ * annotated time via the shared {@link ClipMapper}.
  */
 type PlaybackRange = [number, number] | null;
 
@@ -32,6 +44,12 @@ interface VideoFrameCtx {
   /** whether playback is running. Shared so any control (scrubber, replay) can start/stop it. */
   playing: boolean;
   setPlaying: Dispatch<SetStateAction<boolean>>;
+  /**
+   * Cut-timeline mapper (annotated ⇄ original). Identity when the clip is uncut
+   * or its `_clipindex.json` sidecar hasn't loaded. Consumers that drive the
+   * real <video> use it to convert original frames → annotated time and back.
+   */
+  clip: ClipMapper;
 }
 
 const Ctx = createContext<VideoFrameCtx | null>(null);
@@ -41,15 +59,43 @@ export function VideoFrameProvider({
   frameRange,
   fps,
   initial,
+  /** project id — used to fetch the cut-timeline sidecar at runtime. */
+  projectId,
+  /** inlined cut index (mock fixtures). Takes precedence over the fetch. */
+  clipIndex: clipIndexProp,
 }: {
   children: ReactNode;
   frameRange: [number, number];
   fps: number;
   initial?: number;
+  projectId?: string;
+  clipIndex?: ClipIndex;
 }) {
   const [frame, setFrame] = useState<number>(initial ?? frameRange[0]);
   const [playbackRange, setRange] = useState<PlaybackRange>(null);
   const [playing, setPlaying] = useState(false);
+  const [fetchedClip, setFetchedClip] = useState<ClipIndex | null>(null);
+
+  // Fetch the sidecar once (skipped when an inlined index is supplied). A 404 /
+  // parse error is non-fatal: we stay on the identity mapping (uncut clip).
+  useEffect(() => {
+    if (clipIndexProp || !projectId) return;
+    let alive = true;
+    fetch(clipIndexUrl(projectId))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: ClipIndex | null) => {
+        if (alive && j && Array.isArray(j.kept_original_frames)) setFetchedClip(j);
+      })
+      .catch(() => {/* no sidecar → identity mapping */});
+    return () => {
+      alive = false;
+    };
+  }, [projectId, clipIndexProp]);
+
+  const clip = useMemo<ClipMapper>(() => {
+    const ci = clipIndexProp ?? fetchedClip;
+    return ci ? mapperFromClipIndex(ci) : identityMapper(fps, frameRange);
+  }, [clipIndexProp, fetchedClip, fps, frameRange]);
 
   const setPlaybackRange = useCallback((range: PlaybackRange) => {
     setRange((prev) => {
@@ -76,8 +122,9 @@ export function VideoFrameProvider({
       setPlaybackRange,
       playing,
       setPlaying,
+      clip,
     }),
-    [frame, frameRange, fps, playbackRange, setPlaybackRange, playing],
+    [frame, frameRange, fps, playbackRange, setPlaybackRange, playing, clip],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -114,6 +114,16 @@ function mergeSoloRallies(rallies: Rally[]): Rally[] {
   return out;
 }
 
+/**
+ * The authoritative rally list for a clip: the backend's `rallies[]` when
+ * present (single source of truth — carries `outcome` + `human_id`), else the
+ * client-side fallback {@link deriveRallies}. Use this everywhere the UI needs
+ * rallies so the Échanges view and the highlights agree.
+ */
+export function getRallies(stats: PipelineStats): Rally[] {
+  return stats.rallies && stats.rallies.length > 0 ? stats.rallies : deriveRallies(stats);
+}
+
 /** Attach each shot to the bounce that follows it (the shot's result). */
 export function shotsWithResults(stats: PipelineStats): ShotWithBounce[] {
   const sortedBounces = [...stats.bounces].sort((a, b) => a.frame - b.frame);
@@ -123,6 +133,65 @@ export function shotsWithResults(stats: PipelineStats): ShotWithBounce[] {
       const resultBounce = sortedBounces.find((b) => b.frame > s.frame);
       return { ...s, resultBounce };
     });
+}
+
+/** A rally with its full Shot/Bounce objects resolved + display-ready stats. */
+export interface EnrichedRally {
+  rally: Rally;
+  index: number; // 1-based ÉCHANGE number
+  shots: ShotWithBounce[]; // each shot paired with its result bounce
+  bounces: Bounce[];
+  durationSec: number;
+  /** avg quality of the user's (near-side) shots, or null if none. */
+  userQuality: number | null;
+}
+
+/**
+ * Resolve every rally into its concrete events. Shots are matched by frame to
+ * the stats arrays and paired with their resulting bounce (via shotsWithResults
+ * so the pairing rule is shared with the rest of the app).
+ */
+export function enrichRallies(stats: PipelineStats): EnrichedRally[] {
+  const rallies = getRallies(stats);
+  const swr = shotsWithResults(stats);
+  const shotByFrame = new Map(swr.map((s) => [s.frame, s]));
+  const bounceByFrame = new Map(stats.bounces.map((b) => [b.frame, b]));
+
+  return rallies.map((rally, i) => {
+    const shots = rally.shot_frames
+      .map((f) => shotByFrame.get(f))
+      .filter((s): s is ShotWithBounce => Boolean(s));
+    const bounces = rally.bounce_frames
+      .map((f) => bounceByFrame.get(f))
+      .filter((b): b is Bounce => Boolean(b));
+    const q = userQuality(rally, stats);
+    return {
+      rally,
+      index: i + 1,
+      shots,
+      bounces,
+      durationSec: (rally.end_frame - rally.start_frame) / stats.fps,
+      userQuality: q,
+    };
+  });
+}
+
+/** Human label + accent for a rally outcome (drives the Échanges badges). */
+export function outcomeMeta(o: import("@/lib/types").RallyOutcome): {
+  label: string;
+  accent: "green" | "red" | "amber" | "slate";
+} {
+  switch (o) {
+    case "winner":
+      return { label: "Gagnant", accent: "green" };
+    case "unforced_error":
+      return { label: "Erreur non forcée", accent: "red" };
+    case "forced_error":
+      // low-confidence (see OUTCOME_CONFIDENCE) → de-emphasised amber
+      return { label: "Erreur forcée ?", accent: "amber" };
+    case "neutral":
+      return { label: "Neutre", accent: "slate" };
+  }
 }
 
 /** Attach each shot to its enclosing rally (by frame), if any. */

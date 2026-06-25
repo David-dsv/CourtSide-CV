@@ -19,6 +19,8 @@ export default async function ProjectLayout({
       frameRange={project.stats.frame_range}
       fps={project.stats.fps}
       initial={project.stats.bounces[0]?.frame ?? project.stats.frame_range[0]}
+      projectId={project.id}
+      clipIndex={project.clipIndex}
     >
       <ProjectShell project={project}>{children}</ProjectShell>
     </VideoFrameProvider>

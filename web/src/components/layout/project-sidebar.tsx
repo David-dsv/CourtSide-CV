@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
   BarChart3,
+  Swords,
   Target,
   CircleDot,
   Map,
@@ -16,6 +17,7 @@ import {
 
 const NAV = [
   { href: "overview", label: "Vue d'ensemble", icon: LayoutDashboard },
+  { href: "rallies", label: "Échanges", icon: Swords },
   { href: "stats", label: "Statistiques", icon: BarChart3 },
   { href: "shots", label: "Frappes", icon: Target },
   { href: "bounces", label: "Rebonds", icon: CircleDot },

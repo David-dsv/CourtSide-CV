@@ -5,7 +5,7 @@
  * court homography H for the homography(high|low) cases. felix (scalar/none)
  * stays on the honest geometric fallback (no H).
  */
-import type { Project, PipelineStats, TrajectoryPoint, PlayerPosition } from "@/lib/types";
+import type { Project, PipelineStats, TrajectoryPoint, PlayerPosition, ClipIndex } from "@/lib/types";
 import felixRaw from "./raw/felix.json";
 import tennisRaw from "./raw/tennis.json";
 import sotaRaw from "./raw/sota.json";
@@ -56,6 +56,35 @@ function synthPlayers(stats: PipelineStats): PlayerPosition[] {
   if (!out.some((p) => p.id === 2))
     out.push({ id: 2, x: 960, y: 400, frame: 0 });
   return out;
+}
+
+/**
+ * Build a synthetic cut-timeline index (annotated↔original mapping) for testing
+ * the realignment without a real backend run. Given the original range and a set
+ * of cut spans (in ORIGINAL frame indices, inclusive), it produces the
+ * `kept_original_frames` list and the derived totals — exactly the shape the S2
+ * `<video>_clipindex.json` sidecar will carry.
+ *
+ * NOTE: this is a MOCK. The real index is emitted by the shot-guard cut pass
+ * (feat/shot-guard-cut). The format here is the agreed S2 contract.
+ */
+function synthClipIndex(
+  fps: number,
+  range: [number, number],
+  cutSpans: [number, number][],
+): ClipIndex {
+  const [f0, f1] = range;
+  const isCut = (f: number) => cutSpans.some(([s, e]) => f >= s && f <= e);
+  const kept: number[] = [];
+  for (let f = f0; f < f1; f++) if (!isCut(f)) kept.push(f);
+  return {
+    fps,
+    original_total: f1 - f0,
+    annotated_total: kept.length,
+    kept_original_frames: kept,
+    cut_spans: cutSpans,
+    start_frame: f0,
+  };
 }
 
 /**
@@ -128,6 +157,15 @@ export const tennisProject: Project = {
   players: synthPlayers(tennisStats),
   H: H_standard(),
   posterFrame: tennisStats.bounces[0]?.frame ?? 0,
+  // Inlined synthetic cut-timeline so the annotated↔original realignment is
+  // exercised deterministically in the demo (no backend run needed). Two cuts:
+  // a 2 s "replay" (300–399) and a 1 s "close-up" (600–649). Original frames
+  // outside the cuts keep their numbering; inside a cut the scrubber timecode
+  // jumps over the removed span. The real index will come from the cut pass.
+  clipIndex: synthClipIndex(50, [0, 1000], [
+    [300, 399],
+    [600, 649],
+  ]),
 };
 
 export const sotaProject: Project = {

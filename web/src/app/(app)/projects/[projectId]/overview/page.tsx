@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { getProject } from "@/lib/mock/projects";
 import { VideoScrubber } from "@/components/video/video-scrubber";
-import { CourtMinimap } from "@/components/court/court-minimap";
+import { LiveCourtMinimap } from "@/components/court/live-court-minimap";
 import { KpiTile } from "@/components/core/kpi-tile";
 import { GlassCard } from "@/components/core/glass-card";
 import { SectionHeading } from "@/components/core/section-heading";
@@ -121,8 +121,13 @@ export default async function OverviewPage({
       {/* minimap + speed highlight */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
         <div>
-          <SectionHeading title="Court radar" icon={<Map className="h-4 w-4" />} className="mb-3" />
-          <CourtMinimap
+          <SectionHeading
+            title="Court radar"
+            description="Le rebond en cours, suivi en direct."
+            icon={<Map className="h-4 w-4" />}
+            className="mb-3"
+          />
+          <LiveCourtMinimap
             bounces={bounces}
             trajectory={project.trajectory}
             players={project.players}

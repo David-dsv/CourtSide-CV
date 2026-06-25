@@ -1,4 +1,4 @@
-import type { Depth, Stroke } from "@/lib/types";
+import type { Depth, ShotStroke } from "@/lib/types";
 
 export function fmtKmh(v: number, digits = 1): string {
   return v.toFixed(digits);
@@ -21,8 +21,15 @@ export function depthHex(d: Depth): string {
   return d === "deep" ? "#e2603a" : d === "mid" ? "#f2b441" : "#d8f64a";
 }
 
-export function strokeLabel(s: Stroke): string {
-  return s === "forehand" ? "Coup droit" : "Revers";
+export function strokeLabel(s: ShotStroke): string {
+  return s === "forehand" ? "Coup droit" : s === "backhand" ? "Revers" : "Frappe";
+}
+
+/** Accent hex per stroke — used to keep shots visually distinct from bounces
+ *  (bounces use the warm depth palette; shots use cool stroke colors). */
+export function strokeHex(s: ShotStroke): string {
+  // forehand = cyan, backhand = violet, unknown = neutral slate.
+  return s === "forehand" ? "#38bdf8" : s === "backhand" ? "#a78bfa" : "#94a3b8";
 }
 
 export function sideLabel(s: "near" | "far"): string {

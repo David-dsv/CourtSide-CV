@@ -34,7 +34,7 @@ export function VideoScrubber({
    */
   playbackRange?: [number, number] | null;
 }) {
-  const { frame, setFrame, frameRange, frameCount, playbackRange, setPlaybackRange, playing, setPlaying } = useFrame();
+  const { frame, setFrame, frameRange, frameCount, playbackRange, setPlaybackRange, playing, setPlaying, clip } = useFrame();
   const rafRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fps = project.stats.fps;
   const [realVideo, setRealVideo] = useState(true);
@@ -86,8 +86,18 @@ export function VideoScrubber({
         <div className={`absolute left-3 top-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs backdrop-blur ${realVideo ? "text-court-green" : "text-ball"}`}>
           {realVideo ? "● VIDÉO RÉELLE" : "● MOCK PREVIEW"}
         </div>
-        <div className="absolute right-3 top-3 rounded-md bg-black/50 px-2 py-1 font-mono text-xs text-white backdrop-blur">
-          {frameToTimecode(frame, fps)} · f{frame}
+        <div className="absolute right-3 top-3 flex items-center gap-1.5">
+          {clip.hasCuts && (
+            <span
+              className="rounded-md bg-clay/25 px-2 py-1 font-mono text-xs text-clay backdrop-blur"
+              title="Vidéo annotée raccourcie (frames hors-terrain coupées). Le timecode reste celui de la vidéo d'origine."
+            >
+              ✂ coupée
+            </span>
+          )}
+          <span className="rounded-md bg-black/50 px-2 py-1 font-mono text-xs text-white backdrop-blur">
+            {frameToTimecode(frame, fps)} · f{frame}
+          </span>
         </div>
         {looping && (
           <div className="absolute left-1/2 top-3 -translate-x-1/2 rounded-md bg-court-green/15 px-2 py-1 font-mono text-xs text-court-green backdrop-blur">
@@ -175,25 +185,27 @@ export function VideoScrubber({
  * Native play() / pause() / loop honor the context's `playing` + `playbackRange`.
  */
 function RealVideo({ project }: { project: Project }) {
-  const { frame, setFrame, frameRange, fps, playing, playbackRange } = useFrame();
+  const { frame, setFrame, fps, playing, playbackRange, clip } = useFrame();
   const videoRef = useRef<HTMLVideoElement>(null);
   // Avoid fighting the user's native seeking: ignore timeupdate while we drive.
   const driving = useRef(false);
 
   // Source: the real annotated sample served from /public/annotated/.
-  // The annotated file starts at frame frame_range[0], so currentTime 0 == that frame.
+  // The annotated clip may be SHORTER than the source (cut frames). currentTime
+  // lives in ANNOTATED time; every `frame` the app passes is in ORIGINAL frame
+  // numbers — `clip` converts between the two (identity when uncut).
   const src = `/annotated/${project.id}_annotated.mp4`;
 
-  // frame → currentTime (scrub / jump).
+  // frame (original) → currentTime (annotated). Seeks the video.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const target = (frame - frameRange[0]) / fps;
+    const target = clip.toAnnotated(frame) / fps;
     if (Math.abs(v.currentTime - target) > 0.06) {
       driving.current = true;
       v.currentTime = target;
     }
-  }, [frame, frameRange, fps]);
+  }, [frame, fps, clip]);
 
   // playing → video.play()/pause().
   useEffect(() => {
@@ -206,32 +218,33 @@ function RealVideo({ project }: { project: Project }) {
     }
   }, [playing]);
 
-  // currentTime → frame (native playback progress).
+  // currentTime (annotated) → frame (original). Native playback progress.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     const onTime = () => {
       if (driving.current) { driving.current = false; return; }
-      setFrame(Math.round(frameRange[0] + v.currentTime * fps));
+      setFrame(clip.toOriginal(Math.round(v.currentTime * fps)));
     };
     v.addEventListener("timeupdate", onTime);
     return () => v.removeEventListener("timeupdate", onTime);
-  }, [setFrame, frameRange, fps]);
+  }, [setFrame, fps, clip]);
 
-  // Loop window: when playbackRange is active, clamp + loop inside it.
+  // Loop window: when playbackRange is active, clamp + loop inside it. The
+  // window is in original frames → convert each bound to annotated time.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     if (!playbackRange) return;
     const onTime = () => {
-      const start = (playbackRange[0] - frameRange[0]) / fps;
-      const end = (playbackRange[1] - frameRange[0]) / fps;
+      const start = clip.toAnnotated(playbackRange[0]) / fps;
+      const end = clip.toAnnotated(playbackRange[1]) / fps;
       if (v.currentTime < start - 0.1) v.currentTime = start;
       else if (v.currentTime >= end) v.currentTime = start;
     };
     v.addEventListener("timeupdate", onTime);
     return () => v.removeEventListener("timeupdate", onTime);
-  }, [playbackRange, frameRange, fps]);
+  }, [playbackRange, fps, clip]);
 
   return (
     <video

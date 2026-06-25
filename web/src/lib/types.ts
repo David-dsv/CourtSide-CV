@@ -18,6 +18,13 @@ export type MatchType = "training" | "match";
 
 export type Depth = "deep" | "mid" | "short";
 export type Stroke = "forehand" | "backhand";
+/**
+ * The stroke value a single shot may carry. The geometric classifier emits
+ * "unknown" when it can't decide (real `_stats.json` shots routinely have it,
+ * e.g. raw/tennis-full.json). Kept separate from {@link Stroke} so the
+ * forehand/backhand-only aggregates (Summary.strokes) stay exhaustive.
+ */
+export type ShotStroke = Stroke | "unknown";
 export type PlayerSide = "near" | "far";
 export type HomographyConfidence = "high" | "low" | "fallback" | "none";
 export type SpeedSource = "scalar" | `homography(${"high" | "low"})`;
@@ -36,9 +43,12 @@ export interface Shot {
   x: number;
   y: number;
   player_side: PlayerSide;
-  stroke: Stroke;
+  stroke: ShotStroke;
   quality: number;
   speed_kmh: number;
+  /** stable human identity across side-changes (match-mode). Absent in
+   *  training mode / legacy fixtures. See {@link MatchInfo}. */
+  human_id?: string;
 }
 
 export interface Summary {
@@ -69,6 +79,9 @@ export interface Rally {
   /** server-computed geometric outcome (vision/rally_outcome.py). Absent on
    * legacy fixtures → the front-end may derive a fallback winner heuristic. */
   outcome?: RallyOutcomeInfo;
+  /** stable human identity of the player who controlled the rally (match-mode).
+   *  Absent in training mode / legacy fixtures. */
+  human_id?: string;
 }
 
 /**
@@ -121,6 +134,37 @@ export interface MomentumBucket {
   score: number;
 }
 
+/**
+ * One detected side-change (match-mode). Emitted by the MatchTracker
+ * (feat/match-mode) on `match.side_swaps`. `ambiguous_jerseys` flags the case
+ * the re-id can't resolve (identical kits) — the UI treats those as
+ * low-confidence.
+ */
+export interface SideSwap {
+  frame: number;
+  confidence: number;
+  ambiguous_jerseys: boolean;
+  jersey_distance: number;
+}
+
+/** Match-mode summary block (run_pipeline_8s.py --match-mode). */
+export interface MatchInfo {
+  side_swaps: SideSwap[];
+  n_swaps: number;
+}
+
+/**
+ * Per-player fatigue flag (vision/fatigue.py). The label is keyed on SPEED
+ * decay only (not shot quality) — see memory courtside-fatigue-rally-outcome.
+ * Shape kept permissive: the front-end only surfaces it when present and reads
+ * the human-readable `note`.
+ */
+export interface FatigueInfo {
+  flagged?: boolean;
+  note?: string;
+  [k: string]: unknown;
+}
+
 export interface PipelineStats {
   video: string;
   fps: number;
@@ -132,6 +176,35 @@ export interface PipelineStats {
   shots: Shot[];
   /** optional server-computed rallies (run_pipeline_8s.py). Absent on legacy files. */
   rallies?: Rally[];
+  /** true when the clip was analyzed in match-mode (--match-mode). */
+  match_mode?: boolean;
+  /** match-mode side-change summary (present when match_mode). */
+  match?: MatchInfo;
+  /** optional per-player fatigue block (vision/fatigue.py). */
+  fatigue?: FatigueInfo;
+}
+
+/**
+ * Cut-timeline index — sidecar emitted next to the annotated video by the
+ * shot-guard cut pass (feat/shot-guard-cut, S2). The annotated video is SHORTER
+ * than the original (non-court frames removed), so frame N in the annotated clip
+ * is NOT frame N in the source. This maps between the two.
+ *
+ * Served at `/annotated/<id>_clipindex.json`. When absent the front-end falls
+ * back to the identity mapping (no cut) — see `lib/video/clip-index.ts`.
+ */
+export interface ClipIndex {
+  fps: number;
+  /** total frame count of the ORIGINAL (uncut) video. */
+  original_total: number;
+  /** total frame count of the ANNOTATED (cut) video. */
+  annotated_total: number;
+  /** kept_original_frames[k] = original frame index of the k-th annotated frame. */
+  kept_original_frames: number[];
+  /** removed spans in ORIGINAL frame indices, inclusive [start, end]. */
+  cut_spans: [number, number][];
+  /** original frame index the analysis window started at (== frame_range[0]). */
+  start_frame: number;
 }
 
 export interface TrajectoryPoint {
@@ -164,4 +237,8 @@ export interface Project {
   H?: number[][];
   /** representative annotated frame path (mock poster) */
   posterFrame?: number;
+  /** optional cut-timeline index (annotated↔original frame mapping). In
+   *  production this is fetched from `/annotated/<id>_clipindex.json`; the mock
+   *  fixtures may inline one for testing the realignment. */
+  clipIndex?: ClipIndex;
 }

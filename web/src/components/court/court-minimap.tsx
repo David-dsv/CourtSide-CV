@@ -33,6 +33,14 @@ export interface CourtMinimapProps {
   showPlayers?: boolean;
   /** current frame (for animating ball position + pucks) */
   frame?: number;
+  /**
+   * Live radar mode (default). Only the CURRENT bounce — the most recent one at
+   * or before `frame` — is drawn, animated as the video plays. This mirrors the
+   * backend decision (vision/minimap.py shows a single live bounce); the
+   * exhaustive list of every bounce lives on the dedicated bounces page.
+   * Set false to render ALL bounces at once (the static "all placements" map).
+   */
+  liveBounceOnly?: boolean;
   /** on bounce click (frame-as-truth) */
   onBounceClick?: (frame: number) => void;
   className?: string;
@@ -58,6 +66,7 @@ export function CourtMinimap({
   showTrajectory = true,
   showPlayers = true,
   frame,
+  liveBounceOnly = true,
   onBounceClick,
   className,
   showConfidenceBadge = true,
@@ -66,8 +75,8 @@ export function CourtMinimap({
   // (We check H directly rather than `source`, so the prop alone controls it.)
   const hasH = Boolean(H) || source?.startsWith("homography");
 
-  // project bounces to court meters then to tile px
-  const bounceTiles = useMemo(() => {
+  // project bounces to court meters then to tile px (every on-court bounce)
+  const allBounceTiles = useMemo(() => {
     return bounces
       .map((b) => {
         const { Xm, Ym } = pxToMeters(b.x, b.y, H, frameW, frameH);
@@ -75,6 +84,26 @@ export function CourtMinimap({
       })
       .filter((p) => onRadar(p.Xm, p.Ym));
   }, [bounces, H, frameW, frameH]);
+
+  // Live radar = a SINGLE bounce: the most recent one at/before `frame`. We also
+  // keep the immediately-preceding one as a faint ghost so the eye can follow
+  // the sequence as the video plays. When liveBounceOnly is false (the static
+  // "all placements" map), every bounce is drawn.
+  const { bounceTiles, ghostTile } = useMemo(() => {
+    if (!liveBounceOnly) return { bounceTiles: allBounceTiles, ghostTile: null };
+    const f = frame ?? Infinity;
+    const ordered = [...allBounceTiles].sort((a, b) => a.bounce.frame - b.bounce.frame);
+    let curIdx = -1;
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i].bounce.frame <= f) curIdx = i;
+      else break;
+    }
+    if (curIdx < 0) return { bounceTiles: [], ghostTile: null };
+    return {
+      bounceTiles: [ordered[curIdx]],
+      ghostTile: curIdx > 0 ? ordered[curIdx - 1] : null,
+    };
+  }, [allBounceTiles, liveBounceOnly, frame]);
 
   const trajTiles = useMemo(() => {
     if (!showTrajectory || !trajectory) return [] as { x: number; y: number; frame: number }[];
@@ -191,9 +220,18 @@ export function CourtMinimap({
           <CurrentBall trajTiles={trajTiles} frame={frame} />
         )}
 
+        {/* ghost of the previous bounce (live mode only) — faint, for sequence
+            continuity. Not interactive. */}
+        {ghostTile && (() => {
+          const [gx, gy] = projectMeters(ghostTile.Xm, ghostTile.Ym, VIEW_W, VIEW_H);
+          const gcolor = depthHex(depthFromMeters(ghostTile.Ym));
+          return <circle cx={gx} cy={gy} r={3.5} fill={gcolor} opacity={0.22} />;
+        })()}
+
         {/* bounces — color is reclassified from the projected |Ym| so it always
             agrees with the vertical placement (the pipeline's _stats.json depth
-            label is kept for lists/stats, not for the map). */}
+            label is kept for lists/stats, not for the map). In live mode this is
+            a single dot (the current bounce); otherwise every bounce. */}
         {bounceTiles.map(({ bounce, Xm, Ym }) => {
           const [tx, ty] = projectMeters(Xm, Ym, VIEW_W, VIEW_H);
           const color = depthHex(depthFromMeters(Ym));
@@ -203,6 +241,13 @@ export function CourtMinimap({
               onClick={() => onBounceClick?.(bounce.frame)}
               className={onBounceClick ? "cursor-pointer" : undefined}
             >
+              {/* animated pulse ring for the live current bounce */}
+              {liveBounceOnly && (
+                <circle cx={tx} cy={ty} r={9} fill="none" stroke={color} strokeWidth={1.4} opacity={0.7}>
+                  <animate attributeName="r" values="6;16;6" dur="1.8s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.7;0;0.7" dur="1.8s" repeatCount="indefinite" />
+                </circle>
+              )}
               <circle cx={tx} cy={ty} r={9} fill={color} opacity={0.18} />
               <circle cx={tx} cy={ty} r={4.5} fill={color} stroke="#0b0a08" strokeWidth={1} />
             </g>

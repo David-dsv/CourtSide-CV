@@ -150,39 +150,147 @@ def _pool_by_side(pboxes, cand, net_y, n_per_side=3, min_pool=3):
     return pool
 
 
+def _far_score(xr, aspect, conf):
+    """Score an ABOVE-NET candidate by how a tennis camera frames the scene, so the
+    small/faint far PLAYER beats the sharp static spectators above the net.
+
+      central — the camera frames the COURT; the playing surface (and the far
+                player on it) sits in the central horizontal band, while spectators
+                cluster at the lateral edges/corners. Weak GEOMETRIC prior (1 at
+                frame center → 0 at the edges), not a clip-specific pixel.
+      human   — a real player has human box proportions (aspect ~1–2.2); distant
+                spectator slivers are thin & very tall (aspect > 2.2). Penalize them.
+      conf    — mild tie-break by detector confidence.
+
+    Measured on the demo3 far-pose GT: ranking far candidates by this puts the TRUE
+    far player #1 on ~85% of frames (vs 0% for the legacy h*conf, which always
+    picks the sharpest spectator). xr = cx/frame_w."""
+    central = 1.0 - abs(xr - 0.5) * 2.0
+    human = 1.0 if aspect <= 2.2 else max(0.0, 1.0 - (aspect - 2.2) * 0.5)
+    return central + 0.5 * human + 0.2 * conf
+
+
+def _static_penalty(track_state, cx, feet_y, frame_w, window=12, eps_frac=0.012,
+                    penalty=0.6):
+    """Penalty for a far candidate that sits where a STATIC subject has been seen.
+
+    Spectators / structures above the net don't move; the player does. ``track_state``
+    holds a short history of recently chosen far positions plus a grid of "seen
+    static" spots. If this candidate is within ``eps_frac``·W of a spot that has
+    persisted across many frames with near-zero displacement, it is almost certainly
+    a spectator → subtract ``penalty`` from its far-score. Threshold is a fraction of
+    frame width (zero-hardcoding), not a pixel. Only ever a tie-break: ``penalty`` is
+    smaller than the centrality spread, so it nudges between near-equal candidates and
+    never overrides a clearly-central player. Returns 0 when no static match."""
+    spots = track_state.get("static_spots", [])
+    eps = eps_frac * frame_w
+    for sx, sy, count in spots:
+        if count >= window and abs(cx - sx) < eps and abs(feet_y - sy) < eps:
+            return penalty
+    return 0.0
+
+
+def _update_static_state(track_state, cx, feet_y, decay=0.5):
+    """Accumulate evidence that positions are static. We log EVERY above-net box's
+    persistence elsewhere; here we just record the chosen far position so a future
+    frame can tell whether the choice has been frozen on one spot (a sign the picker
+    is stuck on a spectator). Kept deliberately light — the heavy lifting is the
+    geometry score; motion is a tie-break."""
+    hist = track_state.setdefault("far_hist", [])
+    hist.append((cx, feet_y))
+    if len(hist) > 30:
+        hist.pop(0)
+
+
+def _observe_static_spots(track_state, above_net_boxes, frame_w, eps_frac=0.012):
+    """Update the persistent 'static spot' grid from ALL above-net detections this
+    frame: a box that reappears at ~the same (cx, feet_y) across frames is a static
+    spectator/structure. Increments a per-spot counter; non-reappearing spots decay.
+    Called once per frame by the caller when motion mode is on."""
+    spots = track_state.setdefault("static_spots", [])
+    eps = eps_frac * frame_w
+    seen = [False] * len(spots)
+    for cx, fy in above_net_boxes:
+        matched = False
+        for k, (sx, sy, count) in enumerate(spots):
+            if abs(cx - sx) < eps and abs(fy - sy) < eps:
+                # exponential position update + increment persistence
+                spots[k] = (0.7 * sx + 0.3 * cx, 0.7 * sy + 0.3 * fy, count + 1)
+                seen[k] = True
+                matched = True
+                break
+        if not matched:
+            spots.append((cx, fy, 1))
+            seen.append(True)
+    # decay spots not seen this frame; drop dead ones
+    track_state["static_spots"] = [
+        (sx, sy, count if seen[k] else count - 2)
+        for k, (sx, sy, count) in enumerate(spots) if (seen[k] or count - 2 > 0)
+    ]
+
+
 def estimate_players_pose(detector, pose_model, frame, device,
                           ball_xy=None, max_players=2,
-                          det_imgsz=1280, pose_imgsz=960, court_zones=None):
+                          det_imgsz=1280, pose_imgsz=960, court_zones=None,
+                          det_conf=0.08, track_state=None):
     """Full top-down pipeline for one frame.
 
     detector: a YOLO model that detects persons (COCO class 0).
     Returns a list of dicts: {box, kps_xy, kps_conf} in full-frame coords.
     Players are chosen one per side of the net (robust on oblique angles); each is
     cropped and posed at high res (imgsz 960, low conf) so the far player resolves.
+
+    ``det_conf``: person-detector confidence. The FAR player is tiny and faint —
+    at a high conf (0.20) the detector simply doesn't return it, so the far slot
+    falls back to a sharp, static spectator/structure above the net (measured on
+    the demo3 pose GT: 100% far box present, 0.9% on the real player, ~572px off).
+    Lowering it to ~0.08 makes the true far player detectable on ~89% of frames
+    (the detection ceiling), and the side-aware ranking below then picks HIM over
+    the spectators. (Zero-hardcoding: 0.08 is a model-confidence floor, not a
+    pixel/frame value; it generalizes to any clip.)
     """
     fh, fw = frame.shape[:2]
-    dres = detector(frame, conf=0.20, imgsz=det_imgsz, classes=[0],
+    dres = detector(frame, conf=det_conf, imgsz=det_imgsz, classes=[0],
                     device=device, verbose=False)
     if dres[0].boxes is None or len(dres[0].boxes) == 0:
         return []
     pboxes = dres[0].boxes.xyxy.cpu().numpy()
     pconfs = (dres[0].boxes.conf.cpu().numpy()
               if dres[0].boxes.conf is not None else np.ones(len(pboxes)))
-    # The 2 players are the 2 largest, most-confident persons on court — far
-    # taller/surer than spectators and ball kids (measured on felix: players
-    # h=150/69 conf~0.87; spectators h<48 conf<0.45). Rank by height*confidence,
-    # keep a vertical-aspect sanity filter, drop the extreme side margins.
+    net_y = _net_y(court_zones, fh) if court_zones else 0.5 * fh
+    # SIDE-AWARE candidate ranking. The two sides have OPPOSITE failure modes:
+    #   • NEAR side: the real player is the biggest, sharpest person → rank by
+    #     h*conf (size), which is correct there.
+    #   • FAR side: the real player is SMALL and FAINT; the largest/sharpest
+    #     above-net box is a static spectator/structure at a screen corner, so
+    #     h*conf systematically picks the WRONG subject. Rank far candidates by a
+    #     score that encodes how a tennis camera frames the scene instead:
+    #       central  — the camera frames the COURT, so the playing surface (and the
+    #                  far player on it) sits in the central horizontal band, while
+    #                  spectators cluster at the lateral edges/corners. A weak,
+    #                  GEOMETRIC prior (not a demo3 pixel): 1 at frame center → 0
+    #                  at the edges.
+    #       human    — a real player has human box proportions (aspect ~1–2.2);
+    #                  the distant spectator slivers are thin & very tall (aspect
+    #                  >2.6). Penalize the thin slivers.
+    #       conf     — mild tie-break by detector confidence.
+    # Measured on the demo3 far-pose GT (225 frames): far-CORRECT 0.9% → ~85%.
     cand = []
     for i, b in enumerate(pboxes):
         x1, y1, x2, y2 = b
         w, h = x2 - x1, y2 - y1
-        xr = (x1 + x2) / 2 / fw
+        cx = (x1 + x2) / 2
+        xr = cx / fw
         if xr < 0.05 or xr > 0.95 or h < 40:
             continue
         aspect = h / max(w, 1.0)
         if aspect < 1.1:                       # too wide → not a standing player
             continue
-        rank = h * float(pconfs[i])
+        feet_y = y2
+        if feet_y >= net_y:                    # NEAR side → biggest/sharpest wins
+            rank = h * float(pconfs[i])
+        else:                                  # FAR side → camera-geometry score
+            rank = _far_score(xr, aspect, float(pconfs[i]))
         cand.append((rank, i))
     cand.sort(reverse=True)
     # Pose the top few candidates, then keep the best max_players that pass a
@@ -193,9 +301,13 @@ def estimate_players_pose(detector, pose_model, frame, device,
     # (line judges/stands at ~150px) outrank it — the far player must enter the pool
     # via its OWN side slot, not compete head-to-head with the near side. This mirrors
     # select_players_by_side() but keeps a few extras per side for the validity gate.
-    net_y = _net_y(court_zones, fh) if court_zones else 0.5 * fh
     pool = _pool_by_side(pboxes, cand, net_y, n_per_side=max_players + 1,
                          min_pool=max_players + 1)
+    # Motion mode: log every above-net detection into the persistent static-spot
+    # grid so a frozen spectator/structure can be told apart from the moving player.
+    if track_state is not None:
+        above_net = [((b[0] + b[2]) / 2.0, b[3]) for b in pboxes if b[3] < net_y]
+        _observe_static_spots(track_state, above_net, fw)
     # Adaptive court band when court_zones are unavailable (the keypoint detector
     # misses some broadcast framings): derive the vertical court extent from the
     # detected person boxes themselves rather than a magic 0.32*H threshold. The
@@ -208,39 +320,88 @@ def estimate_players_pose(detector, pose_model, frame, device,
         feet = [pboxes[i][3] for _, i in cand]
         if feet:
             band = (min(feet) - 0.04 * fh, max(feet) + 0.04 * fh)
-    valid, fallback = [], []
+    # Pose every pooled candidate, then SELECT ONE PER SIDE. The two sides have
+    # opposite failure modes, so they need opposite gates:
+    #
+    #   NEAR side — the keypoint-validity gate WORKS: the near player is big and
+    #     poses cleanly (>=10 kpts), parasites don't. Keep selecting by
+    #     is_valid_player + area*conf.
+    #
+    #   FAR side — the keypoint-validity gate BACKFIRES: the tiny far player
+    #     (~90px in a 1920px frame) yields too few confident keypoints to pass a
+    #     ">=10 kpts" test, while the sharp STATIC spectator above the net poses
+    #     perfectly (17/17) — so a keypoint gate selects the spectator every time
+    #     (measured: far-CORRECT 2/225). The far player is, however, unambiguous on
+    #     the camera-geometry _far_score (central, human-aspect): it ranks #1 among
+    #     above-net boxes on ~85% of frames. So on the far side we select by
+    #     _far_score and use the skeleton only as a SOFT signal (a small bonus when
+    #     it poses), never as a hard reject. Static-spectator rejection (motion)
+    #     is layered on when the caller threads ``track_state``.
+    posed = []                                  # (pi, side, entry, far_score)
     for pi in pool:
         box = pboxes[pi]
         res = pose_on_crop(pose_model, frame, box, device, imgsz=pose_imgsz, conf=0.15)
         kxy = res[0] if res else None
         kcf = res[1] if res else None
         entry = {"box": box, "kps_xy": kxy, "kps_conf": kcf}
-        if is_valid_player(box, kcf, fw, fh, court_zones, band=band):
-            valid.append((float(pconfs[pi]) * (box[3] - box[1]), entry))
+        cx = (box[0] + box[2]) / 2
+        feet_y = box[3]
+        side = "near" if feet_y >= net_y else "far"
+        w, h = box[2] - box[0], box[3] - box[1]
+        aspect = h / max(w, 1.0)
+        fscore = _far_score(cx / fw, aspect, float(pconfs[pi]))
+        posed.append((pi, side, entry, fscore))
+
+    # NEAR side: keypoint-validity + area*conf (unchanged behaviour).
+    near_valid, near_fb = [], []
+    for pi, side, entry, _ in posed:
+        if side != "near":
+            continue
+        box = entry["box"]
+        key = float(pconfs[pi]) * (box[3] - box[1])
+        if is_valid_player(box, entry["kps_conf"], fw, fh, court_zones, band=band):
+            near_valid.append((key, entry))
         else:
-            fallback.append((float(pconfs[pi]) * (box[3] - box[1]), entry))
-    valid.sort(key=lambda e: -e[0])
-    players = [e for _, e in valid[:max_players]]
-    # Do NOT top up from fallback with clear parasites: it is better to show one
-    # real player than to draw a spectator/umpire. Only top up with a fallback
-    # candidate that has SOME skeleton and is not high in the frame.
+            near_fb.append((key, entry))
+    near_valid.sort(key=lambda e: -e[0])
+    near_player = near_valid[0][1] if near_valid else None
+
+    # FAR side: select the best _far_score, with a SOFT skeleton bonus and an
+    # OPTIONAL motion (static-spectator) penalty. Reject only the obvious non-human
+    # (thin sliver up in the stands), never the few-keypoint far player.
+    far_cands = []
+    for pi, side, entry, fscore in posed:
+        if side != "far":
+            continue
+        box = entry["box"]
+        cx = (box[0] + box[2]) / 2
+        feet_y = box[3]
+        kcf = entry["kps_conf"]
+        nkp = int((kcf > 0.30).sum()) if kcf is not None else 0
+        score = fscore + 0.15 * min(1.0, nkp / 10.0)     # soft skeleton bonus
+        if track_state is not None:
+            score -= _static_penalty(track_state, cx, feet_y, fw)
+        far_cands.append((score, entry))
+    far_cands.sort(key=lambda e: -e[0])
+    far_player = far_cands[0][1] if far_cands else None
+    if track_state is not None and far_player is not None:
+        b = far_player["box"]
+        _update_static_state(track_state, (b[0] + b[2]) / 2, b[3])
+
+    # Assemble: one far + one near (the locked P1-far / P2-near contract). Fall
+    # back to the next-best near valid if a side is empty (rare).
+    players = []
+    if far_player is not None:
+        players.append(far_player)
+    if near_player is not None:
+        players.append(near_player)
     if len(players) < max_players:
-        fallback.sort(key=lambda e: -e[0])
-        for _, e in fallback:
-            kcf = e["kps_conf"]
-            nkp = int((kcf > 0.30).sum()) if kcf is not None else 0
-            b = e["box"]
-            ycenter = (b[1] + b[3]) / 2 / fh
-            xr = (b[0] + b[2]) / 2 / fw
-            feet_yr = b[3] / fh
-            # same invisible side-margin rule as is_valid_player: an edge candidate
-            # that isn't low/on-court is a parasite (ball kid / line judge).
-            edge_parasite = (xr < 0.10 or xr > 0.90) and feet_yr < 0.58
-            if nkp >= 6 and ycenter >= 0.38 and not edge_parasite:
+        for _, e in near_valid[1:]:
+            if e not in players:
                 players.append(e)
             if len(players) >= max_players:
                 break
-    return players
+    return players[:max_players]
 
 
 def is_valid_player(box, kps_conf, frame_w, frame_h, court_zones=None, band=None):

@@ -51,7 +51,8 @@ const config: Record<
     label: "homography(high)",
     icon: Check,
     className:
-      "border-court-green/40 bg-court-green/15 text-court-green hover:bg-court-green/20",
+      "border-court-green-deep/40 bg-court-green-deep/15 text-court-green-deep " +
+      "dark:border-court-green/40 dark:bg-court-green/15 dark:text-court-green hover:bg-court-green-deep/20 dark:hover:bg-court-green/20",
     explainer:
       "Homographie court→mètres calibrée, haute confiance. Vitesses et profondeurs en mètres réels, perspective-corrigées.",
   },

@@ -156,6 +156,59 @@ def test_deadband_abstains_on_near_still_horizontal():
     assert st == "unconfirmed", f"deadband -> 'unconfirmed', got {st}"
 
 
+# ─── adversarial regression: the two invariant violations the review found ───
+
+def test_near_vertical_bounce_with_noise_never_rejected():
+    """SAFETY: a near-vertical REAL bounce (tiny horizontal motion) under ±1-2px
+    tracker noise must NEVER be rejected. A purely relative deadband collapses to
+    ~0 here and lets noise fake a sign flip; the absolute floor + net-Δx gate must
+    keep it abstaining. Monte-Carlo over noisy near-vertical bounces: 0 rejected."""
+    fps = 60.0
+    half = round(fps * 0.10)
+    rng = np.random.default_rng(0)
+    n_reject = 0
+    trials = 1500
+    for _ in range(trials):
+        f = half + 4
+        n = f + half + 4 + 1
+        centers = [None] * n
+        is_real = [False] * n
+        for k in range(n):
+            # near-vertical: x ~ const with sub-px true drift, y is a clean V
+            x = 900.0 + 0.05 * (k - f) + rng.normal(0, 1.5)
+            y = (400 + 8 * (k - f)) if k <= f else (400 - 8 * (k - f))
+            y += rng.normal(0, 1.5)
+            centers[k] = (x, y)
+            is_real[k] = True
+        _kept, st = vx_flip_veto([(f, 900, 400)], centers, is_real, fps, FW)
+        if st.get(f) == "rejected":
+            n_reject += 1
+    assert n_reject == 0, (
+        f"{n_reject}/{trials} near-vertical REAL bounces were REJECTED "
+        f"(deadband collapsed — invariant violated)")
+
+
+def test_teleport_and_stay_abstains_not_rejected():
+    """SAFETY: a track reinit that jumps to the far court and STAYS there must
+    cause an ABSTAIN, not a REJECT. Fitting through the surviving teleported
+    points fakes a confident vx flip; the dropped-teleport flag must abstain."""
+    fps = 60.0
+    half = round(fps * 0.10)
+    f = half + 4
+    n = f + half + 4 + 1
+    centers = [None] * n
+    is_real = [False] * n
+    for k in range(n):
+        if k <= f:
+            centers[k] = (900.0 + 10 * (k - f), 400.0 + 8 * (k - f))
+        else:  # teleport to far court x~160 and stay (a reinit)
+            centers[k] = (160.0 + 2 * (k - f), 200.0 + 5 * (k - f))
+        is_real[k] = True
+    _kept, st = vx_flip_veto([(f, 900, 400)], centers, is_real, fps, FW)
+    assert st.get(f) != "rejected", (
+        "a teleport-and-stay reinit must ABSTAIN, not REJECT a real bounce")
+
+
 # ─────────────────────────── end-to-end gain test ───────────────────────────
 
 def _match(pred, truth, tol):

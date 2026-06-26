@@ -599,6 +599,17 @@ def parse_args():
                              "bounce recall on broadcast; needs --wasb-weights).")
     parser.add_argument("--wasb-weights", default="training/wasb/wasb_tennis.pth.tar",
                         help="Path to WASB tennis weights (for --ball-tracker wasb).")
+    parser.add_argument("--event-methodo", action="store_true",
+                        help="Arbitrate bounces vs hits with the unified event classifier "
+                             "(vision.events.classify_events) instead of running the two "
+                             "detectors independently. The classifier merges the bounce "
+                             "candidates, the trajectory turning points (incl. far-court apex "
+                             "via detect_sharp_turns) and the wrist-speed hits, then labels "
+                             "each event {BOUNCE|HIT} under a SCORE-FREE firewall + rally "
+                             "alternation — confusion_H->B/B->H drop to 0 and far-court bounce "
+                             "recall rises (demo3: bounce F1 0.20→0.84). OFF by default; OFF is "
+                             "strictly the legacy behavior (vx_flip_veto + detect_hits). Needs "
+                             "poses (Pass 1.5); on a pose-poor clip falls back gracefully.")
     parser.add_argument("--no-minimap", action="store_true",
                         help="Disable the 2D top-down court minimap (ball trajectory + bounces).")
     parser.add_argument("--no-calibration", action="store_true",
@@ -815,6 +826,11 @@ def main():
     # video is only read, never rewritten. --no-shot-guard disables (mask all-True
     # → identity clip-index, nothing cut). See vision/shot_guard.py + annot_clip.py.
     shot_guard_enabled = not args.no_shot_guard
+    # --event-methodo: arbitrate bounce-vs-hit with the unified classifier
+    # (vision.events) AFTER Pass 1.5 (it needs poses + both candidate sets at once),
+    # instead of running the two detectors independently. OFF (default) keeps the
+    # legacy path bit-for-bit; ON defers the bounce_by_frame build past Pass 1.5.
+    event_methodo = bool(args.event_methodo)
     court_visible_mask = [True] * max_frames        # window-relative
     non_court_spans_rel = []
     keep_set = set(range(max_frames))               # window-relative indices to annotate
@@ -1105,7 +1121,14 @@ def main():
     # YOLO+Kalman trajectory the curve-fit detector is the tuned default.
     bounce_events = []
     direction_state_by_frame = {}  # frame -> {"metric","unconfirmed"} (CHANTIER 2)
-    if not args.no_bounces:
+    # --event-methodo: the unified classifier (vision.events) needs the RAW,
+    # un-vetoed bounce candidates PLUS poses + hits, which only exist after Pass
+    # 1.5. So we SKIP the Pass-1 bounce detection/veto entirely here and generate
+    # the candidates + arbitrate after Pass 1.5 (the classifier owns the firewall,
+    # so no veto is applied upstream). This also keeps all_ball_centers as the
+    # clean pre-robust spline track for the methodo's smoothed_centers (the WASB
+    # branch below re-smooths it in place, which the methodo must not see).
+    if not args.no_bounces and not event_methodo:
         if wasb_path:
             from vision.bounce import detect_bounces_robust, vx_flip_veto
             bounce_events, all_ball_centers, _ = detect_bounces_robust(
@@ -1184,18 +1207,7 @@ def main():
                         f"({sum(1 for v in override_strikes.values() if v['type']=='forehand')} "
                         f"forehand, {sum(1 for v in override_strikes.values() if v['type']=='backhand')} backhand).")
 
-    # ─── Classify bounces ───
-    classified_bounces = []
-    if bounce_events:
-        classified_bounces = classify_bounce_depth(bounce_events, court_zones, frame_height)
-        depth_counts = {}
-        for _, _, _, depth in classified_bounces:
-            depth_counts[depth] = depth_counts.get(depth, 0) + 1
-        logger.info(f"Bounce detection: {len(classified_bounces)} bounces — {depth_counts}")
-    else:
-        logger.info("Bounce detection: 0 bounces detected")
-
-    # ─── Compute quality score per bounce ───
+    # ─── Compute quality-score constants (needed by bounces AND shots) ───
     # speed_window: average speed over ±0.3s around the bounce
     speed_window = int(fps * 0.3)
     # Reference speed: 90th percentile of all valid speeds
@@ -1205,21 +1217,37 @@ def main():
 
     depth_score_map = {"deep": 1.0, "mid": 0.5, "short": 0.2}
 
-    bounce_by_frame = {}
-    for fidx, bx, by, depth in classified_bounces:
-        # Average speed in window around bounce
-        lo = max(0, fidx - speed_window)
-        hi = min(len(ball_speeds_kmh), fidx + speed_window + 1)
-        window_speeds = [ball_speeds_kmh[i] for i in range(lo, hi) if ball_speeds_kmh[i] > 5.0]
-        avg_speed = float(np.mean(window_speeds)) if window_speeds else 0.0
+    def _build_bounce_by_frame(events):
+        """Classify depth + score quality for a list of (frame, x, y) bounces →
+        {frame: (x, y, depth, avg_speed, quality)}. Shared by the legacy path and
+        the --event-methodo arbitration so the bounce record shape (and the exact
+        depth/quality math) is identical regardless of how the events were chosen.
+        """
+        classified = classify_bounce_depth(events, court_zones, frame_height) if events else []
+        if classified:
+            dc = {}
+            for _, _, _, depth in classified:
+                dc[depth] = dc.get(depth, 0) + 1
+            logger.info(f"Bounce detection: {len(classified)} bounces — {dc}")
+        else:
+            logger.info("Bounce detection: 0 bounces detected")
+        out = {}
+        for fidx, bx, by, depth in classified:
+            lo = max(0, fidx - speed_window)
+            hi = min(len(ball_speeds_kmh), fidx + speed_window + 1)
+            window_speeds = [ball_speeds_kmh[i] for i in range(lo, hi) if ball_speeds_kmh[i] > 5.0]
+            avg_speed = float(np.mean(window_speeds)) if window_speeds else 0.0
+            speed_norm = min(1.0, avg_speed / speed_ref)
+            depth_norm = depth_score_map.get(depth, 0.5)
+            quality = max(0, min(100, int((0.4 * speed_norm + 0.6 * depth_norm) * 100)))
+            out[fidx] = (bx, by, depth, avg_speed, quality)
+            logger.debug(f"Bounce frame {fidx}: depth={depth}, speed={avg_speed:.0f}km/h, Q={quality}")
+        return out
 
-        speed_norm = min(1.0, avg_speed / speed_ref)
-        depth_norm = depth_score_map.get(depth, 0.5)
-        quality = int((0.4 * speed_norm + 0.6 * depth_norm) * 100)
-        quality = max(0, min(100, quality))
-
-        bounce_by_frame[fidx] = (bx, by, depth, avg_speed, quality)
-        logger.debug(f"Bounce frame {fidx}: depth={depth}, speed={avg_speed:.0f}km/h, Q={quality}")
+    # Legacy path builds bounce_by_frame now. The --event-methodo path leaves it
+    # empty here (bounce_events is still empty — Pass 1 detection was skipped) and
+    # rebuilds it after Pass 1.5 from the arbitrated events, via the same helper.
+    bounce_by_frame = _build_bounce_by_frame(bounce_events)
 
     # ─── Pass 1.5: Pose on every frame → locked P1/P2 skeleton tracks ───
     # The per-frame pose estimator returns "the 2 players this frame" with no
@@ -1293,28 +1321,131 @@ def main():
     shot_by_frame = {}      # frame -> dict(side, fhb, quality, speed)
     if not args.no_bounces and all_ball_centers:
         from vision.shots import detect_hits, classify_forehand_backhand, shot_quality
-        bset = list(bounce_by_frame.keys())
+        bset = list(bounce_by_frame.keys())   # [] when --event-methodo (deferred)
         # poses already computed for every frame in Pass 1.5 (players_per_frame)
         hits = detect_hits(all_ball_centers, players_per_frame, fps,
                            frame_height, frame_width, bounce_frames=bset)
-        sorted_bounces = sorted(bounce_by_frame.keys())
-        for h in hits:
-            fhb = classify_forehand_backhand(h, players_per_frame)
-            # link to the next bounce after this hit for depth/placement/speed
-            nb = next((b for b in sorted_bounces if b > h["frame"]), None)
-            if nb is not None:
-                bx, by, depth, b_speed, _ = bounce_by_frame[nb]
-                _h = h_at(court_homography_by_frame, nb, court_homography)
-                q = shot_quality(b_speed, depth, (bx, by), court_zones,
-                                 frame_width, frame_height,
-                                 homography=_h, speed_ref=speed_ref)
-            else:
-                b_speed, q = 0.0, 0
-            shot_by_frame[h["frame"]] = {
-                "side": h["player_side"], "fhb": fhb, "quality": q,
-                "speed": b_speed, "x": h["x"], "y": h["y"],
-                "human_id": (human_id_for_side(match_result, h["player_side"], h["frame"])
-                             if match_mode else None)}
+
+        if event_methodo and not args.demo_override:
+            # ── UNIFIED ARBITRATION (vision.events.classify_events) ──
+            # NOW both candidate sets + poses exist, so we can arbitrate. We
+            # reproduce the proven demo3 recipe EXACTLY (tools/event_eval/
+            # run_demo3.py:methodo_events): robust bounce candidates + ALL
+            # trajectory turning points + far-court apex sharp-turns as the recall
+            # pool, the wrist-speed hits as the H votes, then classify_events
+            # labels each event under the score-free firewall (confusion_H->B and
+            # B->H == 0 by a logical gate) and the rally-alternation DP.
+            #
+            # Direction is read on the RAW pre-spline track + is_real mask (the
+            # safety invariant); smoothed_centers is the clean spline track (NOT
+            # the robust detector's re-smooth — we keep all_ball_centers intact in
+            # this path). bounce candidates come from detect_bounces_robust on the
+            # spline track (tracker-independent, matching the cache recipe).
+            from vision.bounce import detect_bounces_robust
+            from vision.events import (
+                classify_events, detect_turning_points, detect_sharp_turns)
+            b_cands, _re, _nd = detect_bounces_robust(
+                all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
+            turns = set(detect_turning_points(all_ball_centers, fps, frame_height))
+            turns |= set(detect_sharp_turns(
+                raw_ball_centers, ball_is_real, fps, frame_width, frame_height))
+            events, evt_report = classify_events(
+                b_cands, hits, raw_ball_centers, ball_is_real, players_per_frame,
+                fps, frame_width, frame_height,
+                turning_frames=sorted(turns), smoothed_centers=all_ball_centers,
+                wasb_centers=None, wasb_is_real=None)
+
+            # split labeled events; rebuild bounce structures FIRST (shots link to
+            # the NEXT bounce), then map HITs back onto the shot_by_frame contract.
+            bounce_events = [(e["frame"], e["x"], e["y"])
+                             for e in events if e["label"] == "BOUNCE"]
+            bounce_by_frame = _build_bounce_by_frame(bounce_events)
+            # --dump-bounces: the Pass-1 dump ran before arbitration (empty in this
+            # path), so emit the ARBITRATED bounces here instead (same schema).
+            if args.dump_bounces:
+                pred_doc = {
+                    "video": video_path, "fps": fps, "frame_offset": start_frame,
+                    "annotator": "run_pipeline_8s.py:classify_events",
+                    "notes": "auto-exported bounce predictions (--event-methodo)",
+                    "bounces": [{"frame": int(start_frame + idx), "x": int(x), "y": int(y)}
+                                for (idx, x, y) in bounce_events]}
+                Path(args.dump_bounces).parent.mkdir(parents=True, exist_ok=True)
+                with open(args.dump_bounces, "w") as _df:
+                    json.dump(pred_doc, _df, indent=2)
+                    _df.write("\n")
+                logger.info(f"Dumped {len(bounce_events)} bounce predictions "
+                            f"(methodo) -> {args.dump_bounces}")
+            # direction_state per bounce frame from the classifier's own vx read:
+            # vx preserved (flip False) on a BOUNCE == the "metric" co-signal the
+            # legacy veto reported; None/unreadable stays "unconfirmed".
+            direction_state_by_frame = {}
+            for e in events:
+                if e["label"] == "BOUNCE":
+                    vxf = e["features"].get("vx_flip")
+                    direction_state_by_frame[e["frame"]] = (
+                        "metric" if vxf is False else "unconfirmed")
+
+            # HIT events → shot_by_frame. Match each HIT back to the originating
+            # detect_hits record (same frame) to recover player_side + FH/BH +
+            # human_id; a parity-fill HIT (no candidate) falls back to a geometric
+            # side from the ball's vertical position (the classifier already
+            # firewalled it as a real hit). Quality links to the next bounce,
+            # mirroring the legacy path EXACTLY (same shot_quality call).
+            hit_by_frame = {h["frame"]: h for h in hits}
+            net_y = frame_height * 0.47
+            sorted_bounces = sorted(bounce_by_frame.keys())
+            for e in events:
+                if e["label"] != "HIT":
+                    continue
+                ef = e["frame"]
+                hm = hit_by_frame.get(ef)
+                if hm is not None:
+                    side = hm["player_side"]
+                    fhb = classify_forehand_backhand(hm, players_per_frame)
+                    sx, sy = hm["x"], hm["y"]
+                else:
+                    # generic/parity HIT: derive side from ball y vs net; FH/BH
+                    # unknown without a posed contact player.
+                    side = "near" if e["y"] >= net_y else "far"
+                    fhb = "unknown"
+                    sx, sy = e["x"], e["y"]
+                nb = next((b for b in sorted_bounces if b > ef), None)
+                if nb is not None:
+                    bx, by, depth, b_speed, _ = bounce_by_frame[nb]
+                    _h = h_at(court_homography_by_frame, nb, court_homography)
+                    q = shot_quality(b_speed, depth, (bx, by), court_zones,
+                                     frame_width, frame_height,
+                                     homography=_h, speed_ref=speed_ref)
+                else:
+                    b_speed, q = 0.0, 0
+                shot_by_frame[ef] = {
+                    "side": side, "fhb": fhb, "quality": q,
+                    "speed": b_speed, "x": sx, "y": sy,
+                    "human_id": (human_id_for_side(match_result, side, ef)
+                                 if match_mode else None)}
+            logger.info(
+                f"Event methodo: {len(bounce_by_frame)} bounce / {len(shot_by_frame)} "
+                f"hit events arbitrated (WASB consistency {evt_report['consistency']:.0%}); "
+                f"firewall guarantees confusion_H->B / B->H == 0")
+        else:
+            sorted_bounces = sorted(bounce_by_frame.keys())
+            for h in hits:
+                fhb = classify_forehand_backhand(h, players_per_frame)
+                # link to the next bounce after this hit for depth/placement/speed
+                nb = next((b for b in sorted_bounces if b > h["frame"]), None)
+                if nb is not None:
+                    bx, by, depth, b_speed, _ = bounce_by_frame[nb]
+                    _h = h_at(court_homography_by_frame, nb, court_homography)
+                    q = shot_quality(b_speed, depth, (bx, by), court_zones,
+                                     frame_width, frame_height,
+                                     homography=_h, speed_ref=speed_ref)
+                else:
+                    b_speed, q = 0.0, 0
+                shot_by_frame[h["frame"]] = {
+                    "side": h["player_side"], "fhb": fhb, "quality": q,
+                    "speed": b_speed, "x": h["x"], "y": h["y"],
+                    "human_id": (human_id_for_side(match_result, h["player_side"], h["frame"])
+                                 if match_mode else None)}
         logger.info(f"Shots: {len(shot_by_frame)} detected "
                     f"({sum(1 for s in shot_by_frame.values() if s['fhb']=='forehand')} FH, "
                     f"{sum(1 for s in shot_by_frame.values() if s['fhb']=='backhand')} BH)")

@@ -28,7 +28,8 @@ sys.path.insert(0, str(ROOT))
 from vision.bounce import (  # noqa: E402
     smooth_ball_trajectory, detect_bounces_robust, detect_bounces_from_trajectory)
 from vision.shots import detect_hits  # noqa: E402
-from vision.events import classify_events, detect_turning_points  # noqa: E402
+from vision.events import (  # noqa: E402
+    classify_events, detect_turning_points, detect_sharp_turns)
 from tools.event_eval.event_eval import match_events, print_report, scores  # noqa: E402
 
 CACHE = ROOT / "tests" / "fixtures" / "cache" / "demo3_event.json"
@@ -73,6 +74,10 @@ def methodo_events(fps, fw, fh, kal, kal_real, wasb, wasb_real, ppf, **kw):
     # arbitrates the label of each.
     b_cands, _re, _nd = detect_bounces_robust(all_centers, speeds, fps, fh, fw)
     turns = detect_turning_points(all_centers, fps, fh)
+    # ADD far-court apex bounces (no y-extremum, but a sharp velocity-vector turn)
+    # to the candidate pool — read on the RAW pre-spline track + is_real mask.
+    sharp = detect_sharp_turns(kal, kal_real, fps, fw, fh)
+    turns = sorted(set(turns) | set(sharp))
     hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=[])
     events, report = classify_events(
         b_cands, hits, kal, kal_real, ppf, fps, fw, fh,

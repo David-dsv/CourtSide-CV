@@ -25,19 +25,24 @@ sys.path.insert(0, str(ROOT))
 
 from vision.bounce import smooth_ball_trajectory, detect_bounces_robust  # noqa: E402
 from vision.shots import detect_hits  # noqa: E402
-from vision.events import classify_events, detect_turning_points  # noqa: E402
+from vision.events import (  # noqa: E402
+    classify_events, detect_turning_points, detect_sharp_turns)
 from tools.event_eval.event_eval import match_events, scores  # noqa: E402
 
 CACHE = ROOT / "tests" / "fixtures" / "cache" / "demo3_event.json"
 GT_B = ROOT / "tests" / "fixtures" / "bounces" / "tennis_demo3.bounces.json"
 GT_S = ROOT / "tests" / "fixtures" / "shots" / "tennis_demo3.shots.json"
 
-# Floors locked at the measured methodology numbers (CHANTIER D) with a small
-# noise margin. confusion_H->B is a HARD 0 (the user's bug, non-negotiable) and
-# confusion_B->H is also held at 0. Measured: bounce F1 0.533, hit F1 0.667.
+# Floors locked at the measured methodology numbers with a small noise margin.
+# confusion_H->B is a HARD 0 (the user's bug, non-negotiable) and confusion_B->H
+# is also held at 0. The far-court apex-bounce candidate generator
+# (detect_sharp_turns, feat/ball-tracking-density) recovers GT bounces 120 & 369
+# into the pool, lifting bounce recall 4/9 -> 8/9: bounce F1 0.533 -> 0.842, hit
+# F1 0.667 -> 0.632 (3 pre-existing tail wrist-peak hit-candidates promoted by the
+# shifted alternation cadence; net strongly positive). Firewall H->B/B->H stay 0.
 CONF_HtoB_MAX = 0
 CONF_BtoH_MAX = 0
-BOUNCE_F1_FLOOR = 0.50
+BOUNCE_F1_FLOOR = 0.80
 HIT_F1_FLOOR = 0.60
 
 
@@ -56,6 +61,10 @@ def evaluate():
     speeds = [0.0] * len(all_centers)
     b_cands, _re, _nd = detect_bounces_robust(all_centers, speeds, fps, fh, fw)
     turns = detect_turning_points(all_centers, fps, fh)
+    # far-court apex bounces (no y-extremum but a sharp velocity-vector turn),
+    # read on the RAW pre-spline track + is_real mask:
+    sharp = detect_sharp_turns(kal, kal_real, fps, fw, fh)
+    turns = sorted(set(turns) | set(sharp))
     hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=[])
     events, report = classify_events(
         b_cands, hits, kal, kal_real, ppf, fps, fw, fh,

@@ -78,6 +78,59 @@ def detect_turning_points(smoothed_centers, fps, frame_height,
     pk_min, _ = find_peaks(-ysf, distance=dist, prominence=prom)
     return sorted(set(int(f) for f in list(pk_max) + list(pk_min)))
 
+
+def detect_sharp_turns(raw_centers, is_real, fps, frame_width, frame_height,
+                       angle_deg=70.0, win_frac=0.06, min_gap_frac=0.15,
+                       min_disp_frac=0.002):
+    """Candidate events from the ball's VELOCITY-VECTOR TURN ANGLE.
+
+    detect_turning_points reads only the y-series and needs a prominent local
+    y-extremum. That misses FAR-COURT APEX bounces: when the ball bounces near the
+    top of a flat arc, its image-y barely dips (measured ~1px on demo3 bounce 369)
+    so no y-peak exists — yet the ball's *velocity vector* still turns sharply (the
+    vertical component swings from ~flat to strongly rising while the horizontal
+    sign is preserved, the bounce signature). We catch that turn directly.
+
+    For each frame with REAL (non-interpolated) neighbours k frames either side,
+    compute the angle between the incoming velocity (f-k -> f) and the outgoing one
+    (f -> f+k). A bounce/hit is a sharp turn; mid-flight the angle is ~0. We admit
+    the LOCAL PEAKS of the angle series above `angle_deg`, which keeps the false
+    budget small. This is rotation/position-invariant and direction-orthogonal, so
+    it complements (never replaces) the y-extremum detector — its output FEEDS
+    turning_frames; classify_events still decides each label under its firewall.
+
+    Reads the RAW pre-spline track + is_real mask (same safety invariant as the
+    veto): a turn is only trusted when both arms rest on real detections, so we
+    never fabricate a turn across an interpolated gap. All thresholds are ratios of
+    fps / frame size — no per-video constants.
+
+    Returns a sorted list of candidate frame indices.
+    """
+    n = len(raw_centers)
+    if n < 7:
+        return []
+    k = max(2, round(fps * win_frac))
+    diag = float(np.hypot(frame_width, frame_height))
+    min_disp = diag * min_disp_frac        # ignore a near-stationary ball (noise)
+    ang = np.zeros(n, dtype=float)
+    for f in range(k, n - k):
+        if not (is_real[f - k] and is_real[f] and is_real[f + k]):
+            continue
+        c0, c1, c2 = raw_centers[f - k], raw_centers[f], raw_centers[f + k]
+        if c0 is None or c1 is None or c2 is None:
+            continue
+        ax, ay = c1[0] - c0[0], c1[1] - c0[1]
+        bx, by = c2[0] - c1[0], c2[1] - c1[1]
+        na = (ax * ax + ay * ay) ** 0.5
+        nb = (bx * bx + by * by) ** 0.5
+        if na < min_disp or nb < min_disp:
+            continue
+        cos = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+        ang[f] = np.degrees(np.arccos(cos))
+    dist = max(1, int(fps * min_gap_frac))
+    pk, _ = find_peaks(ang, height=angle_deg, distance=dist)
+    return sorted(int(f) for f in pk)
+
 # COCO wrist indices (racket hand is either; we take the nearer-to-ball one).
 _L_WRIST, _R_WRIST = 9, 10
 _KP_CONF = 0.30

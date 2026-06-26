@@ -229,7 +229,8 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
                     eps_rel=0.15, eps_floor_frac=0.0015, min_netdx_frac=0.004,
                     near_wrist=0.5, far_wrist=1.2,
                     merge_frac=0.12, step0_frac=0.55,
-                    keep=0.1, lam=0.5, miss_cost=1.2, slot_rad=0.4,
+                    keep=0.3, lam=0.5, miss_cost=1.0, slot_rad=0.4,
+                    decoder="global",
                     turning_frames=None, smoothed_centers=None,
                     wasb_centers=None, wasb_is_real=None):
     """Merge candidates, commit pure anchors, estimate cadence, parity-decode the
@@ -356,8 +357,11 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
     step = float(np.median(units)) if units else step0
     step = max(step, 1.0)
 
-    # ── PASS 1+3+4: anchors locked, parity-DP fills the rest ──
-    _anchor_parity_decode(evs, step, keep, lam, miss_cost, slot_rad)
+    # ── decode: place + label events under the firewall + alternation ──
+    if decoder == "global":
+        _global_alternation_decode(evs, step, keep, lam, miss_cost)
+    else:
+        _anchor_parity_decode(evs, step, keep, lam, miss_cost, slot_rad)
 
     kept = [e for e in evs if e["label"] is not None]
     for e in kept:
@@ -405,6 +409,84 @@ def _reward(e, lab, keep):
         if e["vy"] or (e["bnc"] and not e["hit"]):
             return None                                   # FIREWALL (B->H guard)
         return keep + e["hscore"]
+
+
+def _global_alternation_decode(evs, step, keep, lam, miss_cost, anchor_bonus=3.0):
+    """A SINGLE global parity-aware DP over ALL events. vy-flip BOUNCE anchors are
+    MANDATORY (vy is gold floor-bounce physics, 100% pure — the chain may never
+    skip one); hit@wrist anchors are only STRONG (anchor_bonus), since a near-court
+    swing detection can be a phantom. The firewall (_reward returning None) still
+    forbids hit_like->B and clear-bounce->H, so confusion stays 0/0. Alternation is
+    enforced over the whole sequence, so a SPURIOUS near-court hit anchor (e.g.
+    demo3 f162, a phantom swing between two real events) is DROPPED when keeping it
+    would force two consecutive same-class events — the segment-locked variant
+    can't do this because it trusts every anchor as ground truth.
+
+    State = last emitted label + last frame. Per event: SKIP (unless a mandatory
+    vy anchor), emit B, emit H. Emitting the opposite of the previous kept label
+    across k≈round(gap/step) beats is rewarded when parity matches (odd k flips);
+    same-class across an even k (a missed beat) pays miss_cost; an immediate
+    same-class repeat (k==1) is forbidden.
+    """
+    NEG = float("-inf")
+    # states: dict (last_label, last_frame) -> (score, path[list of (idx,label)])
+    states = {(None, None): (0.0, [])}
+    for i, e in enumerate(evs):
+        rB = _reward(e, BOUNCE, keep)
+        rH = _reward(e, HIT, keep)
+        if e["anchor"] == BOUNCE and rB is not None:
+            rB += anchor_bonus
+        if e["anchor"] == HIT and rH is not None:
+            rH += anchor_bonus
+        # A vy-flip bounce is MANDATORY: the chain cannot skip it (no SKIP carry).
+        mandatory = bool(e["vy"]) and rB is not None
+        nstates = {} if mandatory else dict(states)  # SKIP carry unless mandatory
+        for (ll, lf), (sc, path) in states.items():
+            for lab, r in ((BOUNCE, rB), (HIT, rH)):
+                if r is None:
+                    continue
+                if ll is None:
+                    add, ok = r, True
+                else:
+                    gap = e["frame"] - lf
+                    k = max(1, round(gap / step))
+                    flip = (k % 2 == 1)
+                    same = (lab == ll)
+                    if same and k == 1:
+                        ok = False           # immediate repeat: forbidden
+                    elif (not same) == flip:
+                        ok = True
+                    else:
+                        ok = False           # parity violated
+                    if not ok:
+                        continue
+                    pen = lam * abs(gap - k * step) / step + miss_cost * (k - 1)
+                    add = r - pen
+                key = (lab, e["frame"])
+                val = sc + add
+                cur = nstates.get(key)
+                if cur is None or val > cur[0]:
+                    nstates[key] = (val, path + [(i, lab)])
+        # A mandatory vy bounce that no prior state could reach (parity) restarts
+        # the chain from the best prior score: the bounce definitely happened, even
+        # if the events before it are uncertain. Guarantees states never empties.
+        if mandatory and rB is not None:
+            key = (BOUNCE, e["frame"])
+            base = max((sc for sc, _ in states.values()), default=0.0)
+            val = base + rB
+            cur = nstates.get(key)
+            if cur is None or val > cur[0]:
+                best_path = max(states.values(), key=lambda v: v[0])[1] if states else []
+                nstates[key] = (val, best_path + [(i, BOUNCE)])
+        # prune to keep it tractable (deterministic: by score then recency)
+        if len(nstates) > 256:
+            keep_items = sorted(nstates.items(), key=lambda kv: -kv[1][0])[:256]
+            nstates = dict(keep_items)
+        states = nstates
+    best = max(states.values(), key=lambda v: v[0])
+    chosen = dict(best[1])
+    for i, e in enumerate(evs):
+        e["label"] = chosen.get(i)
 
 
 def _anchor_parity_decode(evs, step, keep, lam, miss_cost, slot_rad):

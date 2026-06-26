@@ -88,6 +88,41 @@ def test_pool_recall_improved():
     assert hit >= 16, f"candidate-pool recall {hit}/{total} < 16 (apex bounces lost)"
 
 
+def test_firewall_holds_across_threshold_plateau():
+    """Adversarial robustness: an apex candidate landing on a rising LEG (not the
+    apex) can shift the alternation DP and cascade a confusion (a design-panel
+    judge measured this for a vy-acceleration variant). The turn-angle detector
+    lands on the apex (where vy_flip confirms BOUNCE), so H->B / B->H must stay 0
+    across a WIDE threshold band — proving the 0/0 firewall is structural, not a
+    knife-edge tuned to one threshold. Locks the anti-overfit plateau."""
+    from vision.bounce import smooth_ball_trajectory, detect_bounces_robust
+    from vision.shots import detect_hits
+    from vision.events import (
+        detect_turning_points, classify_events)
+    from tools.event_eval.event_eval import match_events
+    fps, fw, fh, kal, kal_real, gt_b, gt_h = _load()
+    c = json.loads(CACHE.read_text())
+    ppf = c["players_per_frame"]
+    wasb = [tuple(x) if x else None for x in c["wasb_centers"]]
+    wasb_real = c["wasb_is_real"]
+    sm = smooth_ball_trajectory(kal, max_gap=int(fps * 0.4))
+    b, _r, _n = detect_bounces_robust(sm, [0.0] * len(sm), fps, fh, fw)
+    hits = detect_hits(sm, ppf, fps, fh, fw, bounce_frames=[])
+    turns0 = detect_turning_points(sm, fps, fh)
+    tol = round(0.15 * fps)
+    for thr in (60.0, 65.0, 70.0, 75.0):
+        sharp = detect_sharp_turns(kal, kal_real, fps, fw, fh, angle_deg=thr)
+        turns = sorted(set(turns0) | set(sharp))
+        ev, _rep = classify_events(
+            b, hits, kal, kal_real, ppf, fps, fw, fh,
+            turning_frames=turns, smoothed_centers=sm,
+            wasb_centers=wasb, wasb_is_real=wasb_real)
+        res = match_events([{"frame": e["frame"], "label": e["label"]} for e in ev],
+                           gt_b, gt_h, tol)
+        assert res["conf_HtoB"] == 0, f"H->B != 0 at angle_deg={thr}"
+        assert res["conf_BtoH"] == 0, f"B->H != 0 at angle_deg={thr}"
+
+
 if __name__ == "__main__":
     fps, fw, fh, kal, kal_real, gt_b, gt_h = _load()
     cands = detect_sharp_turns(kal, kal_real, fps, fw, fh)
@@ -97,6 +132,11 @@ if __name__ == "__main__":
     print(f"  recovers 120: {any(abs(c-120)<=WIN for c in cands)}  "
           f"recovers 369: {any(abs(c-369)<=WIN for c in cands)}")
     print(f"  candidate-pool recall (turns+sharp+robust+hits): {hit}/{total}")
+    # run every assertion-based test too (no pytest in this env)
+    for name in sorted(globals()):
+        if name.startswith("test_"):
+            globals()[name]()
+            print(f"  PASS {name}")
     ok = (any(abs(c - 120) <= WIN for c in cands)
           and any(abs(c - 369) <= WIN for c in cands)
           and hit >= 16 and len(cands) <= 24)

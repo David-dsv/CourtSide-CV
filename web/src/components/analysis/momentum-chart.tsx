@@ -39,7 +39,7 @@ export function MomentumChart({
           const isGood = b.score > 0;
           const isNeutral = b.score === 0;
           const y = isGood ? midY - barH : midY;
-          const fill = isNeutral ? "#5b6b6e" : isGood ? "#d8f64a" : "#e2603a";
+          const fill = isNeutral ? "var(--bar-neutral)" : isGood ? "#d8f64a" : "#e2603a";
           return (
             <g key={i} className="cursor-pointer" onClick={() => setFrame(b.frame)}>
               {/* invisible hit area spanning full column */}

@@ -75,6 +75,7 @@
   /* ---- back-compat aliases (old token names → new clay palette) ---- */
   --color-court-green: #d8f64a;        /* → ball */
   --color-court-green-bright: #eaff66;
+  --color-court-green-deep: #2f7d4f;   /* readable grass green — for text on LIGHT surfaces (badges) */
   --color-court-cyan: #5fb0a8;         /* → muted teal */
   --color-court-amber: #f2b441;
   --color-court-red: #e2603a;          /* → clay */
@@ -95,8 +96,78 @@
   --color-inferno-9: #fcffa4;
 }
 
-/* Dark-only product theme. shadcn tokens remapped to clay palette. */
-:root,
+/* ============================================================
+   LIGHT theme — "Chalk" (default). Warm chalk-white surfaces,
+   warm near-black ink text, SAME ball/clay accents. The dark
+   "Broadcast Clay" theme lives in .dark (below) unchanged.
+
+   Surfaces, shadows, court-radar and SVG outlines are all driven
+   from per-theme vars so the @utility blocks + components flip
+   cleanly between the two themes (no hardcoded dark leaks).
+   ============================================================ */
+:root {
+  --background: #faf8f3;          /* warm chalk */
+  --foreground: #1a1814;          /* warm near-black ink */
+  --card: #ffffff;
+  --card-foreground: #1a1814;
+  --popover: #ffffff;
+  --popover-foreground: #1a1814;
+  --primary: #d8f64a;             /* ball — KEEP */
+  --primary-foreground: #16150f;  /* dark ink ON the yellow ball (both themes) */
+  --secondary: #efe9dd;
+  --secondary-foreground: #1a1814;
+  --muted: #efe9dd;
+  --muted-foreground: #5d5449;    /* warm grey — darkened for AA+ on chalk/white */
+  --accent: #e9e2d3;
+  --accent-foreground: #1a1814;
+  --destructive: #e2603a;         /* clay — KEEP */
+  --border: oklch(0 0 0 / 10%);   /* dark hairline on light */
+  --input: oklch(0 0 0 / 14%);
+  --ring: #d8f64a;
+  --chart-1: #d8f64a;
+  --chart-2: #e2603a;
+  --chart-3: #f2b441;
+  --chart-4: #5fb0a8;
+  --chart-5: #6b6457;
+  --radius: 0.5rem;
+  --sidebar: #f4efe6;
+  --sidebar-foreground: #1a1814;
+  --sidebar-primary: #d8f64a;
+  --sidebar-primary-foreground: #16150f;
+  --sidebar-accent: #e9e2d3;
+  --sidebar-accent-foreground: #1a1814;
+  --sidebar-border: oklch(0 0 0 / 8%);
+  --sidebar-ring: #d8f64a;
+
+  /* ---- surfaces (panel / glass / court-grid / body) ---- */
+  --surface-from: #ffffff;
+  --surface-to: #faf8f3;
+  --surface-raised-from: #ffffff;
+  --surface-raised-to: #f6f2ea;
+  --body-base: #faf8f3;
+  --grid-line: oklch(0 0 0 / 5%);
+
+  /* ---- hairlines + shadows (panel/glass box-shadows) ---- */
+  --hairline-top: color-mix(in oklab, var(--foreground) 6%, transparent);
+  --hairline-top-strong: color-mix(in oklab, var(--foreground) 9%, transparent);
+  --inset-dark: inset 0 0 0 1px color-mix(in oklab, black 5%, transparent);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 16px 40px -12px rgba(0, 0, 0, 0.10);
+  --shadow-xl: 0 24px 60px -16px rgba(0, 0, 0, 0.12);
+  --selection-fg: var(--primary-foreground);
+
+  /* ---- court radar / video poster (Wimbledon GREEN grass) ---- */
+  --court-from: #2f7d4f;          /* grass green */
+  --court-to: #246b41;
+  --court-line: #ffffff;          /* white court lines — crisp on both grass greens */
+  --court-net: #ffffff;
+  --svg-outline: #1d5a37;         /* dot/puck outline = deep grass (reads on the green court) */
+  --svg-track: rgba(0, 0, 0, 0.06);
+  --bar-neutral: #b8b0a4;         /* momentum neutral bar on light */
+}
+
+/* Dark "Broadcast Clay" theme. shadcn tokens remapped to clay palette. */
 .dark {
   --background: #0b0a08;
   --foreground: #f4efe6;
@@ -130,6 +201,33 @@
   --sidebar-accent-foreground: #f4efe6;
   --sidebar-border: oklch(1 0 0 / 7%);
   --sidebar-ring: #d8f64a;
+
+  /* ---- surfaces ---- */
+  --surface-from: var(--color-coal-850);
+  --surface-to: var(--color-coal-900);
+  --surface-raised-from: var(--color-coal-800);
+  --surface-raised-to: var(--color-coal-850);
+  --body-base: #0b0a08;
+  --grid-line: color-mix(in oklab, var(--color-line) 5%, transparent);
+
+  /* ---- hairlines + shadows ---- */
+  --hairline-top: color-mix(in oklab, white 7%, transparent);
+  --hairline-top-strong: color-mix(in oklab, white 9%, transparent);
+  --inset-dark: inset 0 0 0 1px color-mix(in oklab, black 30%, transparent);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 40px -12px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 24px 60px -16px rgba(0, 0, 0, 0.7);
+  --selection-fg: #fff;
+
+  /* ---- court radar / video poster (keep dark clay-brown on dark) ---- */
+  --court-from: #2a1a12;
+  --court-to: #1a120c;
+  --court-line: #ebf0f5;
+  --court-net: #f5faff;
+  --svg-outline: #0b0a08;
+  --svg-track: rgba(255, 255, 255, 0.06);
+  --bar-neutral: #5b6b6e;
 }
 
 @layer base {
@@ -140,7 +238,7 @@
     @apply bg-background text-foreground;
     font-feature-settings: "ss01", "cv01", "cv11";
     /* atmospheric depth: warm radial glow + a faint court grid */
-    background-color: #0b0a08;
+    background-color: var(--body-base);
     background-image:
       radial-gradient(900px 520px at 88% -8%, color-mix(in oklab, var(--color-ball) 12%, transparent), transparent 60%),
       radial-gradient(800px 500px at -5% 8%, color-mix(in oklab, var(--color-clay) 10%, transparent), transparent 55%);
@@ -156,7 +254,7 @@
   }
   ::selection {
     background: color-mix(in oklab, var(--color-ball) 35%, transparent);
-    color: #fff;
+    color: var(--selection-fg);
   }
   /* themed scrollbar */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -196,62 +294,62 @@
 @utility panel {
   position: relative;
   background:
-    linear-gradient(180deg, color-mix(in oklab, var(--color-coal-850) 92%, transparent), color-mix(in oklab, var(--color-coal-900) 96%, transparent));
-  border: 1px solid color-mix(in oklab, white 8%, transparent);
+    linear-gradient(180deg, var(--surface-from), var(--surface-to));
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 7%, transparent),
-    inset 0 0 0 1px color-mix(in oklab, black 30%, transparent),
-    0 1px 2px rgba(0,0,0,0.5),
-    0 16px 40px -12px rgba(0,0,0,0.6);
+    inset 0 1px 0 var(--hairline-top),
+    var(--inset-dark),
+    var(--shadow-sm),
+    var(--shadow-lg);
 }
 
 @utility panel-raised {
   position: relative;
   background:
-    linear-gradient(180deg, color-mix(in oklab, var(--color-coal-800) 95%, transparent), color-mix(in oklab, var(--color-coal-850) 98%, transparent));
-  border: 1px solid color-mix(in oklab, white 10%, transparent);
+    linear-gradient(180deg, var(--surface-raised-from), var(--surface-raised-to));
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 9%, transparent),
-    0 2px 4px rgba(0,0,0,0.4),
-    0 24px 60px -16px rgba(0,0,0,0.7);
+    inset 0 1px 0 var(--hairline-top-strong),
+    var(--shadow-md),
+    var(--shadow-xl);
 }
 
 /* accent edge — a hairline of ball-green on the top edge */
 @utility edge-ball {
   box-shadow:
     inset 0 1px 0 0 color-mix(in oklab, var(--color-ball) 55%, transparent),
-    inset 0 1px 0 color-mix(in oklab, white 8%, transparent),
-    0 1px 2px rgba(0,0,0,0.5),
-    0 16px 40px -12px rgba(0,0,0,0.6);
+    inset 0 1px 0 var(--hairline-top),
+    var(--shadow-sm),
+    var(--shadow-lg);
 }
 
 @utility glow-ball {
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 8%, transparent),
+    inset 0 1px 0 var(--hairline-top),
     0 0 0 1px color-mix(in oklab, var(--color-ball) 35%, transparent),
     0 8px 40px -8px color-mix(in oklab, var(--color-ball) 30%, transparent);
 }
 
 @utility glow-clay {
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 8%, transparent),
+    inset 0 1px 0 var(--hairline-top),
     0 0 0 1px color-mix(in oklab, var(--color-clay) 35%, transparent),
     0 8px 40px -8px color-mix(in oklab, var(--color-clay) 28%, transparent);
 }
 
 /* court-line grid background block */
 @utility court-grid {
-  background-color: #0d0c0a;
+  background-color: var(--surface-to);
   background-image:
-    linear-gradient(color-mix(in oklab, var(--color-line) 5%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in oklab, var(--color-line) 5%, transparent) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 
 @utility court-bg {
-  background: linear-gradient(165deg, #1c1611 0%, #14110c 100%);
+  background: linear-gradient(165deg, var(--surface-raised-from) 0%, var(--surface-to) 100%);
 }
 
 /* editorial section index label */
@@ -319,8 +417,8 @@
   position: absolute;
   inset: -40px;
   background-image:
-    linear-gradient(color-mix(in oklab, var(--color-line) 6%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in oklab, var(--color-line) 6%, transparent) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 80px 80px;
   mask-image: radial-gradient(120% 90% at 70% 30%, black 0%, transparent 75%);
   animation: grid-drift 28s linear infinite;
@@ -344,34 +442,35 @@
 @utility glass {
   position: relative;
   background:
-    linear-gradient(180deg, color-mix(in oklab, var(--color-coal-850) 92%, transparent), color-mix(in oklab, var(--color-coal-900) 96%, transparent));
-  border: 1px solid color-mix(in oklab, white 8%, transparent);
+    linear-gradient(180deg, var(--surface-from), var(--surface-to));
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 7%, transparent),
-    0 1px 2px rgba(0,0,0,0.5),
-    0 16px 40px -12px rgba(0,0,0,0.6);
+    inset 0 1px 0 var(--hairline-top),
+    var(--inset-dark),
+    var(--shadow-sm),
+    var(--shadow-lg);
 }
 @utility glass-strong {
   position: relative;
   background:
-    linear-gradient(180deg, color-mix(in oklab, var(--color-coal-800) 95%, transparent), color-mix(in oklab, var(--color-coal-850) 98%, transparent));
-  border: 1px solid color-mix(in oklab, white 10%, transparent);
+    linear-gradient(180deg, var(--surface-raised-from), var(--surface-raised-to));
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 9%, transparent),
-    0 2px 4px rgba(0,0,0,0.4),
-    0 24px 60px -16px rgba(0,0,0,0.7);
+    inset 0 1px 0 var(--hairline-top-strong),
+    var(--shadow-md),
+    var(--shadow-xl);
 }
 @utility glow-green {
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 8%, transparent),
+    inset 0 1px 0 var(--hairline-top),
     0 0 0 1px color-mix(in oklab, var(--color-ball) 35%, transparent),
     0 8px 40px -8px color-mix(in oklab, var(--color-ball) 30%, transparent);
 }
 @utility glow-cyan {
   box-shadow:
-    inset 0 1px 0 color-mix(in oklab, white 8%, transparent),
+    inset 0 1px 0 var(--hairline-top),
     0 0 0 1px color-mix(in oklab, var(--color-clay) 30%, transparent),
     0 8px 40px -8px color-mix(in oklab, var(--color-clay) 24%, transparent);
 }

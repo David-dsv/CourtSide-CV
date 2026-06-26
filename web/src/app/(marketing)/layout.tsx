@@ -7,7 +7,7 @@ export default function MarketingLayout({ children }: { children: React.ReactNod
     <div className="flex min-h-screen flex-col">
       <MarketingNav />
       <main className="flex-1">{children}</main>
-      <footer className="border-t border-white/6 bg-coal-950/60">
+      <footer className="border-t border-foreground/6 bg-background/60">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 py-10 sm:flex-row sm:px-6">
           <Link href="/" className="transition-opacity hover:opacity-80">
             <Logo />

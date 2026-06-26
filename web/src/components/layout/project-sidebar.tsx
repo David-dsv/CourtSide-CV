@@ -45,7 +45,7 @@ export function ProjectSidebar({ projectId }: { projectId: string }) {
               "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
               active
                 ? "glass-strong text-foreground"
-                : "text-muted-foreground hover:bg-white/5 hover:text-foreground",
+                : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
             )}
           >
             <Icon className={cn("h-4 w-4", active && "text-court-green")} />

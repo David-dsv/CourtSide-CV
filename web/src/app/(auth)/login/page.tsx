@@ -70,15 +70,15 @@ function LoginForm() {
             autoComplete="current-password"
           />
         </div>
-        <Button type="submit" disabled={loading} className="bg-ball text-coal-950 hover:bg-ball/90">
+        <Button type="submit" disabled={loading} className="bg-ball text-primary-foreground hover:bg-ball/90">
           {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Se connecter
         </Button>
       </form>
       <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
-        <div className="h-px flex-1 bg-white/10" />
+        <div className="h-px flex-1 bg-foreground/10" />
         DÉMO
-        <div className="h-px flex-1 bg-white/10" />
+        <div className="h-px flex-1 bg-foreground/10" />
       </div>
       <Button
         variant="outline"

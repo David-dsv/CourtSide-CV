@@ -54,7 +54,7 @@ export default async function BouncesPage({ params }: { params: Promise<{ projec
       {/* timeline */}
       <GlassCard>
         <SectionHeading title="Chronologie" className="mb-4" />
-        <div className="relative h-16 rounded-lg bg-black/30">
+        <div className="relative h-16 rounded-lg bg-foreground/10">
           <div className="absolute inset-y-0 left-0 right-0 flex items-center">
             <div className="relative h-full w-full">
               {bounces.map((b) => {
@@ -88,7 +88,7 @@ export default async function BouncesPage({ params }: { params: Promise<{ projec
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="py-3 pl-4 pr-4">Frame</th>
                 <th className="py-3 pr-4">Profondeur</th>
                 <th className="py-3 pr-4">Vitesse</th>
@@ -96,9 +96,9 @@ export default async function BouncesPage({ params }: { params: Promise<{ projec
                 <th className="py-3 pr-4">Position</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody className="divide-y divide-foreground/5">
               {bounces.map((b: Bounce) => (
-                <tr key={b.frame} className="hover:bg-white/5">
+                <tr key={b.frame} className="hover:bg-foreground/5">
                   <td className="py-3 pl-4 pr-4">
                     <FrameJumpLink frame={b.frame} className="font-mono text-xs hover:text-court-green">
                       f{b.frame}

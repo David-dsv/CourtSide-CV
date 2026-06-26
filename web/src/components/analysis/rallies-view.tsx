@@ -14,7 +14,7 @@ const ACCENT_BADGE: Record<string, string> = {
   green: "bg-court-green/15 text-court-green",
   red: "bg-clay/15 text-clay",
   amber: "bg-court-amber/15 text-court-amber",
-  slate: "bg-white/10 text-muted-foreground",
+  slate: "bg-foreground/10 text-muted-foreground",
 };
 
 /**
@@ -85,7 +85,7 @@ function RallyCard({
           <ChevronRight className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
           <span className="font-display text-sm font-bold tracking-tight">ÉCHANGE {r.index}</span>
           {isMatch && r.rally.human_id && (
-            <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            <span className="rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
               {r.rally.human_id}
             </span>
           )}
@@ -127,9 +127,9 @@ function RallyCard({
 
       {/* outcome reason + shot→bounce sequence */}
       {open && (
-        <div className="border-t border-white/5 px-3 pb-3 pt-2">
+        <div className="border-t border-foreground/5 px-3 pb-3 pt-2">
           {o?.reason && <p className="mb-2 text-xs italic text-muted-foreground">{o.reason}</p>}
-          <div className="flex flex-col divide-y divide-white/5">
+          <div className="flex flex-col divide-y divide-foreground/5">
             {r.shots.map((s) => (
               <div key={s.frame} className="flex items-center gap-2.5 py-2 text-sm">
                 <button

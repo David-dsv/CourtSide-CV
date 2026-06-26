@@ -121,7 +121,7 @@ export function VideoScrubber({
           <Button
             variant="default"
             size="icon"
-            className="h-9 w-9 bg-ball text-coal-950 hover:bg-ball/90"
+            className="h-9 w-9 bg-ball text-primary-foreground hover:bg-ball/90"
             onClick={() => setPlaying((p) => !p)}
           >
             {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
@@ -268,20 +268,21 @@ function CourtPosterMock({ project, pct }: { project: Project; pct: number }) {
     <svg viewBox="0 0 1920 1080" className="h-full w-full" preserveAspectRatio="xMidYMid slice">
       <defs>
         <linearGradient id="poster-bg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#211a13" />
-          <stop offset="100%" stopColor="#14110c" />
+          <stop offset="0%" stopColor="var(--court-from)" />
+          <stop offset="100%" stopColor="var(--court-to)" />
         </linearGradient>
       </defs>
       <rect width="1920" height="1080" fill="url(#poster-bg)" />
       {/* perspective court trapezoid */}
       <polygon
         points="640,300 1280,300 1620,980 300,980"
-        fill="rgba(226,96,58,0.05)"
-        stroke="rgba(239,231,214,0.22)"
+        fill="none"
+        stroke="var(--court-line)"
+        strokeOpacity={0.55}
         strokeWidth="2"
       />
-      <line x1="960" y1="300" x2="960" y2="980" stroke="rgba(239,231,214,0.15)" strokeWidth="2" />
-      <line x1="500" y1="640" x2="1420" y2="640" stroke="rgba(239,231,214,0.15)" strokeWidth="2" />
+      <line x1="960" y1="300" x2="960" y2="980" stroke="var(--court-line)" strokeOpacity={0.35} strokeWidth="2" />
+      <line x1="500" y1="640" x2="1420" y2="640" stroke="var(--court-line)" strokeOpacity={0.35} strokeWidth="2" />
       {/* bounce markers */}
       {bounces.map((b) => {
         const bpct = (b.frame - project.stats.frame_range[0]) / (project.stats.frame_range[1] - project.stats.frame_range[0]);
@@ -320,7 +321,7 @@ function CourtPosterMock({ project, pct }: { project: Project; pct: number }) {
           </g>
         );
       })()}
-      <text x="960" y="1040" textAnchor="middle" fill="rgba(255,255,255,0.3)" fontSize="22" fontFamily="monospace">
+      <text x="960" y="1040" textAnchor="middle" fill="var(--court-line)" fillOpacity={0.6} fontSize="22" fontFamily="monospace">
         {project.video} · {fps.toFixed(0)} fps · preview mock
       </text>
     </svg>

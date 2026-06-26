@@ -41,8 +41,8 @@ export function SpeedGauge({ summary }: { summary: Summary }) {
             arc(aGreen, aAmber, "#f2b441") +
             arc(aAmber, a1, "#e2603a"),
         }} />
-        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="#f5faff" strokeWidth={3} strokeLinecap="round" />
-        <circle cx={cx} cy={cy} r={5} fill="#f5faff" />
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="var(--foreground)" strokeWidth={3} strokeLinecap="round" />
+        <circle cx={cx} cy={cy} r={5} fill="var(--foreground)" />
       </svg>
       <div className="-mt-6 text-center">
         <div className="stat-numeral text-5xl text-ball">
@@ -74,7 +74,7 @@ export function DepthDonut({ summary }: { summary: Summary }) {
   return (
     <div className="flex items-center gap-4">
       <svg viewBox="0 0 120 120" className="h-32 w-32">
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={stroke} />
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--svg-track)" strokeWidth={stroke} />
         {segments.map((s) => {
           const len = (s.v / total) * circ;
           const el = (

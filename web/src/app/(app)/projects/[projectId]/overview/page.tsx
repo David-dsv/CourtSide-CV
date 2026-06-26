@@ -142,7 +142,7 @@ export default async function OverviewPage({
         <div className="flex flex-col gap-4">
           <GlassCard>
             <SectionHeading title="Rebonds récents" icon={<CircleDot className="h-4 w-4" />} className="mb-3" />
-            <div className="flex flex-col divide-y divide-white/5">
+            <div className="flex flex-col divide-y divide-foreground/5">
               {recentBounces.map((b) => (
                 <div key={b.frame} className="flex items-center gap-3 py-2.5">
                   <FrameJumpLink frame={b.frame} className="font-mono text-xs text-muted-foreground hover:text-court-green">
@@ -168,7 +168,7 @@ export default async function OverviewPage({
 
           <GlassCard>
             <SectionHeading title="Frappes récentes" icon={<Target className="h-4 w-4" />} className="mb-3" />
-            <div className="flex flex-col divide-y divide-white/5">
+            <div className="flex flex-col divide-y divide-foreground/5">
               {recentShots.map((s) => (
                 <div key={s.frame} className="flex items-center gap-3 py-2.5">
                   <FrameJumpLink frame={s.frame} className="font-mono text-xs text-muted-foreground hover:text-court-green">

@@ -51,16 +51,16 @@ export default async function StatsPage({ params }: { params: Promise<{ projectI
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="py-2 pr-4">Frame</th>
                 <th className="py-2 pr-4">Profondeur</th>
                 <th className="py-2 pr-4">Vitesse</th>
                 <th className="py-2 pr-4">Qualité</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody className="divide-y divide-foreground/5">
               {bounces.map((b) => (
-                <tr key={b.frame} className="hover:bg-white/5">
+                <tr key={b.frame} className="hover:bg-foreground/5">
                   <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">f{b.frame}</td>
                   <td className="py-2 pr-4 capitalize">{b.depth}</td>
                   <td className="py-2 pr-4 tabular-nums">{b.speed_kmh.toFixed(1)} km/h</td>

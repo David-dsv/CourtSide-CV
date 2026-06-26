@@ -139,7 +139,7 @@ export function CourtMinimap({
   return (
     <div
       className={cn(
-        "relative court-bg overflow-hidden rounded-2xl border border-white/10",
+        "relative court-bg overflow-hidden rounded-2xl border border-foreground/10",
         className,
       )}
       style={{ aspectRatio: `${VIEW_W} / ${VIEW_H}` }}
@@ -151,8 +151,8 @@ export function CourtMinimap({
       >
         <defs>
           <linearGradient id="court-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#2a1a12" />
-            <stop offset="100%" stopColor="#1a120c" />
+            <stop offset="0%" stopColor="var(--court-from)" />
+            <stop offset="100%" stopColor="var(--court-to)" />
           </linearGradient>
           <linearGradient id="trail-grad" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor="#d8f64a" stopOpacity={0} />
@@ -177,7 +177,7 @@ export function CourtMinimap({
               y1={y1}
               x2={x2}
               y2={y2}
-              stroke="#ebf0f5"
+              stroke="var(--court-line)"
               strokeWidth={ln.soft ? 1 : 1.6}
               strokeOpacity={ln.soft ? 0.45 : 0.85}
             />
@@ -194,7 +194,7 @@ export function CourtMinimap({
                 y1={n.y1}
                 x2={n.x2}
                 y2={n.y2}
-                stroke="#f5faff"
+                stroke="var(--court-net)"
                 strokeWidth={2.5}
                 strokeDasharray="4 3"
               />
@@ -249,7 +249,7 @@ export function CourtMinimap({
                 </circle>
               )}
               <circle cx={tx} cy={ty} r={9} fill={color} opacity={0.18} />
-              <circle cx={tx} cy={ty} r={4.5} fill={color} stroke="#0b0a08" strokeWidth={1} />
+              <circle cx={tx} cy={ty} r={4.5} fill={color} stroke="var(--svg-outline)" strokeWidth={1} />
             </g>
           );
         })}
@@ -258,12 +258,12 @@ export function CourtMinimap({
         {playerTiles.map((p) => (
           <g key={p.id}>
             <circle cx={p.x} cy={p.y} r={11} fill={PLAYER_HEX[p.id as 1 | 2]} opacity={0.18} />
-            <circle cx={p.x} cy={p.y} r={6} fill={PLAYER_HEX[p.id as 1 | 2]} stroke="#0b0a08" strokeWidth={1.2} />
+            <circle cx={p.x} cy={p.y} r={6} fill={PLAYER_HEX[p.id as 1 | 2]} stroke="var(--svg-outline)" strokeWidth={1.2} />
             <text
               x={p.x}
               y={p.y + 2}
               textAnchor="middle"
-              className="fill-[#0b0a08] font-semibold"
+              className="fill-[var(--primary-foreground)] font-semibold"
               fontSize={7}
             >
               P{p.id}
@@ -315,7 +315,7 @@ function CurrentBall({
   return (
     <g>
       <circle cx={closest.x} cy={closest.y} r={14} fill="url(#ball-glow)" />
-      <circle cx={closest.x} cy={closest.y} r={4} fill="#d8f64a" stroke="#0b0a08" strokeWidth={1} />
+      <circle cx={closest.x} cy={closest.y} r={4} fill="#d8f64a" stroke="var(--svg-outline)" strokeWidth={1} />
     </g>
   );
 }

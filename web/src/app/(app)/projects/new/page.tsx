@@ -69,7 +69,7 @@ export default function NewProjectPage() {
             <ConfidenceBadge source="homography(low)" />
           </div>
           <Button
-            className="mt-6 bg-ball text-coal-950 hover:bg-ball/90"
+            className="mt-6 bg-ball text-primary-foreground hover:bg-ball/90"
             onClick={() => router.push("/projects/felix-sota/overview")}
           >
             Ouvrir le dashboard
@@ -93,7 +93,7 @@ export default function NewProjectPage() {
           </div>
 
           {/* progress bar */}
-          <div className="mb-6 h-2 overflow-hidden rounded-full bg-white/10">
+          <div className="mb-6 h-2 overflow-hidden rounded-full bg-foreground/10">
             <div
               className="h-full rounded-full bg-gradient-to-r from-court-green to-court-cyan transition-all duration-100"
               style={{ width: `${progress}%` }}
@@ -113,7 +113,7 @@ export default function NewProjectPage() {
                     active ? "glass-strong" : done ? "opacity-60" : "opacity-30"
                   }`}
                 >
-                  <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${active || done ? "bg-court-green/15 text-court-green" : "bg-white/5 text-muted-foreground"}`}>
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${active || done ? "bg-court-green/15 text-court-green" : "bg-foreground/5 text-muted-foreground"}`}>
                     {done ? <CheckCircle2 className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
                   </div>
                   <div className="flex-1">
@@ -158,13 +158,13 @@ export default function NewProjectPage() {
                   "flex flex-col items-start gap-2 rounded-xl border p-4 text-left transition-colors",
                   selected
                     ? "border-court-green/60 bg-court-green/10 glow-green"
-                    : "border-white/10 bg-white/[0.02] hover:border-court-green/40",
+                    : "border-foreground/10 bg-foreground/[0.02] hover:border-court-green/40",
                 )}
               >
                 <span
                   className={cn(
                     "flex h-8 w-8 items-center justify-center rounded-lg",
-                    selected ? "bg-court-green/15 text-court-green" : "bg-white/5 text-muted-foreground",
+                    selected ? "bg-court-green/15 text-court-green" : "bg-foreground/5 text-muted-foreground",
                   )}
                 >
                   <Icon className="h-4 w-4" />
@@ -180,7 +180,7 @@ export default function NewProjectPage() {
       <label htmlFor="video-upload" className="block cursor-pointer">
         <GlassCard
           strong
-          className="flex flex-col items-center justify-center gap-4 border-2 border-dashed border-white/15 py-16 text-center transition-colors hover:border-court-green/50"
+          className="flex flex-col items-center justify-center gap-4 border-2 border-dashed border-foreground/15 py-16 text-center transition-colors hover:border-court-green/50"
         >
           <div className="flex h-14 w-14 items-center justify-center rounded-full glass-strong text-court-green">
             <Upload className="h-6 w-6" />
@@ -194,9 +194,9 @@ export default function NewProjectPage() {
       </label>
 
       <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
-        <div className="h-px flex-1 bg-white/10" />
+        <div className="h-px flex-1 bg-foreground/10" />
         OU
-        <div className="h-px flex-1 bg-white/10" />
+        <div className="h-px flex-1 bg-foreground/10" />
       </div>
 
       <Button variant="outline" className="w-full" onClick={onDemo}>

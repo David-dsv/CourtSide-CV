@@ -51,7 +51,7 @@ export default function SignupPage() {
           <Label htmlFor="password">Mot de passe</Label>
           <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" />
         </div>
-        <Button type="submit" disabled={loading} className="bg-ball text-coal-950 hover:bg-ball/90">
+        <Button type="submit" disabled={loading} className="bg-ball text-primary-foreground hover:bg-ball/90">
           {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Créer mon compte
         </Button>

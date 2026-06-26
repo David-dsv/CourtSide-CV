@@ -59,7 +59,7 @@ export function TrendChart({
     <div>
       <svg viewBox={`0 0 ${w} ${h}`} className="w-full">
         {/* baseline grid */}
-        <line x1={padX} y1={padY + innerH} x2={w - padX} y2={padY + innerH} stroke="rgba(255,255,255,0.08)" strokeWidth={1} />
+        <line x1={padX} y1={padY + innerH} x2={w - padX} y2={padY + innerH} stroke="var(--svg-track)" strokeWidth={1} />
 
         {/* speed line (ball yellow) */}
         <path d={speedPath} fill="none" stroke="#d8f64a" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
@@ -78,7 +78,7 @@ export function TrendChart({
                   cy={ySpeed(m.speedKmh)}
                   r={isCurrent ? 5 : 3.5}
                   fill="#d8f64a"
-                  stroke={isCurrent ? "#fff" : "none"}
+                  stroke={isCurrent ? "var(--foreground)" : "none"}
                   strokeWidth={isCurrent ? 1.5 : 0}
                   className="cursor-pointer transition-transform hover:scale-125"
                 />
@@ -89,7 +89,7 @@ export function TrendChart({
                   cy={yQual(m.quality)}
                   r={isCurrent ? 5 : 3.5}
                   fill="#5fb0a8"
-                  stroke={isCurrent ? "#fff" : "none"}
+                  stroke={isCurrent ? "var(--foreground)" : "none"}
                   strokeWidth={isCurrent ? 1.5 : 0}
                   className="cursor-pointer transition-transform hover:scale-125"
                 />

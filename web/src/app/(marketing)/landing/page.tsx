@@ -68,7 +68,7 @@ export default function LandingPage() {
         {/* oversized ghost word */}
         <div
           aria-hidden
-          className="pointer-events-none absolute -right-10 top-24 z-0 select-none font-display text-[28vw] font-extrabold leading-none text-white/[0.015] sm:text-[22vw]"
+          className="pointer-events-none absolute -right-10 top-24 z-0 select-none font-display text-[28vw] font-extrabold leading-none text-foreground/[0.015] sm:text-[22vw]"
         >
           ACE
         </div>
@@ -80,7 +80,7 @@ export default function LandingPage() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ball opacity-75" />
                 <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-ball" />
               </span>
-              <span className="eyebrow !text-ball">Analyse · local-first · niveau pro</span>
+              <span className="eyebrow !text-foreground/80">Analyse · local-first · niveau pro</span>
             </div>
 
             <h1 className="rise font-display text-[clamp(2.75rem,7vw,5.5rem)] font-extrabold leading-[0.92] tracking-tight" style={{ animationDelay: "60ms" }}>
@@ -97,11 +97,11 @@ export default function LandingPage() {
             </p>
 
             <div className="rise mt-9 flex flex-wrap items-center gap-3" style={{ animationDelay: "220ms" }}>
-              <Button size="lg" render={<Link href="/signup" />} className="group h-11 bg-ball px-5 text-base text-coal-950 hover:bg-ball/90">
+              <Button size="lg" render={<Link href="/signup" />} className="group h-11 bg-ball px-5 text-base text-primary-foreground hover:bg-ball/90">
                 Analyser ma vidéo
                 <ArrowUpRight className="ml-1 h-4 w-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
               </Button>
-              <Button size="lg" variant="outline" render={<Link href="/login" />} className="h-11 border-white/15 px-5 text-base">
+              <Button size="lg" variant="outline" render={<Link href="/login" />} className="h-11 border-foreground/15 px-5 text-base">
                 Voir la démo
               </Button>
             </div>
@@ -130,7 +130,7 @@ export default function LandingPage() {
       </section>
 
       {/* ───────────── PILLARS ───────────── */}
-      <section className="border-y border-white/6 court-grid">
+      <section className="border-y border-foreground/6 court-grid">
         <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
           <p className="eyebrow mb-3">Pourquoi CourtSide</p>
           <h2 className="mb-12 max-w-2xl font-display text-3xl font-extrabold tracking-tight sm:text-4xl">
@@ -165,13 +165,13 @@ export default function LandingPage() {
           </div>
           <p className="max-w-xs text-sm text-muted-foreground">Cinq briques de computer-vision qui transforment une vidéo brute en données métriques.</p>
         </div>
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-white/8 bg-white/5 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-foreground/8 bg-foreground/5 lg:grid-cols-5">
           {PIPELINE.map((m, i) => {
             const Icon = m.icon;
             return (
-              <div key={m.name} className="group bg-coal-900/80 p-5 transition-colors hover:bg-coal-850">
+              <div key={m.name} className="group bg-card/80 p-5 transition-colors hover:bg-accent">
                 <div className="mb-3 flex items-center justify-between">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/8 bg-white/5 text-clay transition-colors group-hover:text-ball">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-foreground/8 bg-foreground/5 text-clay transition-colors group-hover:text-ball">
                     <Icon className="h-4 w-4" />
                   </div>
                   <span className="font-mono text-[10px] text-muted-foreground">{String(i + 1).padStart(2, "0")}</span>
@@ -185,7 +185,7 @@ export default function LandingPage() {
       </section>
 
       {/* ───────────── HONEST STATS ───────────── */}
-      <section id="demo" className="border-y border-white/6 court-bg">
+      <section id="demo" className="border-y border-foreground/6 court-bg">
         <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2">
           <div>
             <p className="eyebrow mb-3">Honnêteté calibrée</p>
@@ -202,7 +202,7 @@ export default function LandingPage() {
               <ConfidenceBadge source="scalar" showTooltip={false} />
               <ConfidenceBadge tier="approx" showTooltip={false} />
             </div>
-            <Button className="mt-8 bg-ball text-coal-950 hover:bg-ball/90" render={<Link href="/signup" />}>
+            <Button className="mt-8 bg-ball text-primary-foreground hover:bg-ball/90" render={<Link href="/signup" />}>
               Essayer gratuitement
             </Button>
           </div>
@@ -221,7 +221,7 @@ export default function LandingPage() {
         <p className="mx-auto mt-3 max-w-md text-muted-foreground">
           Toutes les stats, dès la première analyse. Pas de carte bancaire, pas de crédits.
         </p>
-        <Button size="lg" className="group mt-8 h-12 bg-ball px-6 text-base text-coal-950 hover:bg-ball/90" render={<Link href="/signup" />}>
+        <Button size="lg" className="group mt-8 h-12 bg-ball px-6 text-base text-primary-foreground hover:bg-ball/90" render={<Link href="/signup" />}>
           Commencer maintenant
           <ArrowUpRight className="ml-1 h-4 w-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
         </Button>

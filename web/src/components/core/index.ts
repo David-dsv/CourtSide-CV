@@ -4,3 +4,4 @@ export { KpiTile } from "./kpi-tile";
 export { FrameJumpLink } from "./frame-jump-link";
 export { SectionHeading } from "./section-heading";
 export { MatchModeNotice } from "./match-mode-notice";
+export { ThemeToggle } from "./theme-toggle";

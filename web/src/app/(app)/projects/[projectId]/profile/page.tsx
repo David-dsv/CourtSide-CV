@@ -164,7 +164,7 @@ function InsightList({
   }
   const dot = accent === "green" ? "bg-court-green" : "bg-clay";
   return (
-    <div className="flex flex-col divide-y divide-white/5">
+    <div className="flex flex-col divide-y divide-foreground/5">
       {insights.map((ins) => {
         const sameProject = ins.projectId === projectId;
         const label = (

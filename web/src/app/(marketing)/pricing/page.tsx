@@ -68,7 +68,7 @@ export default function PricingPage() {
             className={plan.highlight ? "border-ball/40" : ""}
           >
             {plan.highlight && (
-              <div className="mb-3 inline-flex rounded-full bg-ball/15 px-3 py-1 font-mono text-[10px] uppercase tracking-widest text-ball">
+              <div className="mb-3 inline-flex rounded-full bg-ball px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest text-primary-foreground">
                 Le plus populaire
               </div>
             )}
@@ -79,7 +79,7 @@ export default function PricingPage() {
               <span className="font-mono text-xs text-muted-foreground">{plan.period}</span>
             </div>
             <Button
-              className={`mt-6 w-full ${plan.highlight ? "bg-ball text-coal-950 hover:bg-ball/90" : ""}`}
+              className={`mt-6 w-full ${plan.highlight ? "bg-ball text-primary-foreground hover:bg-ball/90" : ""}`}
               variant={plan.highlight ? "default" : "outline"}
               render={<Link href={plan.href} />}
             >

@@ -31,7 +31,7 @@ export default async function ShotsPage({ params }: { params: Promise<{ projectI
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
+              <tr className="border-b border-foreground/10 text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="py-3 pl-4 pr-4">Frame</th>
                 <th className="py-3 pr-4">Coup</th>
                 <th className="py-3 pr-4">Côté</th>
@@ -40,11 +40,11 @@ export default async function ShotsPage({ params }: { params: Promise<{ projectI
                 <th className="py-3 pr-4">Rebond résultant</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody className="divide-y divide-foreground/5">
               {shots.map((s) => {
                 const q = qualityLabel(s.quality);
                 return (
-                  <tr key={s.frame} className="hover:bg-white/5">
+                  <tr key={s.frame} className="hover:bg-foreground/5">
                     <td className="py-3 pl-4 pr-4">
                       <FrameJumpLink frame={s.frame} className="font-mono text-xs hover:text-court-green">
                         f{s.frame}

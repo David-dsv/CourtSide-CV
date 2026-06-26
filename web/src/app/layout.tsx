@@ -3,6 +3,7 @@ import { Geist, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeProvider } from "@/components/theme-provider";
 
 const display = Geist({
   variable: "--font-display",
@@ -36,12 +37,14 @@ export default function RootLayout({
   return (
     <html
       lang="fr"
-      className={`dark ${display.variable} ${body.variable} ${mono.variable} h-full antialiased`}
+      className={`${display.variable} ${body.variable} ${mono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col font-body grain">
-        <TooltipProvider>{children}</TooltipProvider>
-        <Toaster theme="dark" position="bottom-right" />
+        <ThemeProvider>
+          <TooltipProvider>{children}</TooltipProvider>
+          <Toaster position="bottom-right" />
+        </ThemeProvider>
       </body>
     </html>
   );

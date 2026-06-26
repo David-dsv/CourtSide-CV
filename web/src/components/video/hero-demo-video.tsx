@@ -32,7 +32,7 @@ export function HeroDemoVideo({
   return (
     <div className={cn("panel-raised relative p-3", className)}>
       {/* floating chrome label (matches the previous radar card) */}
-      <div className="absolute -top-3 left-4 z-10 inline-flex items-center gap-2 rounded-md border border-white/10 bg-coal-900 px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+      <div className="absolute -top-3 left-4 z-10 inline-flex items-center gap-2 rounded-md border border-foreground/10 bg-card px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
         <span className="relative flex h-1.5 w-1.5">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ball opacity-75" />
           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-ball" />
@@ -40,7 +40,7 @@ export function HeroDemoVideo({
         {label}
       </div>
 
-      <div className="relative overflow-hidden rounded-lg ring-1 ring-white/8">
+      <div className="relative overflow-hidden rounded-lg ring-1 ring-foreground/8">
         {/* poster fades out once the video can play, so there's never a blank frame */}
         <video
           ref={videoRef}
@@ -62,7 +62,7 @@ export function HeroDemoVideo({
         <div
           aria-hidden
           className={cn(
-            "pointer-events-none absolute inset-0 bg-gradient-to-b from-coal-950/20 via-transparent to-coal-950/30 transition-opacity duration-700",
+            "pointer-events-none absolute inset-0 bg-gradient-to-b from-background/20 via-transparent to-background/30 transition-opacity duration-700",
             ready ? "opacity-100" : "opacity-0",
           )}
         />

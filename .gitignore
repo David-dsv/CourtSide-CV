@@ -107,3 +107,7 @@ training/court/
 # Parallel-session working notes (not the canonical research doc)
 *_GLM52*.md
 venv
+
+# Pose-GT annotator: extracted frames (regenerable) + editor backups
+tests/fixtures/pose_gt/frames_demo3/
+tests/fixtures/pose_gt/*.bak

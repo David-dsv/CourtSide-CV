@@ -239,10 +239,11 @@ def estimate_players_pose(detector, pose_model, frame, device,
         # Side-aware aspect floor. NEAR (below net): 1.1 (a standing near player is
         # clearly tall; this rejects wide near-court parasites). FAR (above net):
         # 0.9 — the far player reaching/lunging for a wide ball makes a box wider
-        # than tall, and at 1.1 those frames drop the true far box (measured: the
-        # 1.1 floor alone caps far-CORRECT at 85.8%; 0.9 lifts it to ~91%). The far
-        # geometric gate (centrality + court band) still rejects the wide spectator
-        # clusters this admits, so relaxing here is safe.
+        # than tall, and at 1.1 those frames drop the true far box (measured on the
+        # human pose GT: the 1.1 floor capped far-CORRECT at 74.7% live / 85.8% on
+        # the cache; relaxing the FAR side to 0.9 lifted it to 81.3% / 91.1%). The
+        # far geometric gate (centrality + court band) still rejects the wide
+        # spectator clusters this admits, so relaxing here is safe.
         feet_far = y2 < net_y
         if aspect < (0.9 if feet_far else 1.1):
             continue

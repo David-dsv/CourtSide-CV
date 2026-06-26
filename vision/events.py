@@ -224,7 +224,10 @@ def _nearest_player_dist_norm(f, xy, players_per_frame):
         if p is None:
             continue
         box = p.get("box")
-        if not box:
+        # box may be a python list/tuple (demo3 JSON cache) OR a numpy array (the
+        # live pose path) — `not box` is ambiguous on an ndarray, so test for
+        # missing/short explicitly (no logic change; pure shape-robustness).
+        if box is None or len(box) < 4:
             continue
         h = max(float(box[3] - box[1]), 1.0)
         # candidate anchors: both wrists (if confident) + box center

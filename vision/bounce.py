@@ -611,3 +611,224 @@ def detect_bounces_robust(ball_centers, ball_speeds_px, fps, frame_height,
     logger.info(f"Robust trajectory bounce detection: {len(chosen)} bounces "
                 f"(despiked {n_despiked} pts)")
     return chosen, re_smoothed, n_despiked
+
+
+# ─────────────────────── vx-flip veto (bounce vs hit by direction) ───────────────────────
+# A floor bounce PRESERVES the ball's horizontal direction (it keeps crossing the
+# same way) and FLIPS its vertical one (descends, then ascends). A racket HIT
+# INVERTS the horizontal direction (the player sends it back). So a bounce
+# candidate whose horizontal velocity sign *reverses* across the contact frame is
+# really a hit emitted as a bounce by the detector — we veto it.
+#
+# Measured on the felix WASB native-1080p cache (16 GT bounces): at the 16 true
+# bounces vx-sign is PRESERVED 15/15 (f424 is occluded → abstains), and the
+# hit-FPs f1609 (vx -16.2 -> +10.9) / f820 (vx -11.6 -> +11.7) reverse ~180°.
+# Vetoing them lifts bounce F1 0.889 -> 0.914 with 0 true bounce lost.
+#
+# SAFETY INVARIANT (the whole point): the veto is ONE-DIRECTIONAL. It only ever
+# REJECTS a candidate, and only when the vx sign flip is confident AND measurable
+# (enough real points, no gap/teleport in the window, both sides above the
+# deadband). In every doubtful case it ABSTAINS (keeps the candidate, tagged
+# "unconfirmed"). It therefore CANNOT lower recall — it can only add precision.
+#
+# It MUST read direction on the RAW pre-spline tracker centers + an is_real mask,
+# never on the detector's re-smoothed array: the cubic spline rounds the
+# reflection (degrades the GT signal 15/15 -> 14/15) and reads through filled
+# gaps. See docs/research/bounce-vs-shot-direction.md (CHANTIER 0).
+
+def _veto_collect_side(raw_centers, is_real, lo, hi):
+    """Real (is_real) points (frame, x, y) with frame in [lo, hi] (inclusive)."""
+    n = len(raw_centers)
+    out = []
+    for k in range(lo, hi + 1):
+        if 0 <= k < n and is_real[k] and raw_centers[k] is not None:
+            c = raw_centers[k]
+            out.append((k, float(c[0]), float(c[1])))
+    return out
+
+
+def _veto_max_gap(is_real, lo, hi):
+    """Longest run of consecutive interpolated/missing frames in [lo, hi]."""
+    n = len(is_real)
+    run = mx = 0
+    for k in range(lo, hi + 1):
+        if 0 <= k < n and not is_real[k]:
+            run += 1
+            mx = max(mx, run)
+        else:
+            run = 0
+    return mx
+
+
+def _veto_drop_teleports(pts, frame_width):
+    """Drop points that teleport (>8% frame-width per FRAME) from the running
+    anchor — a track reinit to the far side of the court would otherwise blow up
+    the slope and fake a vx flip (e.g. felix f1520's post-window jump to x≈255).
+
+    pts is (frame, x, y); the divisor below is the FRAME gap (pts[i][0] is the
+    frame index), so the threshold is a per-frame speed, not an x-span. Returns
+    (kept_pts, dropped_any). The caller MUST abstain when dropped_any is True: a
+    dropped teleport means the track is unreliable across this window, so fitting
+    the surviving sparse points could itself fake a confident sign — exactly the
+    case that must abstain, never reject (the one-directional safety invariant).
+    A transient jump-and-return is caught here; a teleport-and-stay is caught by
+    dropped_any=True at the call site."""
+    if len(pts) < 3 or not frame_width:
+        return pts, False
+    thr = frame_width * 0.08
+    kept = [pts[0]]
+    dropped = False
+    for i in range(1, len(pts)):
+        dframe = max(1, pts[i][0] - kept[-1][0])  # frame gap, not x-span
+        d = np.hypot(pts[i][1] - kept[-1][1], pts[i][2] - kept[-1][2]) / dframe
+        if d <= thr:
+            kept.append(pts[i])
+        else:
+            dropped = True
+    return kept, dropped
+
+
+def _veto_slope(pts, axis):
+    """Least-squares slope of pts[:,axis] vs frame (axis 1=x, 2=y). >=2 pts."""
+    if len(pts) < 2:
+        return None
+    ks = np.array([p[0] for p in pts], float)
+    vs = np.array([p[axis] for p in pts], float)
+    A = np.vstack([ks, np.ones(len(ks))]).T
+    (a, _b), *_ = np.linalg.lstsq(A, vs, rcond=None)
+    return float(a)
+
+
+def vx_flip_veto(bounce_events, raw_centers, is_real, fps, frame_width,
+                 half_frac=0.10, gap_frac=0.05,
+                 eps_rel=0.15, eps_floor_frac=0.0015, min_netdx_frac=0.004):
+    """One-directional vx-flip veto (A3 ⊕ A4) — bounce-vs-hit by direction.
+
+    Post-filters a bounce-candidate list (from detect_bounces_robust) using the
+    RAW pre-spline tracker centers + an is_real mask. For each candidate frame f
+    it fits the horizontal velocity (slope of x(t)) on the real points just
+    BEFORE and just AFTER f, and:
+
+      - REJECT  only when BOTH slopes are confident AND their SIGN FLIPS → a
+                racket hit, not a bounce. "Confident" requires, on each side:
+                >= 2 real points, no interpolated gap, no dropped teleport, |vx|
+                above the deadband, AND a net horizontal displacement above
+                min_netdx_frac*frame_width.
+      - ABSTAIN (keep) on every uncertainty: sparse / occluded, an interpolated
+                gap in a side, a teleport dropped inside the window, near-still
+                horizontal motion (drop-shot / near-vertical bounce / slow far
+                bounce), or a sub-floor net Δx.
+      - CONFIRM (keep) if the sign is preserved.
+
+    The vy flip (descends then ascends) is a CONFIDENCE co-signal only: a CONFIRM
+    with vy flip is tagged "metric", otherwise "unconfirmed". vy NEVER removes a
+    candidate (it would touch recall — see the safety invariant).
+
+    SAFETY NOTE (why the deadband has an ABSOLUTE floor + a net-Δx gate): a purely
+    relative deadband (eps = eps_rel*speed_scale) collapses toward zero on a
+    near-vertical bounce, where tracker quantization noise then produces opposite
+    sign slopes that both clear it — a real bounce would be REJECTED. The absolute
+    floor eps_floor_frac*frame_width (and the net-Δx requirement) keep the veto
+    abstaining when the ball is barely moving horizontally, restoring the
+    one-directional invariant. Likewise a teleport-and-stay is caught by
+    _veto_drop_teleports' dropped flag → abstain (never fit through the hole).
+
+    Args:
+        bounce_events: list of (frame, x, y) candidates (kept order preserved).
+        raw_centers:   pre-spline tracker centers, (x, y) or None per frame.
+        is_real:       bool per frame, True where raw_centers is a real detection.
+        fps, frame_width: scale parameters (no per-video hardcoding).
+        half_frac:     half-window in seconds (0.10 = round(fps*0.10) frames;
+                       0.08-0.12 is 15/15 stable on felix, 0.20 degrades).
+        gap_frac:      max interpolated run per side, in seconds, before abstain.
+        eps_rel:       relative deadband factor on the ball's own |dx| median.
+        eps_floor_frac: ABSOLUTE deadband floor as a fraction of frame_width
+                       (noise quantum; ~2.9 px/f at 1920). felix-provisional.
+        min_netdx_frac: minimum net horizontal travel per side, as a fraction of
+                       frame_width, before a sign is trusted. felix-provisional.
+
+    Returns:
+        (kept_events, direction_state) where kept_events is the filtered list of
+        (frame, x, y) and direction_state maps frame -> {"metric",
+        "unconfirmed", "rejected"} (the rejected entries are NOT in kept_events
+        but are reported for diagnostics).
+    """
+    n = len(raw_centers)
+    if n == 0 or not bounce_events:
+        return list(bounce_events), {}
+
+    half = max(2, round(fps * half_frac))
+    gap_thr = round(fps * gap_frac)
+    eps_floor = eps_floor_frac * frame_width
+    min_netdx = min_netdx_frac * frame_width
+
+    kept = []
+    state = {}
+    n_reject = 0
+    for ev in bounce_events:
+        f = int(ev[0])
+
+        # gap guard PER SIDE: never read direction through a fabricated spline gap.
+        pre_gap = _veto_max_gap(is_real, f - half, f)
+        post_gap = _veto_max_gap(is_real, f, f + half)
+        if pre_gap > gap_thr or post_gap > gap_thr:
+            kept.append(ev)
+            state[f] = "unconfirmed"
+            continue
+
+        pre, pre_tp = _veto_drop_teleports(
+            _veto_collect_side(raw_centers, is_real, f - half, f), frame_width)
+        post, post_tp = _veto_drop_teleports(
+            _veto_collect_side(raw_centers, is_real, f, f + half), frame_width)
+
+        # a teleport dropped inside either window → track unreliable → ABSTAIN
+        # (don't fit through the hole; a teleport-and-stay would fake a flip).
+        if pre_tp or post_tp:
+            kept.append(ev)
+            state[f] = "unconfirmed"
+            continue
+
+        vx_pre = _veto_slope(pre, 1)
+        vx_post = _veto_slope(post, 1)
+        if vx_pre is None or vx_post is None:
+            kept.append(ev)            # too sparse (e.g. f424 occluded) → abstain
+            state[f] = "unconfirmed"
+            continue
+
+        # deadband from the ball's own horizontal speed, with an ABSOLUTE floor so
+        # tracker noise on a near-vertical bounce can't clear it (see SAFETY NOTE).
+        allp, _allp_tp = _veto_drop_teleports(
+            _veto_collect_side(raw_centers, is_real, f - half, f + half), frame_width)
+        steps = [abs(allp[i][1] - allp[i - 1][1])
+                 for i in range(1, len(allp))
+                 if allp[i][0] - allp[i - 1][0] == 1]
+        speed_scale = float(np.median(steps)) if steps else 0.0
+        eps = max(eps_rel * speed_scale, eps_floor)
+
+        # net horizontal travel each side (fit-window endpoints): a real sign needs
+        # the ball to actually cross horizontally, not just jitter near vertical.
+        netdx_pre = abs(pre[-1][1] - pre[0][1])
+        netdx_post = abs(post[-1][1] - post[0][1])
+
+        if (abs(vx_pre) <= eps or abs(vx_post) <= eps
+                or netdx_pre < min_netdx or netdx_post < min_netdx):
+            kept.append(ev)            # horizontal ~ still → can't judge → abstain
+            state[f] = "unconfirmed"
+            continue
+
+        if np.sign(vx_pre) != np.sign(vx_post):
+            n_reject += 1              # confident vx flip → a hit, not a bounce
+            state[f] = "rejected"
+            continue
+
+        # sign preserved → a real bounce. vy flip (down then up) confirms "metric".
+        vy_pre = _veto_slope(pre, 2)
+        vy_post = _veto_slope(post, 2)
+        vy_flip = (vy_pre is not None and vy_post is not None
+                   and vy_pre > 0 and vy_post < 0)
+        kept.append(ev)
+        state[f] = "metric" if vy_flip else "unconfirmed"
+
+    logger.info(f"vx-flip veto: {len(bounce_events)} candidates -> "
+                f"{len(kept)} kept ({n_reject} rejected as hits)")
+    return kept, state

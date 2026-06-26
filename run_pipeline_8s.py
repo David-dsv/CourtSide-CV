@@ -1021,6 +1021,15 @@ def main():
 
             raw_ball_centers.append(ball_center)
 
+    # ─── CHANTIER 0: pre-spline real/interpolated mask (for the vx-flip veto) ───
+    # The vx-flip bounce-vs-hit veto MUST read direction on the RAW tracker
+    # centers (pre-spline) with a real/interpolated mask — never on the spline,
+    # which rounds the reflection and reads through filled gaps. raw_ball_centers
+    # is complete here and is NOT overwritten by the spline below (a fresh list is
+    # returned), so it stays available at the bounce call site. See
+    # docs/research/bounce-vs-shot-direction.md.
+    ball_is_real = [c is not None for c in raw_ball_centers]
+
     # ─── Post-process ball: cubic spline interpolation ───
     interp_gap = int(fps * 0.4)  # interpolate gaps up to 0.4s
     all_ball_centers = smooth_ball_trajectory(raw_ball_centers, max_gap=interp_gap)
@@ -1095,12 +1104,28 @@ def main():
     # best recall on a dense trajectory (felix: F1 0.865 vs 0.79). On the sparser
     # YOLO+Kalman trajectory the curve-fit detector is the tuned default.
     bounce_events = []
+    direction_state_by_frame = {}  # frame -> {"metric","unconfirmed"} (CHANTIER 2)
     if not args.no_bounces:
         if wasb_path:
-            from vision.bounce import detect_bounces_robust
+            from vision.bounce import detect_bounces_robust, vx_flip_veto
             bounce_events, all_ball_centers, _ = detect_bounces_robust(
                 all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
+            # CHANTIER 1: one-directional vx-flip veto (bounce-vs-hit by direction).
+            # Reads the RAW pre-spline tracker centers + is_real mask (NOT the
+            # detector's re_smoothed array, which the line above just assigned to
+            # all_ball_centers). One-directional: only removes a candidate whose
+            # horizontal velocity sign confidently flips (a racket hit); abstains
+            # on every doubt → can only add precision, never drop a real bounce.
+            bounce_events, direction_state_by_frame = vx_flip_veto(
+                bounce_events, raw_ball_centers, ball_is_real, fps, frame_width)
         else:
+            # CHANTIER 3: the Kalman / curve-fit path exposes no raw-centers+mask
+            # contract (detect_bounces_from_trajectory returns only the chosen
+            # frames), so the vx-flip veto is NOT applied here. Applying it on a
+            # re-derived spline would read direction through filled gaps where
+            # vy-flip recall is only 62-73% → risk of dropping below the 0.72
+            # bounce floor. Documented debt: a future CHANTIER 0 for this path
+            # would thread its pre-spline trajectory + mask before vetoing.
             bounce_events = detect_bounces_from_trajectory(
                 all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
 
@@ -1870,8 +1895,13 @@ def main():
                         "quality": s["quality"], "speed_kmh": round(s["speed"], 1),
                         "human_id": s.get("human_id")}
                        for f, s in sorted(shot_by_frame.items())]
+        # CHANTIER 2: direction_state tags the bounce-vs-hit confidence from the
+        # vx-flip veto ("metric" = vx preserved + vy flip; "unconfirmed" = kept
+        # but not direction-confirmed: occluded / sparse / slow / Kalman path /
+        # demo-override). Presentation only — no detection risk.
         stats_bounces = [{"frame": int(start_frame + f), "x": int(v[0]), "y": int(v[1]),
-                          "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4]}
+                          "depth": v[2], "speed_kmh": round(v[3], 1), "quality": v[4],
+                          "direction_state": direction_state_by_frame.get(f, "unconfirmed")}
                          for f, v in sorted(bounce_by_frame.items())]
         for r in rallies:
             r["outcome"] = classify_rally_outcome(r, stats_shots, stats_bounces, fps)

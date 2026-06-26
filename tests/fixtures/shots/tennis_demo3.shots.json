@@ -1,0 +1,17 @@
+{
+  "video": "data/output/tennis_demo3.mp4",
+  "fps": 50.0,
+  "frame_offset": 0,
+  "annotator": "david (manual, frame-by-frame)",
+  "notes": "8 racket->ball contacts (strikes) on the demo3 clip (tennis.mp4 -s 73 -d 13) with forehand/backhand label. frame == demo_frame (0-based within the clip == the segment frame index run_pipeline_8s.py produces). 'type' is the stroke. Source ground truth: data/output/tennis_demo3_annotations.json (strikes).",
+  "shots": [
+    {"frame": 81,  "x": 1068, "y": 761, "type": "backhand"},
+    {"frame": 141, "x": 861,  "y": 203, "type": "forehand"},
+    {"frame": 196, "x": 1241, "y": 799, "type": "forehand"},
+    {"frame": 268, "x": 673,  "y": 159, "type": "backhand"},
+    {"frame": 333, "x": 1294, "y": 759, "type": "forehand"},
+    {"frame": 394, "x": 1000, "y": 163, "type": "forehand"},
+    {"frame": 468, "x": 464,  "y": 719, "type": "backhand"},
+    {"frame": 525, "x": 963,  "y": 193, "type": "backhand"}
+  ]
+}

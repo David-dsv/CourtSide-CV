@@ -1,0 +1,18 @@
+{
+  "video": "data/output/tennis_demo3.mp4",
+  "fps": 50.0,
+  "frame_offset": 0,
+  "annotator": "david (manual, frame-by-frame)",
+  "notes": "9 verified floor bounces on the demo3 clip (tennis.mp4 -s 73 -d 13). frame == demo_frame (0-based within the clip == the segment frame index run_pipeline_8s.py produces). Source ground truth: data/output/tennis_demo3_annotations.json (bounces_true).",
+  "bounces": [
+    {"frame": 62,  "x": 966,  "y": 561},
+    {"frame": 120, "x": 866,  "y": 328},
+    {"frame": 174, "x": 1085, "y": 610},
+    {"frame": 255, "x": 705,  "y": 268},
+    {"frame": 308, "x": 1061, "y": 598},
+    {"frame": 369, "x": 1044, "y": 309},
+    {"frame": 456, "x": 557,  "y": 763},
+    {"frame": 511, "x": 922,  "y": 283},
+    {"frame": 569, "x": 1401, "y": 711}
+  ]
+}

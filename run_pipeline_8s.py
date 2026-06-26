@@ -1157,7 +1157,10 @@ def main():
     # bounce_events and writes the eval_bounces.py schema. frame_idx is 0-based
     # within the processed window, so absolute frame = start_frame + frame_idx
     # (matches the annotator's convention -> aligns with ground truth).
-    if args.dump_bounces:
+    # In the --event-methodo path bounce_events is still empty here (detection
+    # deferred to the post-Pass-1.5 arbitration), which dumps the arbitrated
+    # bounces itself — so skip this empty Pass-1 dump in that path.
+    if args.dump_bounces and not event_methodo:
         pred_doc = {
             "video": video_path,
             "fps": fps,
@@ -1349,8 +1352,26 @@ def main():
             turns = set(detect_turning_points(all_ball_centers, fps, frame_height))
             turns |= set(detect_sharp_turns(
                 raw_ball_centers, ball_is_real, fps, frame_width, frame_height))
+            # PROXIMITY SOURCE = the LOCKED, gap-filled P1/P2 tracks (player_tracks),
+            # reshaped per-frame to [near, far] — NOT the raw per-frame poses. This
+            # matches the benchmark cache EXACTLY (scripts/build_demo3_event_cache
+            # .py serializes ptracker.finalize() tracks as players_per_frame): the
+            # firewall's "ball-at-a-wrist" hit_like test needs the FAR player's
+            # pose to exist, and gap-fill is what bridges the tiny far player's
+            # missed frames (raw far coverage is far lower). Feeding raw poses here
+            # starves the firewall and lets far-court hits leak to BOUNCE.
+            methodo_ppf = []
+            for i in range(max_frames):
+                near = player_tracks[2][i] if i < len(player_tracks[2]) else None
+                far = player_tracks[1][i] if i < len(player_tracks[1]) else None
+                slot = []
+                if near is not None:
+                    slot.append(near)
+                if far is not None:
+                    slot.append(far)
+                methodo_ppf.append(slot)
             events, evt_report = classify_events(
-                b_cands, hits, raw_ball_centers, ball_is_real, players_per_frame,
+                b_cands, hits, raw_ball_centers, ball_is_real, methodo_ppf,
                 fps, frame_width, frame_height,
                 turning_frames=sorted(turns), smoothed_centers=all_ball_centers,
                 wasb_centers=None, wasb_is_real=None)

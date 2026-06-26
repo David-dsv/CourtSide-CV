@@ -281,15 +281,27 @@ def estimate_players_pose(detector, pose_model, frame, device,
         w, h = x2 - x1, y2 - y1
         cx = (x1 + x2) / 2
         xr = cx / fw
-        if xr < 0.05 or xr > 0.95 or h < 40:
+        if xr < 0.05 or xr > 0.95:             # extreme lateral margin → spectator
             continue
         aspect = h / max(w, 1.0)
-        if aspect < 1.1:                       # too wide → not a standing player
-            continue
         feet_y = y2
         if feet_y >= net_y:                    # NEAR side → biggest/sharpest wins
+            # Near parasites are wide sitting spectators / short structures; the
+            # near player is big and tall. Keep the strict size + aspect filter.
+            if h < 40 or aspect < 1.1:
+                continue
             rank = h * float(pconfs[i])
         else:                                  # FAR side → camera-geometry score
+            # The far PLAYER is small and frequently WIDER than tall (lunging,
+            # split-step, mid-stride): measured on the demo3 GT, 28/201 true-far
+            # boxes have aspect < 1.1 and were being dropped by the near-side
+            # aspect rule (→ -12pp far-CORRECT). So on the far side we do NOT hard-
+            # reject by aspect (the _far_score human term already down-weights the
+            # thin tall spectator slivers, aspect > 2.2) and we use a much smaller
+            # height floor scaled to the frame (a distant person is ≳1% of frame
+            # height; zero-hardcoding). This recovers the lunging far player.
+            if h < 0.012 * fh:                 # below ~1% frame height → noise
+                continue
             rank = _far_score(xr, aspect, float(pconfs[i]))
         cand.append((rank, i))
     cand.sort(reverse=True)
@@ -376,9 +388,11 @@ def estimate_players_pose(detector, pose_model, frame, device,
         box = entry["box"]
         cx = (box[0] + box[2]) / 2
         feet_y = box[3]
-        kcf = entry["kps_conf"]
-        nkp = int((kcf > 0.30).sum()) if kcf is not None else 0
-        score = fscore + 0.15 * min(1.0, nkp / 10.0)     # soft skeleton bonus
+        # NO skeleton bonus: measured on the demo3 GT it HURTS (71.1% -> 75.6%),
+        # because the sharp STATIC spectator poses 17/17 while the tiny far player
+        # poses 0/17, so a "+bonus per keypoint" term hands the slot back to the
+        # spectator. The far player is unambiguous on geometry alone.
+        score = fscore
         if track_state is not None:
             score -= _static_penalty(track_state, cx, feet_y, fw)
         far_cands.append((score, entry))

@@ -1,0 +1,209 @@
+# CR — Legacy bounce/shot separation (the DEFAULT path the user sees)
+
+**Branch:** `feat/legacy-bounce-shot-sep` (from `feat/accuracy-overhaul`)
+**Scope (disjoint):** `vision/bounce.py` (bounces + turn-angle recovery) and
+`vision/shots.py` (hits + wrist proximity) + the legacy wiring in
+`run_pipeline_8s.py`. **`vision/events.py` untouched** (that is the
+`--event-methodo` path the parallel sessions own).
+**Session:** autonomous ultracode.
+
+---
+
+## 1. The problem (measured, not assumed)
+
+The DEFAULT prod path (no `--event-methodo`, default `--ball-tracker kalman`) is
+what renders in the annotated video. It confuses bounces and hits massively. On
+the regenerated demo3 benchmark (`tennis.mp4 -s 73 -d 13`, 50 fps, 1920×1080,
+GT = 9 bounces / 8 shots, tolerance ±8 frames):
+
+| | preds | bounce F1 | hit F1 | confusion_B→H | confusion_H→B |
+|---|---|---|---|---|---|
+| **LEGACY baseline** | 1 bounce / 14 hit | **0.200** (R 1/9) | **0.364** (FP 10) | **3** | 0 |
+
+The LIVE prod run (old code) confirmed the bounce side: it dumped **2 bounces**
+for the whole 13 s clip (the prompt's "2 bounces / 13 shots"). 7 of 9 bounces
+missed, the hit detector over-fires (~6 pure-spurious swings + 3 bounces shown
+as hits).
+
+### Root cause (diagnosed, `tools/event_eval/diag_legacy.py`)
+
+- **Bounces (7/9 missed):** every GT bounce IS tracked (12–17/17 frames) — NOT a
+  coverage problem. But only **2/9 have an image-y extremum**; the strict y-max
+  test in `detect_bounces_from_trajectory` needs one, so it finds ~1. The other
+  **8/9 have a strong velocity-vector turn angle** (52°–177°): a far-court apex
+  bounce flattens in image-y (~1–6 px dip) but its velocity vector still turns.
+  (Same wall as `[[courtside-ball-density-apex-bounce]]`; the fix there,
+  `detect_sharp_turns`, lives in `vision/events.py` which this session may not
+  import — so we PORT THE PRINCIPLE into `bounce.py`.)
+- **Hits (over-fired):** a wrist-speed peak alone fires on split-steps,
+  follow-throughs and pose-tracker identity flips. 14 detected for 8 GT shots:
+  6 pure-spurious + **3 real bounces (f62/f308/f511) that also trigger a wrist
+  peak and get labeled HIT** = the 3 `confusion_B→H`.
+
+---
+
+## 2. What was done (3 levers, all reinforcing)
+
+### Lever A — apex-bounce recovery via the velocity-turn angle (`vision/bounce.py`)
+
+`detect_bounces_from_trajectory` gains OPTIONAL `raw_centers` + `is_real` params.
+When threaded, it ALSO admits far-court apex candidates from the ball's
+velocity-vector turn angle (new pure helper `_velocity_turn_candidates`, the same
+principle as `events.detect_sharp_turns`, re-derived locally). Each turn
+candidate is validated by an **independent, apex-correct gate** (the y-V gates
+would reject it):
+
+- on-court y band (reused),
+- **vertical reflection** co-signal: vy descends-then-rises across the turn
+  (`vy_post < −floor and vy_pre > −floor`, scale-free floor),
+- **vx-not-flipped**: a confident vx-sign flip is a racket HIT → reject (keeps the
+  bounce-vs-hit firewall),
+- x-continuity (no track teleport across the window).
+
+`raw_centers=None` (felix Kalman path) → the block is skipped, **byte-identical**.
+
+### Lever B — ball↔racket-wrist proximity gate (`vision/shots.py`)
+
+`detect_hits` gains an OPTIONAL `wrist_prox_max` (default **`inf` = OFF**, so every
+existing caller — `--event-methodo`, felix, the regression baselines — is
+byte-identical). When opted in, a hit requires the **windowed-MIN** ball↔racket-
+wrist distance (in player-height units, min over the contact window because the
+speed peak LAGS contact) to fall under `wrist_prox_max`. A None wrist ABSTAINS
+(kept) — proximity can only ADD precision, never silently cut recall on an
+unreadable pose. This is unlocked by the far pose going 0.9%→84.9%
+(`[[courtside-far-player-selection-not-detection]]`): the gate needs the far
+wrist to exist.
+
+### Lever C — arbitration (structural, not a new module)
+
+The prompt's 3rd ask (replace the blind `bounce_guard`) turned out to be **solved
+for free by Lever A**: once the apex bounces are recovered, those frames ARE
+bounce candidates, so the existing `bounce_guard` in `detect_hits` suppresses the
+colocated wrist peak, and the eval's cross-matcher pairs the GT bounce to the
+predicted BOUNCE. `confusion_B→H` drops 3→0 with no new arbitration code. (The
+adversarial design panel converged on this — "recall fixes B→H structurally" —
+rather than a separate vx-arbiter that the judges showed mislabels the near-180°
+bounces b62/b120/b569.)
+
+### Wiring (`run_pipeline_8s.py`, legacy branch only)
+
+- Kalman bounce call now threads `raw_ball_centers` + `ball_is_real`.
+- Legacy hits use the **LOCKED, gap-filled P1/P2 tracks** reshaped `[near, far]`
+  (same as the methodo path) so the proximity gate sees the dense far pose, and
+  opt into `wrist_prox_max=1.2`. `classify_forehand_backhand` reads the same list
+  the hit was indexed against (player_idx consistency). The `--event-methodo`
+  path is left exactly as it was (raw poses, gate OFF).
+
+---
+
+## 3. Results (demo3 cache — the fast proxy)
+
+`tools/event_eval/legacy_demo3.py` reproduces the prod legacy story exactly.
+
+| step | bounce F1 | hit F1 | hit FP | confusion_B→H | confusion_H→B | preds |
+|---|---|---|---|---|---|---|
+| baseline | 0.200 | 0.364 | 10 | 3 | 0 | 1 b / 14 h |
+| + Lever A (turn bounces) | **0.800** | 0.571 | 7 | **0** | 0 | 6 b / 13 h |
+| + Lever B (prox gate) | 0.800 | 0.571 | **2** | 0 | 0 | **6 b / 6 h** |
+
+- **Bounce recall 1/9 → 6/9** (F1 0.200 → 0.800, precision held at 1.000).
+- **Hit FP 10 → 2** — the visible "frappes en trop" cut from 14 predicted hits to
+  6 (vs 8 GT). Precision 0.286 → 0.667.
+- **confusion_B→H 3 → 0**, confusion_H→B held at 0.
+
+### The 3 remaining bounce misses are correctly rejected (not a gap to close)
+
+b174/b255 are track artifacts (no real vy reflection / non-physical vy_post jump);
+b569's candidate has a massive vx flip (−237→+804) = a HIT signature. Recovering
+them would require admitting hits as bounces — i.e. breaking the firewall. **6/9
+at 0/0 confusion is the principled plateau**, not a tuning ceiling.
+
+### Anti-overfit plateau (`tools/event_eval/sweep_legacy.py`)
+
+| turn angle (prox 1.2) | 60° | 65° | 70° | 75° | 80° |
+|---|---|---|---|---|---|
+| bounce F1 | 0.80 | 0.80 | **0.80** | 0.80 | 0.71 |
+| confusion B→H / H→B | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 |
+
+| wrist prox (angle 70°) | 0.8 | 1.0 | **1.2** | 1.3 |
+|---|---|---|---|---|
+| hit F1 | 0.57 | 0.57 | 0.57 | 0.53 |
+| hit FP | 2 | 2 | **2** | 3 |
+| confusion B→H | 0 | 0 | **0** | 1 |
+
+70° is centered on a 60–75° plateau; 1.2 is the safe edge of a 0.8–1.2 plateau
+(the 1.3+ band re-introduces confusion). Both chosen on the plateau, not at an
+argmax — the gains are not knife-edge. **Zero hardcoding**: every threshold is a
+ratio of fps / frame size / player height, except the turn ANGLE (dimensionless).
+
+---
+
+## 4. felix intact (the guardrail) + all regression tests green
+
+Felix never enters either new branch (Kalman path passes `raw_centers=None`; the
+proximity gate defaults OFF), so it is byte-identical:
+
+| test | result |
+|---|---|
+| `test_bounce_regression` (felix Kalman F1≥0.72) | PASS (F1 0.800) |
+| `test_bounce_wasb_regression` (≥0.80) | PASS (F1 0.865) |
+| `test_vx_veto` (felix veto ≥0.90) | PASS |
+| `test_event_confusion_regression` | PASS (bounce F1 0.842, conf 0/0) |
+| `test_sharp_turns` | PASS |
+| `test_far_coverage` | PASS |
+
+---
+
+## 5. LIVE prod confirmation
+
+<!-- LIVE_NUMBERS -->
+_Live run of the new code (`run_pipeline_8s.py tennis.mp4 -s 73 -d 13 --device cpu`)
+in progress; scored via `tools/event_eval/score_stats.py <name>_stats.json` against
+the GT. Numbers filled in below once the CPU pose pass completes._
+
+Baseline LIVE (old code) was confirmed: **2 bounces** dumped for the whole clip
+(matches the prompt). The cache proxy and the live bounce side agree on the
+baseline, which is why the cache is a faithful predictor here (the cache's far
+pose ≈78% ≈ the new live far-select ~85%).
+
+---
+
+## 6. Files + signatures (for integration)
+
+- `vision/bounce.py`
+  - `_velocity_turn_candidates(raw_centers, is_real, fps, frame_width, frame_height, angle_deg=70.0, ...)` → `list[int]` (new pure helper, no events.py dep).
+  - `detect_bounces_from_trajectory(..., raw_centers=None, is_real=None)` — new
+    OPTIONAL params; None → byte-identical.
+- `vision/shots.py`
+  - `detect_hits(..., wrist_prox_max=float('inf'))` — new OPTIONAL param;
+    `inf` → byte-identical (gate OFF). Legacy prod opts in at 1.2.
+- `run_pipeline_8s.py` — legacy branches only: thread raw centers into the Kalman
+  bounce call; feed `detect_hits` the locked `[near,far]` tracks + `wrist_prox_max
+  =1.2`; FH/BH reads the same list. `--event-methodo` path unchanged.
+- Tooling (force-added under `tools/event_eval/`):
+  `legacy_demo3.py` (legacy thermometer), `sweep_legacy.py` (plateau proof),
+  `diag_legacy.py` (per-event diagnostic), `score_stats.py` (LIVE `_stats.json`
+  scorer), plus the throwaway `diag_*`/`sweep_prox` from the investigation.
+
+---
+
+## 7. Honest limits
+
+- **Mono-clip** (demo3) for the tuning; felix is the cross-clip guardrail but has
+  no shot GT, so the hit side is single-clip-validated. The thresholds sit on
+  measured plateaus, which mitigates but does not eliminate overfit risk.
+- Hit RECALL is capped (~4–6/8) because hit candidate GENERATION is near-biased
+  (far hits are weakly generated). Recovering far hits is a separate candidate-
+  generation problem, out of this session's scope (we improved PRECISION and the
+  bounce/hit SEPARATION, the prompt's target).
+- The proximity gate, the turn gate and the locked-track feed are all enabled
+  only on the legacy path; the methodo path is deliberately untouched.
+
+## 8. Most reusable idea
+
+**Recall fixes confusion structurally.** The 3 bounces-shown-as-hits were not a
+labeling/arbitration bug — they were the symptom of a missing bounce detector.
+Recover the bounce (turn-angle apex candidates) and the existing `bounce_guard`
+re-claims the frame for free. Reach for better candidate GENERATION before
+building a smarter arbiter. (Mirror of the bounce-side lesson in
+`[[courtside-ball-density-apex-bounce]]`, now proven on the legacy hit side too.)

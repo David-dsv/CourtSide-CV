@@ -1158,10 +1158,14 @@ def main():
             # band + vy-reflection + vx-not-flipped check (a vx flip is a hit), so
             # recall rises without flooding FPs and without confusing hits as
             # bounces. demo3 legacy: bounce F1 0.20→0.80; the 3 confusion_B→H vanish
-            # (real bounces are now claimed as bounces, not hits). felix Kalman is
-            # unaffected by the turn branch in its own regression (its cache exhibits
-            # clean y-peaks; the branch only ADDS candidates filtered by the same
-            # gates) — proven by test_bounce_regression staying at F1 0.80.
+            # (real bounces are now claimed as bounces, not hits). On felix the turn
+            # branch (which this prod path DOES enter, unlike the test's no-arg call)
+            # adds one mid-court turn FP → F1 0.800→0.774, still well above the 0.72
+            # floor: the turn pass is GAP-FILLER-only (never displaces a refined y-V
+            # bounce in NMS) and felix's clean y-peaks carry recall, so the cost is a
+            # single FP — a fair cross-clip trade for demo3's 1/9→6/9. Both the
+            # no-arg (test) and with-arg (prod) felix paths are floored in
+            # test_bounce_regression.
             bounce_events = detect_bounces_from_trajectory(
                 all_ball_centers, ball_speeds_px, fps, frame_height, frame_width,
                 raw_centers=raw_ball_centers, is_real=ball_is_real)

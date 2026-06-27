@@ -137,7 +137,11 @@ def _match(pred, truth, tol):
     return m, len(pred) - m, len(truth) - m
 
 
-def compute_f1():
+def compute_f1(thread_raw=False):
+    """thread_raw=True replicates the LEGACY PROD call (run_pipeline_8s.py threads
+    raw_centers + is_real so the turn-angle apex pass runs). thread_raw=False is the
+    original no-arg call. Both must clear the floor — felix is the cross-clip
+    guardrail for the turn-angle bounce-recovery branch (feat/legacy-bounce-shot-sep)."""
     cache = json.loads(CACHE.read_text())
     gt = json.loads(GT.read_text())
     fw, fh, fps = cache["width"], cache["height"], cache["fps"]
@@ -146,7 +150,12 @@ def compute_f1():
     centers = _track(cache["detections"], fw, fh, fps)
     smoothed = smooth_ball_trajectory(centers, max_gap=int(fps * 0.4))
     speeds = [0.0] * len(smoothed)  # curve-fit ignores speeds
-    bounces = detect_bounces_from_trajectory(smoothed, speeds, fps, fh, fw)
+    if thread_raw:
+        is_real = [c is not None for c in centers]
+        bounces = detect_bounces_from_trajectory(
+            smoothed, speeds, fps, fh, fw, raw_centers=centers, is_real=is_real)
+    else:
+        bounces = detect_bounces_from_trajectory(smoothed, speeds, fps, fh, fw)
     pred = [b[0] for b in bounces]
 
     tol = round(0.15 * fps)
@@ -164,9 +173,24 @@ def test_bounce_f1_no_regression():
         f"(P={p:.3f} R={r:.3f} TP={tp} FP={fp} FN={fn})")
 
 
+def test_bounce_f1_prod_path_no_regression():
+    """The LEGACY PROD path threads raw_centers/is_real → the turn-angle apex pass
+    runs on felix too. It must stay above the floor (measured F1 0.774: the turn
+    pass adds one mid-court FP; it is GAP-FILLER-only so it never displaces a y-V
+    bounce). This is the test the no-arg call above does NOT cover."""
+    f1, p, r, tp, fp, fn = compute_f1(thread_raw=True)
+    assert f1 >= F1_FLOOR, (
+        f"Bounce F1 (prod path, turn pass on) regressed: {f1:.3f} < floor {F1_FLOOR} "
+        f"(P={p:.3f} R={r:.3f} TP={tp} FP={fp} FN={fn})")
+
+
 if __name__ == "__main__":
     f1, p, r, tp, fp, fn = compute_f1()
-    print(f"Bounce regression (felix cache): F1={f1:.3f} P={p:.3f} R={r:.3f} "
+    print(f"Bounce regression (felix cache, no-arg): F1={f1:.3f} P={p:.3f} R={r:.3f} "
           f"(TP={tp} FP={fp} FN={fn}); floor={F1_FLOOR}")
-    print("PASS" if f1 >= F1_FLOOR else "FAIL")
-    sys.exit(0 if f1 >= F1_FLOOR else 1)
+    f1p, pp, rp, tpp, fpp, fnp = compute_f1(thread_raw=True)
+    print(f"Bounce regression (felix cache, PROD turn-pass): F1={f1p:.3f} P={pp:.3f} "
+          f"R={rp:.3f} (TP={tpp} FP={fpp} FN={fnp}); floor={F1_FLOOR}")
+    ok = f1 >= F1_FLOOR and f1p >= F1_FLOOR
+    print("PASS" if ok else "FAIL")
+    sys.exit(0 if ok else 1)

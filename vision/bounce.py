@@ -301,13 +301,28 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
     # co-signal (vy flips down→up across the turn) + a vx-not-flipped check so a
     # racket HIT (which inverts vx) is NOT promoted to a bounce. This keeps the
     # bounce-vs-hit firewall the rest of the pipeline relies on.
+    #
+    # SAFETY (felix-prod path): turn candidates are a pure GAP-FILLER for apex
+    # bounces — they must NEVER compete with a y-extremum bounce. So (1) we DROP any
+    # turn candidate within min_gap of a y-V candidate (the y-V detector already
+    # owns that region; letting a raw turn frame win NMS there would replace the
+    # line-intersection–refined frame and could inject an FP — measured felix prod
+    # F1 0.800→0.774 before this guard), and (2) we score survivors strictly BELOW
+    # every y-V score so NMS always prefers a real y-V bounce on any residual tie.
     if raw_centers is not None and is_real is not None and frame_width:
         rys = np.array([c[1] if c is not None else np.nan for c in raw_centers], float)
         rxs = np.array([c[0] if c is not None else np.nan for c in raw_centers], float)
         turn_win = max(2, round(fps * 0.06))   # ± arm for the velocity vectors
+        yv_frames = [cd[0] for cd in candidates]               # y-extremum frames
+        yv_min_score = min((cd[3] for cd in candidates), default=1.0)
+        turn_score = min(0.5, yv_min_score * 0.5)              # strictly below y-V
         for tf in _velocity_turn_candidates(raw_centers, is_real, fps,
                                             frame_width, frame_height):
             if tf < turn_win or tf >= n - turn_win:
+                continue
+            # GAP-FILLER only: a y-V bounce already covers this region → defer to it
+            # (never let a raw turn frame displace a refined y-V bounce in NMS).
+            if any(abs(tf - yf) < min_gap for yf in yv_frames):
                 continue
             yc = rys[tf]
             if np.isnan(yc) or not (min_y_ratio <= yc / frame_height <= max_y_ratio):
@@ -341,11 +356,9 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
                      if 0 < k < n and not np.isnan(rxs[k]) and not np.isnan(rxs[k - 1])]
             if jumps and max(jumps) > max_xjump_frac * frame_width:
                 continue
-            # score: turn candidates rank just below a clean y-V bounce so NMS
-            # prefers a real y-extremum when both fire near the same frame.
             bx = int(rxs[tf]) if not np.isnan(rxs[tf]) else int(c1[0])
             by = int(yc)
-            candidates.append((tf, bx, by, 0.5))   # modest fixed score
+            candidates.append((tf, bx, by, turn_score))
 
     # non-max suppression by min_gap, keep highest-scoring candidate
     candidates.sort(key=lambda c: -c[3])

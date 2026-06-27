@@ -140,12 +140,23 @@ ratio of fps / frame size / player height, except the turn ANGLE (dimensionless)
 
 ## 4. felix intact (the guardrail) + all regression tests green
 
-Felix never enters either new branch (Kalman path passes `raw_centers=None`; the
-proximity gate defaults OFF), so it is byte-identical:
+The proximity gate defaults OFF (felix byte-identical there). The bounce turn pass
+DOES run on felix's prod path (the wiring threads raw centers), so we measure BOTH
+felix paths and floor both. An adversarial self-review (general-purpose agent on
+the diff) caught that the prod path was NOT covered by the original test and that a
+turn candidate with a flat score could WIN NMS and displace a refined y-V bounce
+(felix prod F1 0.800→0.774). Two fixes landed: (1) turn candidates are now
+GAP-FILLER-only — dropped if within `min_gap` of any y-V candidate, so they can
+never displace a refined bounce; (2) they score strictly below every y-V score.
+The residual felix prod cost is ONE mid-court turn FP (a near-180° vx flip with
+sub-floor |vx| that abstains the hit check — the same geometry that makes demo3's
+b62/b120/b569 real bounces, so it cannot be gated away without losing them: an
+honest cross-clip trade, F1 0.774 ≫ 0.72 floor).
 
 | test | result |
 |---|---|
-| `test_bounce_regression` (felix Kalman F1≥0.72) | PASS (F1 0.800) |
+| `test_bounce_regression` no-arg (felix Kalman F1≥0.72) | PASS (F1 0.800) |
+| `test_bounce_regression` **PROD turn-pass** (≥0.72) | PASS (F1 0.774) — NEW assertion |
 | `test_bounce_wasb_regression` (≥0.80) | PASS (F1 0.865) |
 | `test_vx_veto` (felix veto ≥0.90) | PASS |
 | `test_event_confusion_regression` | PASS (bounce F1 0.842, conf 0/0) |

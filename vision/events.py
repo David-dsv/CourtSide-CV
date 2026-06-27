@@ -136,6 +136,133 @@ _L_WRIST, _R_WRIST = 9, 10
 _KP_CONF = 0.30
 
 
+# ───────────────────── far-court wrist-hit candidates ─────────────────────
+
+def detect_far_wrist_hits(players_per_frame, ball_centers, fps, frame_width,
+                          frame_height, net_frac=0.47,
+                          speed_norm_frac=0.06, min_gap_frac=0.20,
+                          near_box_h=0.8):
+    """Extra HIT candidates from the FAR player's racket-wrist swing.
+
+    Why this is needed (measured on demo3): the production wrist-speed hit
+    detector (`vision.shots.detect_hits`) gates peaks on an AMPLITUDE floor scaled
+    to the FRAME height (`0.008*frame_height` ≈ 8.6px @1080p). That floor is sized
+    for the big NEAR player, but the FAR player is ~10× smaller in image space, so
+    a full far swing only moves the wrist ~3px/frame — it never crosses the floor.
+    Result: `detect_hits` emits ZERO far hits even when the far pose is dense (the
+    far-select merge lifted far-pose coverage 0.9%→85%, so the far WRIST is now
+    available — but the amplitude gate still throws it away). Far GT hits f333/f525
+    are invisible to the production detector for this reason.
+
+    This generator measures the far wrist's per-frame displacement NORMALIZED BY
+    THE FAR PLAYER'S OWN BOX HEIGHT (scale-free), so a far swing and a near swing
+    register on the same scale. A local peak of that normalized speed, WITH the
+    ball within `near_box_h` box-heights of the wrist at the peak, is a far-contact
+    candidate. The ball-at-wrist gate is what keeps this firewall-safe: these
+    candidates can ONLY become HIT under `classify_events` (a hit_like event needs
+    the ball at a wrist), never a BOUNCE — so adding them cannot create confusion.
+
+    Mirrors `_wrist_speed_series`'s per-side wrist identity-lock (track the wrist
+    nearest the previous one) so a detection-order flip doesn't fake a spike. All
+    thresholds are ratios of fps / box height — no per-video constants.
+
+    Returns a list of dicts {frame, x, y} (the `detect_hits` candidate contract).
+    """
+    n = len(players_per_frame)
+    if n < 5:
+        return []
+    net_y = frame_height * net_frac
+
+    def _far_player(players):
+        """The far player at a frame = the candidate whose feet are above the net
+        line, with the most-confident wrists (matches detect_hits' per-side pick)."""
+        best, best_score = None, -1.0
+        for p in (players or []):
+            if p is None:
+                continue
+            box = p.get("box")
+            if box is None or len(box) < 4 or box[3] >= net_y:
+                continue
+            kc = p.get("kps_conf")
+            if kc is None:
+                continue
+            score = sum((kc[i] if i < len(kc) else 0.0) for i in (_L_WRIST, _R_WRIST))
+            if score > best_score:
+                best, best_score = p, score
+        return best
+
+    def _wrist_xy(p):
+        """The more-confident wrist (x,y) of player p, or None."""
+        kx = p.get("kps_xy")
+        kc = p.get("kps_conf")
+        if kx is None or kc is None:
+            return None
+        kx = np.asarray(kx)
+        kc = np.asarray(kc)
+        best, best_c = None, _KP_CONF
+        for wi in (_L_WRIST, _R_WRIST):
+            if wi < len(kc) and kc[wi] >= best_c:
+                best, best_c = (float(kx[wi][0]), float(kx[wi][1])), kc[wi]
+        return best
+
+    # track ONE far wrist per frame (identity-locked to the nearest previous)
+    wrist = [None] * n           # (x, y)
+    box_h = [None] * n           # far player box height (the normalizer)
+    last = None
+    for i in range(n):
+        p = _far_player(players_per_frame[i])
+        if p is None:
+            continue
+        w = _wrist_xy(p)
+        if w is None:
+            continue
+        box = p["box"]
+        wrist[i] = w
+        box_h[i] = max(float(box[3] - box[1]), 1.0)
+        last = w
+
+    # per-frame normalized wrist speed (box-height units) on real consecutive frames
+    speed = np.full(n, np.nan)
+    for i in range(1, n):
+        if wrist[i] is not None and wrist[i - 1] is not None and box_h[i] is not None:
+            d = float(np.hypot(wrist[i][0] - wrist[i - 1][0],
+                               wrist[i][1] - wrist[i - 1][1]))
+            speed[i] = d / box_h[i]
+    # 5-frame median smooth (robust to a 1-frame pose jitter)
+    sm = speed.copy()
+    for i in range(n):
+        lo, hi = max(0, i - 2), min(n, i + 3)
+        win = sm[lo:hi]
+        win = win[~np.isnan(win)]
+        if win.size:
+            speed[i] = float(np.median(win))
+
+    floor = speed_norm_frac          # normalized: a swing moves the wrist >~0.06 box-h/frame
+    min_gap = max(1, int(fps * min_gap_frac))
+    out = []
+    last_f = -min_gap
+    i = 1
+    while i < n - 1:
+        s = speed[i]
+        if (not np.isnan(s) and s >= floor
+                and (np.isnan(speed[i - 1]) or s >= speed[i - 1])
+                and (np.isnan(speed[i + 1]) or s > speed[i + 1])
+                and i - last_f >= min_gap):
+            # ball must be near the far wrist at the peak (the contact geometry) —
+            # this is the firewall-safe gate: no ball-at-wrist => no candidate.
+            w = wrist[i]
+            ball = ball_centers[i] if i < len(ball_centers) else None
+            if w is not None and ball is not None and box_h[i] is not None:
+                dn = float(np.hypot(ball[0] - w[0], ball[1] - w[1])) / box_h[i]
+                if dn <= near_box_h:
+                    out.append({"frame": i, "x": int(ball[0]), "y": int(ball[1])})
+                    last_f = i
+                    i += min_gap
+                    continue
+        i += 1
+    return out
+
+
 # ───────────────────────── direction features ─────────────────────────
 
 def _direction_features(f, raw_centers, is_real, fps, frame_width,
@@ -288,7 +415,8 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
                     keep=0.3, lam=0.5, miss_cost=1.0, slot_rad=0.4,
                     decoder="global",
                     turning_frames=None, smoothed_centers=None,
-                    wasb_centers=None, wasb_is_real=None):
+                    wasb_centers=None, wasb_is_real=None,
+                    far_wrist_hits=True):
     """Merge candidates, commit pure anchors, estimate cadence, parity-decode the
     deferred events, and return the labeled event list + a WASB-consistency report.
 
@@ -333,6 +461,21 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             gap_frac=gap_frac, eps_rel=eps_rel, eps_floor_frac=eps_floor_frac,
             min_netdx_frac=min_netdx_frac)
 
+    # FAR-court wrist hits: detect_hits' amplitude floor is frame-scaled and blind
+    # to the tiny far player (its full swing moves the wrist below the floor), so
+    # far GT hits never enter hit_cands. Recover them from the now-dense far pose
+    # with a box-height-NORMALIZED wrist-speed peak gated on ball-at-wrist (so the
+    # extra candidates can only ever become HIT under the firewall — never a
+    # bounce). Merge them in, deduping any that coincide with an existing hit cand.
+    all_hits = list(hit_cands)
+    if far_wrist_hits and players_per_frame is not None and smoothed_centers is not None:
+        dedup_gap = max(1, round(fps * merge_frac))
+        existing = sorted(int(h["frame"]) for h in hit_cands)
+        for fh_ in detect_far_wrist_hits(players_per_frame, smoothed_centers, fps,
+                                         frame_width, frame_height):
+            if not any(abs(fh_["frame"] - e) <= dedup_gap for e in existing):
+                all_hits.append(fh_)
+
     # ── PASS 0: merge into physical events (span-capped, NOT transitive) ──
     cand = []
     for (fr, x, y) in bounce_cands:
@@ -341,7 +484,7 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         xy = _xy_at(int(fr))
         if xy is not None:
             cand.append((int(fr), "turn", xy, None))
-    for h in hit_cands:
+    for h in all_hits:
         cand.append((int(h["frame"]), "hit", (int(h["x"]), int(h["y"])), h))
     cand.sort(key=lambda c: c[0])
 

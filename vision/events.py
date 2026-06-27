@@ -284,7 +284,7 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
                     half_frac=0.10, gap_frac=0.05,
                     eps_rel=0.15, eps_floor_frac=0.0015, min_netdx_frac=0.004,
                     near_wrist=0.5, far_wrist=1.2,
-                    merge_frac=0.12, step0_frac=0.55,
+                    merge_frac=0.18, step0_frac=0.55,
                     keep=0.3, lam=0.5, miss_cost=1.0, slot_rad=0.4,
                     decoder="global",
                     turning_frames=None, smoothed_centers=None,
@@ -304,7 +304,18 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             of a wrist (racket-contact geometry). Scale-free (box-normalized).
         far_wrist:  dist_norm > this => ball clearly off any wrist (floor/mid-air).
         merge_frac: candidates within round(fps*merge_frac)s are ONE event; also
-            the max span of one merged event (span cap, anti-chaining).
+            the max span of one merged event (span cap, anti-chaining). 0.18s (~9f
+            @50fps): a single ball-contact's evidence (the trajectory turn it
+            induces + the wrist-speed peak) spans ~0.15-0.18s, so they must coalesce
+            into ONE event — at 0.12 a far-court hit's turn-candidate and its
+            detect_hit landed in SEPARATE clusters and the alternation DP labeled
+            the turn BOUNCE (live confusion_H->B). 0.18 holds the live 0/0 AND keeps
+            the demo3 cache at confusion 0/0 with bounce F1 0.889 / hit F1 0.632
+            (>= the 0.60 floor) — 0.16 sits in a cache hit-F1 trough (0.556); 0.18
+            clears it. Verified 0/0 plateau live across 0.15-0.20. The remaining
+            over-merge exposure (two distinct contacts <~0.18s apart, e.g. a reflex
+            net volley-volley) is a 1-frame widening of a risk 0.12 already carried,
+            negligible for the amateur-on-a-tripod target.
         step0_frac: SEED rally cadence in seconds (~0.55s amateur stroke->bounce);
             the real cadence is re-derived per clip from the anchor gaps.
         keep:       small evidence floor (a label needs net evidence to be filled).
@@ -383,22 +394,37 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         feat = dict(mfeat[rep_fr])
         feat["dist_norm"] = dmin if dmin != float("inf") else 99.0
 
+        # ── vx-gate: a vy-flip that ALSO reverses HORIZONTAL direction is a racket
+        # REDIRECT (a HIT), not a floor bounce. A clean floor bounce preserves vx
+        # sign (vx_flip False/None) and only reverses vy; a struck ball reverses
+        # BOTH (vx_flip True). This is the same vx_flip_veto physics already proven
+        # on felix (F1 0.914) — here it stops a far-court hit whose ball reverses
+        # vertically (looks like a bounce on the LIVE track) from anchoring as a
+        # pure BOUNCE and bypassing the firewall. Read on the REP frame's vx (the
+        # contact frame); scale-free, derived from trajectory only. Without it, the
+        # cache (whose ball track had no vy-flip at hits) hid this; the live prod
+        # track exposes it → confusion_H->B leaks. vx_flip is a numpy bool, so test
+        # truthiness explicitly (np.True_ is True == False).
+        _vxf = feat.get("vx_flip")
+        vy_bounce = bool(vy) and not (_vxf is not None and bool(_vxf))
+
         # ── scores + firewall predicate ──
         # hit_like = ball at a wrist OR a swing, and NO floor rebound. This is the
-        # LOGICAL firewall: a hit_like event can never be a bounce.
-        hit_like = (hit or dmin < near) and not vy
-        bscore = (1.0 * vy + 0.6 * bnc + 0.6 * (turn and dmin >= near))
+        # LOGICAL firewall: a hit_like event can never be a bounce. (vy_bounce, not
+        # raw vy: a redirect vy-flip no longer shields a hit from the firewall.)
+        hit_like = (hit or dmin < near) and not vy_bounce
+        bscore = (1.0 * vy_bounce + 0.6 * bnc + 0.6 * (turn and dmin >= near))
         hscore = (1.0 * hit + 1.0 * (dmin < near) + 0.4 * (near <= dmin < far))
         anchor = None
-        if vy:
-            anchor = BOUNCE                       # vy-flip = pure floor bounce
+        if vy_bounce:
+            anchor = BOUNCE                       # vy-flip (vx preserved) = floor bounce
         elif hit and dmin < near:
             anchor = HIT                          # swing WITH ball at racket
         evs.append({
             "frame": rep_fr, "x": rep_xy[0], "y": rep_xy[1],
             "src": sorted(set(s for _, s, _, _ in members)),
             "hit_meta": rep_hm, "features": feat,
-            "hit": hit, "bnc": bnc, "turn": turn, "vy": vy, "dmin": dmin,
+            "hit": hit, "bnc": bnc, "turn": turn, "vy": vy_bounce, "dmin": dmin,
             "hit_like": hit_like, "bscore": bscore, "hscore": hscore,
             "anchor": anchor, "label": None,
         })

@@ -53,7 +53,8 @@ def legacy_events(fps, fw, fh, kal, kal_real, ppf):
     b_cands = detect_bounces_from_trajectory(all_centers, speeds, fps, fh, fw,
                                              raw_centers=kal, is_real=kal_real)
     bounce_frames = [b[0] for b in b_cands]
-    hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=bounce_frames)
+    hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=bounce_frames,
+                       wrist_prox_max=1.2)
     evs = [{"frame": int(f), "label": "BOUNCE"} for (f, x, y) in b_cands]
     evs += [{"frame": int(h["frame"]), "label": "HIT"} for h in hits]
     return evs, b_cands, hits

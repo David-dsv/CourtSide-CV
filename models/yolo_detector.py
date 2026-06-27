@@ -77,12 +77,27 @@ class TennisYOLODetector:
         iou_threshold: float = 0.45,
         device: str = "cpu",
         imgsz: int = 640,
+        ball_conf: Optional[float] = None,
+        ball_imgsz: Optional[int] = None,
         class_names: Optional[Dict] = None
     ):
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
         self.device = device
         self.imgsz = imgsz
+        # The tennis ball is tiny/faint and sat below the PERSON conf (the ball
+        # model ran at the shared conf_threshold). Measured vs the human ball GT
+        # on the real prod path (imgsz 1280 + Kalman gating): the ball-conf
+        # default 0.16 lifts demo3 coverage 82.6%->86.2% with CORRECT flat
+        # (79.1%), and felix bounce F1 0.667->0.750 (>=floor) with margin from
+        # felix's 0.13 cliff — without the demo3 CORRECT dip / felix knife-edge
+        # that conf 0.10 showed. So the BALL model gets its OWN low conf +
+        # (optional) imgsz, decoupled from the person detector (its 0.2 conf
+        # stays; lowering it would flood player FPs). Defaults preserve the
+        # legacy single-threshold behaviour when unset.
+        # See docs/research/ball-track-density-CR.md.
+        self.ball_conf = conf_threshold if ball_conf is None else ball_conf
+        self.ball_imgsz = imgsz if ball_imgsz is None else ball_imgsz
 
         # Load fine-tuned model from HuggingFace (or local path)
         # Check for YOLO26 ball model first
@@ -168,13 +183,15 @@ class TennisYOLODetector:
         want_ball = classes is None or 32 in classes
         if want_ball:
             if self.is_yolo26_ball:
-                # YOLO26 single-class model: class 0 = tennis_ball
+                # YOLO26 single-class model: class 0 = tennis_ball.
+                # Ball runs at its OWN low conf + (optional higher) imgsz so the
+                # tiny/faint far ball isn't dropped by the person threshold.
                 custom_results = self.custom_model(
                     frame,
-                    conf=self.conf_threshold,
+                    conf=self.ball_conf,
                     iou=self.iou_threshold,
                     device=self.device,
-                    imgsz=self.imgsz,
+                    imgsz=self.ball_imgsz,
                     classes=[0],
                     verbose=False
                 )

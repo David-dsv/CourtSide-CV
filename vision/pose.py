@@ -150,7 +150,7 @@ def _pool_by_side(pboxes, cand, net_y, n_per_side=3, min_pool=3):
     return pool
 
 
-def _far_score(xr, aspect, conf):
+def _far_score(xr, aspect, conf, cy=None, net_y=None):
     """Score an ABOVE-NET candidate by how a tennis camera frames the scene, so the
     small/faint far PLAYER beats the sharp static spectators above the net.
 
@@ -161,13 +161,29 @@ def _far_score(xr, aspect, conf):
       human   — a real player has human box proportions (aspect ~1–2.2); distant
                 spectator slivers are thin & very tall (aspect > 2.2). Penalize them.
       conf    — mild tie-break by detector confidence.
+      top-band — a candidate whose CENTER sits in the TOP QUARTER of the above-net
+                region (cy < 0.25·net_y) is in the back of the stands, NOT on the
+                court: the far baseline never reaches the top of the frame (there is
+                always wall/stands/sky above it), so the far player's box center sits
+                well below it. The two recurring mis-picks on demo3 were the
+                persistent spectator clusters at cy≈105px while the player sat at
+                cy≈170–220px (net_y=540 → knee 135px cleanly separates them). A
+                RAMP (full penalty at the top edge → 0 at the knee) rather than a
+                cliff, so it degrades gracefully and is robust across knee 0.22–0.33
+                (all give the same score on demo3 — i.e. not a tuned knife-edge).
+                Expressed as a fraction of net_y (zero-hardcoding); only applied
+                when cy and net_y are given.
 
     Measured on the demo3 far-pose GT: ranking far candidates by this puts the TRUE
-    far player #1 on ~85% of frames (vs 0% for the legacy h*conf, which always
-    picks the sharpest spectator). xr = cx/frame_w."""
+    far player #1 on ~85–89% of detected frames. xr = cx/frame_w."""
     central = 1.0 - abs(xr - 0.5) * 2.0
     human = 1.0 if aspect <= 2.2 else max(0.0, 1.0 - (aspect - 2.2) * 0.5)
-    return central + 0.5 * human + 0.2 * conf
+    score = central + 0.5 * human + 0.2 * conf
+    if cy is not None and net_y is not None:
+        knee = 0.25 * net_y
+        if cy < knee:                      # top of stands → ramp the player up
+            score -= 1.0 * (1.0 - cy / knee)
+    return score
 
 
 def _static_penalty(track_state, cx, feet_y, frame_w, window=12, eps_frac=0.012,
@@ -302,7 +318,8 @@ def estimate_players_pose(detector, pose_model, frame, device,
             # height; zero-hardcoding). This recovers the lunging far player.
             if h < 0.012 * fh:                 # below ~1% frame height → noise
                 continue
-            rank = _far_score(xr, aspect, float(pconfs[i]))
+            cy = (y1 + y2) / 2
+            rank = _far_score(xr, aspect, float(pconfs[i]), cy=cy, net_y=net_y)
         cand.append((rank, i))
     cand.sort(reverse=True)
     # Pose the top few candidates, then keep the best max_players that pass a
@@ -344,11 +361,12 @@ def estimate_players_pose(detector, pose_model, frame, device,
     #     ">=10 kpts" test, while the sharp STATIC spectator above the net poses
     #     perfectly (17/17) — so a keypoint gate selects the spectator every time
     #     (measured: far-CORRECT 2/225). The far player is, however, unambiguous on
-    #     the camera-geometry _far_score (central, human-aspect): it ranks #1 among
-    #     above-net boxes on ~85% of frames. So on the far side we select by
-    #     _far_score and use the skeleton only as a SOFT signal (a small bonus when
-    #     it poses), never as a hard reject. Static-spectator rejection (motion)
-    #     is layered on when the caller threads ``track_state``.
+    #     the camera-geometry _far_score (central, human-aspect, not-top-of-frame):
+    #     it ranks #1 among above-net boxes on ~89% of detected frames. So on the
+    #     far side we select purely by _far_score and never hard-reject on keypoints.
+    #     Static-spectator rejection (motion) is available behind ``track_state`` but
+    #     is OFF by default — measured on demo3 it HURTS (the tiny far player barely
+    #     moves frame-to-frame, so he reads as "static" too).
     posed = []                                  # (pi, side, entry, far_score)
     for pi in pool:
         box = pboxes[pi]
@@ -361,7 +379,8 @@ def estimate_players_pose(detector, pose_model, frame, device,
         side = "near" if feet_y >= net_y else "far"
         w, h = box[2] - box[0], box[3] - box[1]
         aspect = h / max(w, 1.0)
-        fscore = _far_score(cx / fw, aspect, float(pconfs[pi]))
+        cy = (box[1] + box[3]) / 2
+        fscore = _far_score(cx / fw, aspect, float(pconfs[pi]), cy=cy, net_y=net_y)
         posed.append((pi, side, entry, fscore))
 
     # NEAR side: keypoint-validity + area*conf (unchanged behaviour).

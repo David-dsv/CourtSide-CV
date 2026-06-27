@@ -109,7 +109,64 @@ def _collect_ballistic_side(ys, n, i, win, direction):
     return xa, ys[xa.astype(int)]
 
 
-def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_height, frame_width=None):
+def _velocity_turn_candidates(raw_centers, is_real, fps, frame_width, frame_height,
+                              angle_deg=70.0, win_frac=0.06, min_gap_frac=0.15,
+                              min_disp_frac=0.002):
+    """Candidate bounce frames from the ball's VELOCITY-VECTOR TURN ANGLE.
+
+    The y-extremum candidate test in detect_bounces_from_trajectory needs a
+    prominent local y-maximum (the ball descends then ascends). That MISSES
+    far-court APEX bounces: when the ball bounces near the top of a flat arc its
+    image-y barely dips (~1-6px on demo3) so no y-peak exists — yet its velocity
+    VECTOR still turns sharply (the vertical component swings from flat to rising
+    while the horizontal sign is preserved, the bounce signature). On the demo3
+    cache only 2/9 GT bounces have a y-extremum but 8/9 have a >50° turn.
+
+    For each frame with REAL (non-interpolated) neighbours k frames either side,
+    we compute the angle between the incoming velocity (f-k → f) and the outgoing
+    one (f → f+k) and admit the LOCAL PEAKS above ``angle_deg``. Read on the RAW
+    pre-spline track + is_real mask (same gap-safety invariant as the vx-flip
+    veto): a turn is trusted only when all three arms rest on real detections, so
+    we never fabricate a turn across an interpolated gap.
+
+    This is the SAME PRINCIPLE as vision.events.detect_sharp_turns, re-derived
+    here so the LEGACY bounce path (which must not import vision.events — that is
+    the --event-methodo path) recovers apex bounces on its own. The candidates it
+    yields are still filtered by the caller's ballistic / direction gates, so it
+    raises recall without flooding false positives.
+
+    All thresholds are ratios of fps / frame size — no per-video constants.
+    Returns a sorted list of candidate frame indices.
+    """
+    from scipy.signal import find_peaks
+    n = len(raw_centers)
+    if n < 7:
+        return []
+    k = max(2, round(fps * win_frac))
+    diag = float(np.hypot(frame_width or frame_height, frame_height))
+    min_disp = diag * min_disp_frac        # ignore a near-stationary ball (noise)
+    ang = np.zeros(n, dtype=float)
+    for f in range(k, n - k):
+        if not (is_real[f - k] and is_real[f] and is_real[f + k]):
+            continue
+        c0, c1, c2 = raw_centers[f - k], raw_centers[f], raw_centers[f + k]
+        if c0 is None or c1 is None or c2 is None:
+            continue
+        ax, ay = c1[0] - c0[0], c1[1] - c0[1]
+        bx, by = c2[0] - c1[0], c2[1] - c1[1]
+        na = (ax * ax + ay * ay) ** 0.5
+        nb = (bx * bx + by * by) ** 0.5
+        if na < min_disp or nb < min_disp:
+            continue
+        cos = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+        ang[f] = np.degrees(np.arccos(cos))
+    dist = max(1, int(fps * min_gap_frac))
+    pk, _ = find_peaks(ang, height=angle_deg, distance=dist)
+    return sorted(int(f) for f in pk)
+
+
+def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_height,
+                                   frame_width=None, raw_centers=None, is_real=None):
     """
     Detect ball bounces from the smoothed trajectory (curve-fit method).
 
@@ -132,7 +189,18 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
         ball_speeds_px: per-frame speed (kept for API compat; unused here)
         fps: video frame rate
         frame_height: frame height in pixels
-        frame_width: frame width in pixels (unused, kept for API compat)
+        frame_width: frame width in pixels (used by the x-continuity + turn gates)
+        raw_centers: OPTIONAL pre-spline tracker centers ((x,y) or None per frame).
+                     When supplied with ``is_real`` the detector ALSO admits
+                     far-court APEX bounce candidates from the velocity-vector turn
+                     angle (see _velocity_turn_candidates) — these have no y-peak so
+                     the strict y-max test alone misses them. Each turn candidate is
+                     still validated by an on-court band + a vertical-reflection
+                     (vy down→up) co-signal + a vx-not-flipped check (a vx flip is a
+                     racket HIT, not a bounce), so recall rises without flooding FPs.
+                     felix path passes None → behaviour byte-identical to before.
+        is_real:     OPTIONAL bool-per-frame mask, True where raw_centers is a real
+                     detection (not a spline fill). Required for the turn candidates.
 
     Returns:
         list of (frame_idx, x, y)
@@ -222,6 +290,62 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
         bx = xs[bf] if not np.isnan(xs[bf]) else xs[i]
         by = ys[bf] if not np.isnan(ys[bf]) else yc
         candidates.append((bf, int(bx), int(by), score))
+
+    # ── 2nd pass: far-court APEX bounces via the velocity-vector turn angle ──
+    # These have no prominent y-extremum (a flat far arc) so the loop above never
+    # admits them, but they DO turn the velocity vector sharply. We add them ONLY
+    # when the caller threaded the RAW pre-spline track + is_real mask (felix path
+    # passes None → this whole block is skipped, behaviour byte-identical). Each
+    # turn candidate is validated by an independent, lighter gate that is correct
+    # for an apex (where the y-V test fails): on-court band + a vertical-reflection
+    # co-signal (vy flips down→up across the turn) + a vx-not-flipped check so a
+    # racket HIT (which inverts vx) is NOT promoted to a bounce. This keeps the
+    # bounce-vs-hit firewall the rest of the pipeline relies on.
+    if raw_centers is not None and is_real is not None and frame_width:
+        rys = np.array([c[1] if c is not None else np.nan for c in raw_centers], float)
+        rxs = np.array([c[0] if c is not None else np.nan for c in raw_centers], float)
+        turn_win = max(2, round(fps * 0.06))   # ± arm for the velocity vectors
+        for tf in _velocity_turn_candidates(raw_centers, is_real, fps,
+                                            frame_width, frame_height):
+            if tf < turn_win or tf >= n - turn_win:
+                continue
+            yc = rys[tf]
+            if np.isnan(yc) or not (min_y_ratio <= yc / frame_height <= max_y_ratio):
+                continue
+            c0 = raw_centers[tf - turn_win]
+            c1 = raw_centers[tf]
+            c2 = raw_centers[tf + turn_win]
+            if c0 is None or c1 is None or c2 is None:
+                continue
+            # velocity components across the turn (pre = into tf, post = out of tf)
+            vx_pre, vy_pre = c1[0] - c0[0], c1[1] - c0[1]
+            vx_post, vy_post = c2[0] - c1[0], c2[1] - c1[1]
+            # vertical reflection: a bounce descends (vy_pre >= ~0, y growing) then
+            # ascends (vy_post < 0). Require the post side to rise meaningfully and
+            # the pre side to NOT be strongly rising (that would be a pure ascent /
+            # a hit launch). Scale-free floor on |vy_post|.
+            vy_floor = frame_height * 0.0015 * (turn_win)   # ~few px over the arm
+            if not (vy_post < -vy_floor and vy_pre > -vy_floor):
+                continue
+            # vx must be PRESERVED — a confident vx-sign flip is a racket hit, not a
+            # bounce. Only enforce when both sides move horizontally enough to read
+            # a sign (else abstain → keep, the apex may be near-vertical).
+            netdx = frame_width * 0.004
+            if abs(vx_pre) > netdx and abs(vx_post) > netdx:
+                if np.sign(vx_pre) != np.sign(vx_post):
+                    continue   # vx flip → hit, reject as a bounce
+            # x-continuity: reject if the track teleports across the turn window
+            wx = max(3, int(fps * 0.07))
+            jumps = [abs(rxs[k] - rxs[k - 1])
+                     for k in range(tf - wx, tf + wx + 1)
+                     if 0 < k < n and not np.isnan(rxs[k]) and not np.isnan(rxs[k - 1])]
+            if jumps and max(jumps) > max_xjump_frac * frame_width:
+                continue
+            # score: turn candidates rank just below a clean y-V bounce so NMS
+            # prefers a real y-extremum when both fire near the same frame.
+            bx = int(rxs[tf]) if not np.isnan(rxs[tf]) else int(c1[0])
+            by = int(yc)
+            candidates.append((tf, bx, by, 0.5))   # modest fixed score
 
     # non-max suppression by min_gap, keep highest-scoring candidate
     candidates.sort(key=lambda c: -c[3])

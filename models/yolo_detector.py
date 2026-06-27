@@ -88,12 +88,13 @@ class TennisYOLODetector:
         # The tennis ball is tiny/faint and sat below the PERSON conf (the ball
         # model ran at the shared conf_threshold). Measured vs the human ball GT
         # on the real prod path (imgsz 1280 + Kalman gating): the ball-conf
-        # default 0.14 lifts demo3 coverage 82.6%->87.1% with CORRECT flat, and
-        # felix bounce F1 0.667->0.774 on a stable plateau — without the demo3
-        # CORRECT dip / felix knife-edge that conf 0.10 showed. So the BALL model
-        # gets its OWN low conf + (optional) imgsz, decoupled from the person
-        # detector (its 0.2 conf stays; lowering it would flood player FPs).
-        # Defaults preserve the legacy single-threshold behaviour when unset.
+        # default 0.16 lifts demo3 coverage 82.6%->86.2% with CORRECT flat
+        # (79.1%), and felix bounce F1 0.667->0.750 (>=floor) with margin from
+        # felix's 0.13 cliff — without the demo3 CORRECT dip / felix knife-edge
+        # that conf 0.10 showed. So the BALL model gets its OWN low conf +
+        # (optional) imgsz, decoupled from the person detector (its 0.2 conf
+        # stays; lowering it would flood player FPs). Defaults preserve the
+        # legacy single-threshold behaviour when unset.
         # See docs/research/ball-track-density-CR.md.
         self.ball_conf = conf_threshold if ball_conf is None else ball_conf
         self.ball_imgsz = imgsz if ball_imgsz is None else ball_imgsz

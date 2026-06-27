@@ -137,13 +137,33 @@ def test_gentle_apex_toggle_is_firewall_safe():
             f"H->B={res['conf_HtoB']} B->H={res['conf_BtoH']}")
 
 
+def test_no_bare_turn_phantom_bounce():
+    """Every labeled BOUNCE must carry FLOOR-BOUNCE evidence (vy-flip, a real
+    bounce candidate, or a y-MAXIMUM/gentle apex) — never a bare trajectory turn.
+    The PM caught the live over-fire: detect_turning_points admits y-MINIMUM turns
+    (mid-air arc apexes) for recall, and the parity DP was filling them as phantom
+    BOUNCEs (demo3 LIVE f229; on a noisier track they also land on GT hits => H->B).
+    The bounce_shape gate in _reward forbids that. Here we assert it on the cache:
+    no labeled BOUNCE lands >tol from EVERY GT bounce (no spurious bounce FP)."""
+    d = _load()
+    fps = d[0]
+    gt_b = d[8]
+    events = _events(*d[:8])
+    tol = round(0.15 * fps)
+    phantom = [e["frame"] for e in events if e["label"] == BOUNCE
+               and not any(abs(e["frame"] - g) <= tol for g in gt_b)]
+    assert not phantom, f"phantom (bare-turn) BOUNCE FPs survived: {phantom}"
+
+
 if __name__ == "__main__":
     s = test_reconciled_confusion_and_f1()
     test_f146_no_leak_f174_is_a_bounce()
     test_firewall_plateau_over_step0()
     test_gentle_apex_toggle_is_firewall_safe()
+    test_no_bare_turn_phantom_bounce()
     print(f"  PASS test_reconciled_confusion_and_f1 "
           f"(bounce F1={s['bounce']['F1']:.3f} hit F1={s['hit']['F1']:.3f}, 0/0)")
+    print("  PASS test_no_bare_turn_phantom_bounce")
     print("  PASS test_f146_no_leak_f174_is_a_bounce")
     print("  PASS test_firewall_plateau_over_step0")
     print("  PASS test_gentle_apex_toggle_is_firewall_safe")

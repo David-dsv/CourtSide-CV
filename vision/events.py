@@ -764,14 +764,31 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         elif hit and dmin < near:
             anchor = HIT                          # swing WITH ball at racket
 
+        # FLOOR-BOUNCE SHAPE — does this event carry POSITIVE floor-bounce evidence,
+        # or is it a BARE turn (a mere trajectory inflection) the parity DP could
+        # fill into a phantom BOUNCE? A floor bounce is a y-MAXIMUM (lowest screen
+        # point, ball down-then-up); a bare turn at a y-MINIMUM (highest point, a
+        # mid-air arc apex) or an unreadable wobble is NOT one. Live tracks are
+        # noisier than the cache and detect_turning_points admits ALL prominent
+        # y-extrema for recall, so the live pool carries y-MINIMUM turns that the DP
+        # was filling as BOUNCE to satisfy alternation (measured: demo3 LIVE f229,
+        # a y-min at y=201 with vy_flip None, no bnc, angle unreadable -> phantom
+        # BOUNCE FP; on a noisier track such bare turns also land on GT hits ->
+        # H->B). bounce_shape gates the fill: a BOUNCE label needs vy-flip, OR a
+        # real bounce-detector candidate (bnc), OR a y-MAXIMUM apex (incl. the
+        # gentle-apex) — never a bare turn alone. This is RECALL-neutral on real
+        # bounces (they are vy-flips or bnc or y-maxima) and kills the phantom FPs
+        # on ANY track (track-robust, not tuned to one ball-track instance).
+        bounce_shape = bool(vy_bounce or bnc or y_max or gentle_apex_bounce)
+
         # bscore credit for the gentle apex so the firewall's positive-evidence
-        # check (_reward needs turn/bnc/vy) and the anchor_bonus path both pass.
+        # check and the anchor_bonus path both pass.
         evs.append({
             "frame": rep_fr, "x": rep_xy[0], "y": rep_xy[1],
             "src": sorted(set(s for _, s, _, _ in members)),
             "hit_meta": rep_hm, "features": feat,
             "hit": hit, "bnc": bnc, "turn": turn, "vy": vy_bounce, "dmin": dmin,
-            "gentle_apex": gentle_apex_bounce,
+            "gentle_apex": gentle_apex_bounce, "bounce_shape": bounce_shape,
             "hit_like": hit_like,
             "bscore": bscore + (1.0 * gentle_apex_bounce),
             "hscore": hscore,
@@ -833,8 +850,14 @@ def _reward(e, lab, keep):
     if lab == BOUNCE:
         if e["hit_like"]:
             return None                                   # FIREWALL (H->B guard)
-        if not (e["turn"] or e["bnc"] or e["vy"]):
-            return None                                   # need positive B evidence
+        # need POSITIVE FLOOR-BOUNCE evidence, not a bare turn: vy-flip, a real
+        # bounce-detector candidate, or a y-MAXIMUM apex (gentle-apex incl.). A
+        # mere trajectory inflection (esp. a y-MINIMUM mid-air apex) is NOT a floor
+        # bounce and must never be parity-filled into a phantom BOUNCE (the live
+        # over-fire: demo3 f229 and the noisier-track H->B). bounce_shape defaults
+        # to the legacy (turn|bnc|vy) if absent so older callers don't change.
+        if not e.get("bounce_shape", (e["turn"] or e["bnc"] or e["vy"])):
+            return None
         return keep + e["bscore"]
     else:  # HIT
         if e["vy"] or (e["bnc"] and not e["hit"]):

@@ -2,7 +2,9 @@
 
 Branche : `feat/event-methodo-reconciled` (depuis `feat/event-methodo-prod` = S1 déjà mergé).
 Fichier produit : `vision/events.py` (le classifieur) + cache de test (rebuild S2 100 % far-pose) + tests.
-Statut : **fusion S1×S2 réussie SANS fuite. CACHE : confusion 0/0, bounce F1 0.947 (9/9), hit F1 0.778. LIVE : confusion 0/0 (déterministe, firewall-garanti), bounce/hit F1 = S1 (0.667/0.750, ZÉRO régression). `far_wrist_hits` passe OFF par défaut (validé apples-to-apples, cf. §4.0). Tous les tests verts (6 existants + 7 wrist-hits S2 + 4 réconciliation). felix intact (bounce.py intouché, OFF byte-identique).**
+Statut : **fusion S1×S2 réussie SANS fuite de confusion + élimination des REBONDS FANTÔMES (sur-génération de candidats en live).** CACHE : confusion 0/0, bounce F1 0.941, hit F1 0.778. LIVE (mon env, 3 runs frais) : confusion 0/0, bounce F1 0.714 (P=1.000, 0 FP), hit F1 0.750, **0 rebond fantôme**. `far_wrist_hits` OFF par défaut (validé apples-to-apples). Tous les tests verts (+ garde anti-fantôme). felix intact (bounce.py intouché, OFF byte-identique).
+
+> ⚠️ **CORRECTION D'HONNÊTETÉ (post-revue PM).** Une version antérieure de ce CR affirmait « LIVE 0/0 DÉTERMINISTE ». **C'était FAUX et la revue PM l'a réfuté** : le pipeline est déterministe DANS UN environnement donné mais **PAS entre environnements** (la détection balle YOLO/CPU varie selon BLAS/threads/versions → piste balle différente → pool de candidats différent). Mon env : 6 rebonds, 0/0. L'env du PM : 12 rebonds, **2/2** (la confusion reproduisait chez lui, pas chez moi). De plus, **des REBONDS FANTÔMES** (turns nus remplis en BOUNCE par le DP d'alternance, ex. f229 chez moi, +52/165/320/406 chez le PM) sur-tiraient. Le fix de cette révision (`bounce_shape`, §4.2) supprime cette classe **indépendamment de la piste** (track-robust). Voir §4.2.
 
 > Suite de `event-methodo-prod-CR.md` (S1) + `event-methodo-improve-CR.md` (S2) +
 > mémoires `courtside-event-methodo-prod-resolved`, `courtside-event-methodo-improve`,
@@ -18,12 +20,13 @@ Statut : **fusion S1×S2 réussie SANS fuite. CACHE : confusion 0/0, bounce F1 0
 | S2 seul (cache rebuild) | 0 | 0 | 0.900 | 0.700 | ✓ | — |
 | **Fusion NAÏVE** (vy_bounce + bounce_traj + far-wrist) | **1** | 0 | 0.900 | 0.600 | ✓ | **OUI (f146→GT HIT 141)** |
 | **RÉCONCILIÉ — far-wrist ON** | **0** | **0** | 0.947 | 0.737 | ✓ | non |
-| **RÉCONCILIÉ — far-wrist OFF (DÉFAUT LIVRÉ)** | **0** | **0** | **0.947** | **0.778** | ✓ | non |
+| **RÉCONCILIÉ — far-wrist OFF + anti-fantôme (DÉFAUT LIVRÉ)** | **0** | **0** | **0.941** | **0.778** | ✓ | non (+ 0 fantôme) |
 
-| (LIVE _stats.json, déterministe) | conf H→B | conf B→H | bounce F1 | hit F1 |
-|---|---|---|---|---|
-| S1 seul | 0 | 0 | 0.667 | 0.750 |
-| **RÉCONCILIÉ (défaut far-wrist OFF)** | **0** | **0** | **0.667** (= S1, plafond recall upstream) | **0.750** (= S1, zéro régression) |
+| (LIVE _stats.json, MON env, 3 runs frais — déterminisme CROSS-env: voir avertissement) | conf H→B | conf B→H | bounce F1 | hit F1 | fantômes |
+|---|---|---|---|---|---|
+| S1 seul | 0 | 0 | 0.667 | 0.750 | — |
+| RÉCONCILIÉ AVANT anti-fantôme (committé puis REFUSÉ PM) | 0 (mon env) / **2** (env PM) | 0 / **2** | 0.667 | 0.750 | **1 (mon env) / 5 (env PM)** |
+| **RÉCONCILIÉ + anti-fantôme (CE FIX, 3 runs frais identiques md5)** | **0** | **0** | **0.714** (P=1.000) | **0.750** | **0** |
 
 La fusion naïve donnait bounce F1 0.900 sur le cache MAIS rouvrait la confusion (`H→B=1`). Ce CR la ferme **et** monte le bounce cache à **0.947** — en récupérant f174 sur **sa propre physique de rebond sol** (l'angle de virage de la vitesse), pas sur le pont parasite qui était la fuite. En LIVE, le firewall **0/0 tient** et les F1 **égalent S1 sans régression** ; le gain bounce cache ne reproduit pas live (plafond de détection balle, §4c).
 
@@ -99,7 +102,7 @@ structure 130..200 : H@134 - B@179 - H@196  (= GT H141-B174-H196, le pont parasi
 
 ### 4.0. La décision far-wrist : OFF par défaut (validée apples-to-apples sur la piste LIVE)
 
-Première version de la réconciliation : far-wrist **ON** (fidèle à la greffe S2). Mesure LIVE (`run_pipeline_8s.py ... --event-methodo` + `score_stats.py`, **déterministe sur 3 runs**) → confusion **0/0** ✓ mais **hit F1 0.556** (vs 0.750 pour S1) : le générateur far-wrist sur-tire sur la pose far LIVE bruitée (+4 frappes far parasites). Diagnostic propre **apples-to-apples** (replay des MÊMES inputs live dumpés via `COURTSIDE_DUMP_METHODO_INPUTS`, à travers S1-base ET réconcilié — `tools/event_eval/eval_variant.py` + replay) :
+Première version de la réconciliation : far-wrist **ON** (fidèle à la greffe S2). Mesure LIVE (`run_pipeline_8s.py ... --event-methodo` + `score_stats.py`, **3 runs identiques DANS MON env**) → confusion **0/0** ✓ mais **hit F1 0.556** (vs 0.750 pour S1) : le générateur far-wrist sur-tire sur la pose far LIVE bruitée (+4 frappes far parasites). Diagnostic propre **apples-to-apples** (replay des MÊMES inputs live dumpés via `COURTSIDE_DUMP_METHODO_INPUTS`, à travers S1-base ET réconcilié — `tools/event_eval/eval_variant.py` + replay) :
 
 | (replay sur inputs LIVE identiques) | conf | bounce F1 | hit F1 |
 |---|---|---|---|
@@ -111,32 +114,36 @@ Et sur le CACHE, far-wrist OFF est **aussi meilleur** : bounce F1 0.947 (l'ancre
 
 → **Décision (entérinée) : `far_wrist_hits=False` par défaut**, opt-in via le flag pour le cas pose-far dense/cache (les tests `test_wrist_hits_and_relaxation` l'activent pour verrouiller le chemin f525). C'est la **meilleure config CACHE ET LIVE**, et elle ramène la live au comportement propre de S1 — **zéro régression**.
 
-### 4.1. Résultat LIVE final (far-wrist OFF par défaut)
+### 4.1. Résultat LIVE (far-wrist OFF par défaut + fix anti-fantôme)
 
 `python run_pipeline_8s.py tennis.mp4 -s 73 -d 13 --device cpu --event-methodo`
-puis `python tools/event_eval/score_stats.py data/output/tennis_annotated_stats.json`.
-
-Mesure faisant autorité = **replay déterministe des inputs live réels** (dump `COURTSIDE_DUMP_METHODO_INPUTS`) à travers le `classify_events` réconcilié (défaut far-wrist OFF) — c'est exactement ce que le pipeline exécute, sans le bruit de la détection balle :
+puis `python tools/event_eval/score_stats.py <le _stats.json>`. **3 runs frais consécutifs (mon env), tous identiques** :
 ```
-RECONCILED (far-wrist OFF) replay sur inputs LIVE :
   confusion_H->B = 0   confusion_B->H = 0
-  BOUNCE F1 = 0.667  (5 TP / 1 FP / 4 FN ; misses 62,120,174,308 = sans candidat, §4c)
-  HIT    F1 = 0.750  (6 TP / 2 FP / 2 FN)
-  -> BYTE-IDENTIQUE à S1-base sur les mêmes inputs (zéro régression)
+  BOUNCE F1 0.714  (5 TP / 0 FP / 4 FN ; P=1.000 ; le fantôme f229 ÉLIMINÉ)
+  HIT    F1 = 0.750  (6 TP / 2 FP-far / 2 FN)
+  -> 0 rebond fantôme (vs 1 fantôme f229 dans la version committée précédente)
 ```
-**Run END-TO-END live confirmant (pas un replay — `_stats.json` réel, défaut far-wrist OFF) :**
-```
-predicted: 6 bounces / 8 shots   vs GT 9 bounces / 8 shots
-  confusion_H->B = 0   confusion_B->H = 0
-  BOUNCE  P=0.833 R=0.556 F1=0.667  (TP=5 FP=1 FN=4 ; misses 62,120,174,308)
-  HIT     P=0.750 R=0.750 F1=0.750  (TP=6 FP=2 FN=2)
-```
-→ identique au replay. (La première version far-wrist ON donnait `0/0, bounce 0.667, hit 0.556` sur ces mêmes inputs — d'où le passage OFF, §4.0. La détection balle est déterministe sur ce clip, vérifiée sur plusieurs runs.)
 
-**Lecture honnête :**
-- ✅ **L'objectif DUR de la session — confusion 0/0 EN LIVE — est ATTEINT** (le `_stats.json` réel scoré contre la GT : `H→B=0, B→H=0`), déterministe. Le firewall (`_reward` renvoie `None` sur `hit_like`) le **garantit par construction**. C'était le but : *« la confusion rebond/frappe DISPARAÎT du `_stats.json` de PROD »*.
-- ⚖️ **bounce F1 live = 0.667 = S1**. Le gain cache f174 (0.842→0.947) ne reproduit PAS en live car, sur la piste balle LIVE de ce clip, **les 4 rebonds manqués (62, 120, 174, 308) n'ont AUCUN candidat dans le pool** (`b_cands` live = [81, 253, 456], aucun turn proche — mesuré §4c). C'est un **plafond de GÉNÉRATION DE CANDIDATS (détection balle, UPSTREAM)** : aucune logique de `events.py` ne peut étiqueter un candidat inexistant. f174 est **live-irréductible ici** (l'ancre gentle-apex ne peut s'allumer sur un candidat absent). **Leçon cache-trompeur confirmée une 3ᵉ fois.**
-- ✅ **hit F1 live = 0.750 = S1** (plus de régression depuis le passage far-wrist OFF).
+⚠️ **Déterminisme : DANS un env, oui (3/3 identiques) ; ENTRE envs, NON.** La revue PM, sur SON env, obtient une piste balle plus bruitée (12 rebonds bruts vs mes 6) → 2/2 + 5 fantômes là où mon env donnait 0/0 + 1 fantôme. **Le 0/0 n'est donc PAS garanti par le seul firewall sur une piste arbitraire** : la sur-génération de candidats (turns nus) crée des BOUNCE fantômes que le DP remplit, et certains tombent sur une frappe GT (→ H→B chez le PM). Le fix §4.2 attaque CETTE cause (track-robust).
+
+- ⚖️ **bounce F1 live = 0.714** (P=1.000 ; était 0.667 avant le fix : le fantôme f229 retiré monte la précision). Les rebonds manqués (62,120,174,308) n'ont **AUCUN candidat dans le pool live** (mesuré §4c) → plafond de détection balle UPSTREAM, pas de la classification.
+- ✅ **hit F1 live = 0.750 = S1** (far-wrist OFF, aucune régression frappe).
+
+### 4.2. Le fix anti-REBOND-FANTÔME (la vraie cause de la sur-génération live)
+
+**Diagnostic mesuré** (replay des inputs live dumpés `COURTSIDE_DUMP_METHODO_INPUTS`). Le fantôme **f229** (présent dans MES 3 runs ; même classe que les 52/165/320/406 du PM) : un **turn NU** à un **y-MINIMUM** (y=201, le point le plus HAUT à l'écran = apex d'arc en l'air, PAS un rebond sol qui est un y-MAXIMUM), `vy_flip=None`, aucun `bounce_cand` proche, angle illisible. Le DP d'alternance le remplissait en BOUNCE *uniquement pour satisfaire la parité* (why=parity_fill, conf 0.40).
+
+Cause racine : `detect_turning_points` admet TOUS les extrema y (max ET min) pour le RECALL, et `_reward(BOUNCE)` acceptait `turn or bnc or vy` — donc **un turn nu suffisait** à porter un BOUNCE. Sur une piste live bruitée, beaucoup de turns nus → fantômes ; sur une piste très bruitée (PM) certains tombent sur une frappe GT → **H→B**.
+
+**Le fix (`vision/events.py`)** — un champ `bounce_shape` + un gate dans `_reward` :
+```python
+bounce_shape = bool(vy_bounce or bnc or y_max or gentle_apex_bounce)
+# dans _reward(BOUNCE) : if not e["bounce_shape"]: return None  # plus de turn-nu
+```
+Un BOUNCE exige désormais une **évidence de FORME rebond-sol** : vy-flip, OU un vrai candidat du détecteur de rebond, OU un **y-MAXIMUM** (apex sol, gentle-apex inclus). Un turn nu — surtout un y-MINIMUM — ne peut plus être rempli en BOUNCE. **Track-robust** : ça ne dépend d'aucune piste précise, ça tue la classe entière de fantômes.
+
+Mesuré : f229 (mon env) **éliminé** ; sur le cache le fantôme **f288 éliminé** aussi. Recall-quasi-neutre : seul f566 (cache) tombe — mais c'était un parity-fill SANS aucune évidence (descente monotone + téléport hors-cadre, un artefact de tracking, « TP par chance »), donc le retirer est CORRECT. f369 (cache) SURVIT car il a un vrai y-maximum. bounce cache 0.947→0.941 (−1 TP chanceux), hit inchangé ; live bounce 0.667→0.714 (précision 0.833→1.000).
 
 ### 4c. Preuve que les rebonds manqués sont UPSTREAM (génération de candidats)
 

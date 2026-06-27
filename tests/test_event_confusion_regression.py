@@ -35,15 +35,25 @@ GT_S = ROOT / "tests" / "fixtures" / "shots" / "tennis_demo3.shots.json"
 
 # Floors locked at the measured methodology numbers with a small noise margin.
 # confusion_H->B is a HARD 0 (the user's bug, non-negotiable) and confusion_B->H
-# is also held at 0. The far-court apex-bounce candidate generator
-# (detect_sharp_turns, feat/ball-tracking-density) recovers GT bounces 120 & 369
-# into the pool, lifting bounce recall 4/9 -> 8/9: bounce F1 0.533 -> 0.842, hit
-# F1 0.667 -> 0.632 (3 pre-existing tail wrist-peak hit-candidates promoted by the
-# shifted alternation cadence; net strongly positive). Firewall H->B/B->H stay 0.
+# is also held at 0.
+#
+# History:
+#  - detect_sharp_turns (feat/ball-tracking-density) recovered far-court apex
+#    bounces 120 & 369 into the pool: bounce F1 0.533 -> 0.842.
+#  - feat/event-methodo-improve (this branch): on a REBUILT cache with the merged
+#    far-select (far-pose 78%->100%), two firewall-safe levers lift recall further:
+#      * detect_wrist_hits (box-height-normalized far wrist swing + ball-at-wrist)
+#        recovers the far GT hit f525 that detect_hits' frame-scaled amplitude floor
+#        drops -> hit F1 0.632 -> 0.737;
+#      * the y-MAXIMUM proximity relaxation frees the GT bounce f174 (a floor bounce
+#        at the receiving player's racket height, no swing) -> bounce F1 0.842 ->
+#        0.900 (hit settles to 0.700 as the alternation re-balances).
+#    Net: bounce 0.900 / hit 0.700, confusion 0/0, plateau-stable across near_wrist
+#    0.4-0.6 (structural, not knife-edge).
 CONF_HtoB_MAX = 0
 CONF_BtoH_MAX = 0
-BOUNCE_F1_FLOOR = 0.80
-HIT_F1_FLOOR = 0.60
+BOUNCE_F1_FLOOR = 0.88
+HIT_F1_FLOOR = 0.68
 
 
 def evaluate():

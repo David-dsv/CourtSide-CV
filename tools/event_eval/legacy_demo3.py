@@ -26,7 +26,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from vision.bounce import (  # noqa: E402
-    smooth_ball_trajectory, detect_bounces_from_trajectory, arbitrate_bounce_hit)
+    smooth_ball_trajectory, detect_bounces_from_trajectory,
+    drop_turn_bounces_inside_players)
 from vision.shots import detect_hits  # noqa: E402
 from tools.event_eval.event_eval import match_events, print_report, scores  # noqa: E402
 
@@ -53,14 +54,14 @@ def legacy_events(fps, fw, fh, kal, kal_real, ppf):
     b_cands, turn_frames = detect_bounces_from_trajectory(
         all_centers, speeds, fps, fh, fw, raw_centers=kal, is_real=kal_real,
         return_turn_frames=True)
+    # confusion_H→B guard BEFORE hit detection (mirrors prod): drop a turn-bounce
+    # landing INSIDE a player box (a contact, not a floor bounce) so it doesn't
+    # suppress the real hit. NO-OP on this cache (no turn-bounce lands inside a box,
+    # incl. real b308); fires on the live track (f82 at a near-court contact).
+    b_cands, _dropped = drop_turn_bounces_inside_players(b_cands, turn_frames, ppf)
     bounce_frames = [b[0] for b in b_cands]
     hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=bounce_frames,
                        wrist_prox_max=1.2)
-    # confusion_H→B guard (no-op on this cache — b308 lands outside the box): drop a
-    # turn-bounce that lands INSIDE a player box AND collides a hit (a contact
-    # mislabeled). Mirrors the prod legacy wiring exactly.
-    b_cands, hits = arbitrate_bounce_hit(
-        b_cands, hits, fps, turn_frames=turn_frames, players_per_frame=ppf)
     evs = [{"frame": int(f), "label": "BOUNCE"} for (f, x, y) in b_cands]
     evs += [{"frame": int(h["frame"]), "label": "HIT"} for h in hits]
     return evs, b_cands, hits

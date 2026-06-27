@@ -1017,8 +1017,56 @@ def _ball_inside_a_player(bx, by, players, pad_frac=0.0):
     return False
 
 
+def drop_turn_bounces_inside_players(bounce_events, turn_frames, players_per_frame,
+                                     pad_frac=0.0):
+    """Drop turn-angle-recovered bounces whose landing point is INSIDE a player's
+    bounding box — the legacy confusion_H→B guard.
+
+    A real FLOOR bounce lands on the COURT, never inside a player's silhouette (the
+    player would be standing on the ball). A racket HIT, by contrast, reverses the
+    ball AT the player. The turn-angle apex recovery (lower confidence — no
+    y-extremum) can mislabel a near-court CONTACT as a bounce; if its landing falls
+    inside a player box it is that contact, not a bounce → drop it.
+
+    This runs AFTER pose (Pass 1.5) but BEFORE hit detection, so dropping the bogus
+    bounce un-suppresses the real hit at that frame (the bounce_guard inside
+    detect_hits no longer hides it) → the contact is correctly emitted as a HIT, and
+    confusion_H→B stays 0. It is a PURE BOUNCE-SIDE filter: it never touches hits and
+    only ever removes a turn (low-confidence) bounce, so y-extremum bounces and real
+    floor bounces near a player (which land OUTSIDE the box) are untouched. Verified
+    a NO-OP on the demo3 cache (no turn-bounce there lands inside a box, incl. the
+    real bounce b308); it fires on the LIVE track where the apex recovery put a
+    bounce on a near-court contact.
+
+    Args:
+        bounce_events:     list of (frame, x, y).
+        turn_frames:       iterable of turn-only (lower-confidence) bounce frames.
+        players_per_frame: per-frame list of player dicts (with "box").
+        pad_frac:          box padding (0.0 = the raw silhouette; a real floor bounce
+                           is strictly outside, so no padding is the safe default).
+
+    Returns:
+        (kept_bounces, dropped_frames).
+    """
+    if not bounce_events or not turn_frames or players_per_frame is None:
+        return list(bounce_events), []
+    turn_set = set(int(f) for f in turn_frames)
+    kept, dropped = [], []
+    for ev in bounce_events:
+        bf, bx, by = int(ev[0]), ev[1], ev[2]
+        players = players_per_frame[bf] if 0 <= bf < len(players_per_frame) else None
+        if bf in turn_set and _ball_inside_a_player(bx, by, players, pad_frac):
+            dropped.append(bf)
+            continue
+        kept.append(ev)
+    if dropped:
+        logger.info(f"legacy confusion_H→B guard: dropped {len(dropped)} turn-bounce(s) "
+                    f"inside a player box (a contact, not a floor bounce): {dropped}")
+    return kept, dropped
+
+
 def arbitrate_bounce_hit(bounce_events, hits, fps, turn_frames=None,
-                         players_per_frame=None, pad_frac=0.10, guard_frac=0.10):
+                         players_per_frame=None, pad_frac=0.0, guard_frac=0.10):
     """Bounce↔hit collision resolution for the legacy path, protecting BOTH the
     user's #1 bug (confusion_H→B — a HIT shown as a bounce) AND real floor bounces
     that happen near a player (confusion_B→H).

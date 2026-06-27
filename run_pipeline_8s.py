@@ -1362,6 +1362,29 @@ def main():
             if _far is not None:
                 _slot.append(_far)
             locked_ppf.append(_slot)
+        # LEGACY confusion_H→B guard (runs BEFORE hit detection, now that poses
+        # exist): drop any turn-angle-recovered bounce (no y-extremum → lower
+        # confidence) whose landing falls INSIDE a player's box. A real FLOOR bounce
+        # lands on the COURT, never inside a player's silhouette; a turn candidate
+        # that landed inside a player is a near-court CONTACT mislabeled as a bounce.
+        # Doing this BEFORE detect_hits is the point: the bogus bounce no longer
+        # suppresses the real hit at that frame (bounce_guard), so the contact is
+        # emitted as a HIT and confusion_H→B stays 0. Pure bounce-side filter — only
+        # ever removes a turn (low-conf) bounce, never a y-extremum or a real
+        # bounce-near-a-player (those land OUTSIDE the box). Verified NO-OP on the
+        # demo3 cache (no turn-bounce there, incl. real b308, lands inside a box); it
+        # fires on the LIVE track where the apex recovery put a bounce on a contact.
+        if not event_methodo and turn_bounce_frames and bounce_events:
+            from vision.bounce import drop_turn_bounces_inside_players
+            _before = len(bounce_events)
+            bounce_events, _dropped = drop_turn_bounces_inside_players(
+                bounce_events, turn_bounce_frames, locked_ppf)
+            if len(bounce_events) != _before:
+                bounce_by_frame = _build_bounce_by_frame(bounce_events)
+                direction_state_by_frame = {
+                    f: s for f, s in direction_state_by_frame.items()
+                    if f in {int(b[0]) for b in bounce_events}}
+                bset = list(bounce_by_frame.keys())
         # The wrist-proximity gate is the LEGACY lever (it prunes the over-fired
         # phantom swings: demo3 hit FP 7→2). It is OFF in the --event-methodo path
         # because the classifier's score-free firewall owns hit arbitration there —
@@ -1376,29 +1399,6 @@ def main():
             hits = detect_hits(all_ball_centers, locked_ppf, fps,
                                frame_height, frame_width, bounce_frames=bset,
                                wrist_prox_max=1.2)
-            # LEGACY confusion_H→B guard: a turn-angle-recovered bounce (no
-            # y-extremum → lower confidence) that lands INSIDE a player's box AND
-            # collides with a hit is that hit mislabeled (the ball reversed at the
-            # racket, not on the court) → drop it as a bounce so the hit owns the
-            # frame. A real floor bounce that merely happens NEAR a player lands
-            # OUTSIDE the box and is kept (so this never touches a genuine bounce —
-            # verified no-op on the demo3 cache, where b308 lands outside the box).
-            # This is what keeps confusion_H→B at 0 on the LIVE track, where the
-            # apex recovery otherwise mislabels a near-court contact as a bounce.
-            if turn_bounce_frames and bounce_events:
-                from vision.bounce import arbitrate_bounce_hit
-                _before = len(bounce_events)
-                bounce_events, hits = arbitrate_bounce_hit(
-                    bounce_events, hits, fps, turn_frames=turn_bounce_frames,
-                    players_per_frame=locked_ppf)
-                if len(bounce_events) != _before:
-                    # a bounce was demoted → rebuild the bounce structures that were
-                    # built from the pre-arbitration list (Pass-1 bounce_by_frame).
-                    bounce_by_frame = _build_bounce_by_frame(bounce_events)
-                    direction_state_by_frame = {
-                        f: s for f, s in direction_state_by_frame.items()
-                        if f in {int(b[0]) for b in bounce_events}}
-                    bset = list(bounce_by_frame.keys())
 
         if event_methodo and not args.demo_override:
             # ── UNIFIED ARBITRATION (vision.events.classify_events) ──

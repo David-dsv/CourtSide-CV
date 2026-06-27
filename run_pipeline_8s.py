@@ -599,7 +599,8 @@ def parse_args():
                              "bounce recall on broadcast; needs --wasb-weights).")
     parser.add_argument("--wasb-weights", default="training/wasb/wasb_tennis.pth.tar",
                         help="Path to WASB tennis weights (for --ball-tracker wasb).")
-    parser.add_argument("--event-methodo", action="store_true",
+    parser.add_argument("--event-methodo", action=argparse.BooleanOptionalAction,
+                        default=True,
                         help="Arbitrate bounces vs hits with the unified event classifier "
                              "(vision.events.classify_events) instead of running the two "
                              "detectors independently. The classifier merges the bounce "
@@ -607,9 +608,12 @@ def parse_args():
                              "via detect_sharp_turns) and the wrist-speed hits, then labels "
                              "each event {BOUNCE|HIT} under a SCORE-FREE firewall + rally "
                              "alternation — confusion_H->B/B->H drop to 0 and far-court bounce "
-                             "recall rises (demo3: bounce F1 0.20→0.84). OFF by default; OFF is "
-                             "strictly the legacy behavior (vx_flip_veto + detect_hits). Needs "
-                             "poses (Pass 1.5); on a pose-poor clip falls back gracefully.")
+                             "recall rises. ON by default (the firewall + vx-gate now reproduce "
+                             "the 0/0 confusion on the LIVE prod track once far-pose is dense). "
+                             "Pass --no-event-methodo for the strict legacy behavior "
+                             "(vx_flip_veto + detect_hits, weakly arbitrated by a temporal "
+                             "guard). Needs poses (Pass 1.5); on a pose-poor clip the classifier "
+                             "degrades gracefully (felix: 0 events, parity with legacy).")
     parser.add_argument("--no-minimap", action="store_true",
                         help="Disable the 2D top-down court minimap (ball trajectory + bounces).")
     parser.add_argument("--no-calibration", action="store_true",

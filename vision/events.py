@@ -138,33 +138,36 @@ _KP_CONF = 0.30
 
 # ───────────────────── far-court wrist-hit candidates ─────────────────────
 
-def detect_far_wrist_hits(players_per_frame, ball_centers, fps, frame_width,
-                          frame_height, net_frac=0.47,
-                          speed_norm_frac=0.06, min_gap_frac=0.20,
-                          near_box_h=0.8):
-    """Extra HIT candidates from the FAR player's racket-wrist swing.
+def detect_wrist_hits(players_per_frame, ball_centers, fps, frame_width,
+                      frame_height, net_frac=0.47,
+                      speed_norm_frac=0.03, min_gap_frac=0.20,
+                      near_box_h=0.8, sides=("far",)):
+    """Extra HIT candidates from a player's racket-wrist swing, measured in the
+    player's OWN scale (box-height-normalized) so it works on the tiny far player.
 
-    Why this is needed (measured on demo3): the production wrist-speed hit
-    detector (`vision.shots.detect_hits`) gates peaks on an AMPLITUDE floor scaled
-    to the FRAME height (`0.008*frame_height` ≈ 8.6px @1080p). That floor is sized
-    for the big NEAR player, but the FAR player is ~10× smaller in image space, so
-    a full far swing only moves the wrist ~3px/frame — it never crosses the floor.
-    Result: `detect_hits` emits ZERO far hits even when the far pose is dense (the
-    far-select merge lifted far-pose coverage 0.9%→85%, so the far WRIST is now
-    available — but the amplitude gate still throws it away). Far GT hits f333/f525
-    are invisible to the production detector for this reason.
+    Why this is needed (measured on demo3): the production wrist-speed hit detector
+    (`vision.shots.detect_hits`) gates peaks on an AMPLITUDE floor scaled to the
+    FRAME height (`0.008*frame_height` ≈ 8.6px @1080p). A FRAME-scaled floor is
+    blind to a perspective-small subject: the FAR player is ~10× smaller, so a full
+    far swing only moves the wrist ~3px/frame and never crosses the floor — far GT
+    hits (e.g. demo3 f525) are invisible to detect_hits, even with a dense far pose.
+    This generator recovers them by normalizing the wrist motion by the SUBJECT's
+    box height, not the frame's.
 
-    This generator measures the far wrist's per-frame displacement NORMALIZED BY
-    THE FAR PLAYER'S OWN BOX HEIGHT (scale-free), so a far swing and a near swing
-    register on the same scale. A local peak of that normalized speed, WITH the
-    ball within `near_box_h` box-heights of the wrist at the peak, is a far-contact
-    candidate. The ball-at-wrist gate is what keeps this firewall-safe: these
-    candidates can ONLY become HIT under `classify_events` (a hit_like event needs
-    the ball at a wrist), never a BOUNCE — so adding them cannot create confusion.
+    A local peak of the box-normalized wrist speed, WITH the ball within
+    `near_box_h` box-heights of that wrist at the peak, is a contact candidate. The
+    ball-at-wrist gate is what makes this firewall-safe: such a candidate sets
+    hit=True in its `classify_events` cluster, so it can ONLY ever be labeled HIT
+    (a hit_like event is forbidden from BOUNCE by the score-free firewall) — adding
+    these candidates therefore CANNOT create confusion-into-bounce, by construction.
 
-    Mirrors `_wrist_speed_series`'s per-side wrist identity-lock (track the wrist
-    nearest the previous one) so a detection-order flip doesn't fake a spike. All
-    thresholds are ratios of fps / box height — no per-video constants.
+    `sides` defaults to FAR ONLY. The near player is large and detect_hits handles
+    it well; scanning near here is NET-NEGATIVE on demo3 — a near swing fires next
+    to a far-court bounce that the near player is reaching for (no vx/vy reversal
+    yet at the swing-peak frame), and the merged hit candidate makes that turn-
+    bounce hit_like, flipping a real BOUNCE to HIT (confusion_B→H). So near is
+    opt-in (`sides=("near","far")`) for callers that have already removed that
+    ambiguity. All thresholds are ratios of fps / box height — no per-video consts.
 
     Returns a list of dicts {frame, x, y} (the `detect_hits` candidate contract).
     """
@@ -173,15 +176,18 @@ def detect_far_wrist_hits(players_per_frame, ball_centers, fps, frame_width,
         return []
     net_y = frame_height * net_frac
 
-    def _far_player(players):
-        """The far player at a frame = the candidate whose feet are above the net
-        line, with the most-confident wrists (matches detect_hits' per-side pick)."""
+    def _side_player(players, side):
+        """The player on `side` (near=feet below the net line, far=above) with the
+        most-confident wrists (matches detect_hits' per-side pick)."""
         best, best_score = None, -1.0
         for p in (players or []):
             if p is None:
                 continue
             box = p.get("box")
-            if box is None or len(box) < 4 or box[3] >= net_y:
+            if box is None or len(box) < 4:
+                continue
+            p_side = "near" if box[3] >= net_y else "far"
+            if p_side != side:
                 continue
             kc = p.get("kps_conf")
             if kc is None:
@@ -205,62 +211,70 @@ def detect_far_wrist_hits(players_per_frame, ball_centers, fps, frame_width,
                 best, best_c = (float(kx[wi][0]), float(kx[wi][1])), kc[wi]
         return best
 
-    # track ONE far wrist per frame (identity-locked to the nearest previous)
-    wrist = [None] * n           # (x, y)
-    box_h = [None] * n           # far player box height (the normalizer)
-    last = None
-    for i in range(n):
-        p = _far_player(players_per_frame[i])
-        if p is None:
-            continue
-        w = _wrist_xy(p)
-        if w is None:
-            continue
-        box = p["box"]
-        wrist[i] = w
-        box_h[i] = max(float(box[3] - box[1]), 1.0)
-        last = w
-
-    # per-frame normalized wrist speed (box-height units) on real consecutive frames
-    speed = np.full(n, np.nan)
-    for i in range(1, n):
-        if wrist[i] is not None and wrist[i - 1] is not None and box_h[i] is not None:
-            d = float(np.hypot(wrist[i][0] - wrist[i - 1][0],
-                               wrist[i][1] - wrist[i - 1][1]))
-            speed[i] = d / box_h[i]
-    # 5-frame median smooth (robust to a 1-frame pose jitter)
-    sm = speed.copy()
-    for i in range(n):
-        lo, hi = max(0, i - 2), min(n, i + 3)
-        win = sm[lo:hi]
-        win = win[~np.isnan(win)]
-        if win.size:
-            speed[i] = float(np.median(win))
-
-    floor = speed_norm_frac          # normalized: a swing moves the wrist >~0.06 box-h/frame
+    floor = speed_norm_frac          # normalized: a real swing moves the wrist
+    #                                  > a few % of its own box-height per frame; the
+    #                                  ball-at-wrist gate (not amplitude) is the real
+    #                                  precision mechanism, so this stays just above jitter.
     min_gap = max(1, int(fps * min_gap_frac))
     out = []
-    last_f = -min_gap
-    i = 1
-    while i < n - 1:
-        s = speed[i]
-        if (not np.isnan(s) and s >= floor
-                and (np.isnan(speed[i - 1]) or s >= speed[i - 1])
-                and (np.isnan(speed[i + 1]) or s > speed[i + 1])
-                and i - last_f >= min_gap):
-            # ball must be near the far wrist at the peak (the contact geometry) —
-            # this is the firewall-safe gate: no ball-at-wrist => no candidate.
-            w = wrist[i]
-            ball = ball_centers[i] if i < len(ball_centers) else None
-            if w is not None and ball is not None and box_h[i] is not None:
-                dn = float(np.hypot(ball[0] - w[0], ball[1] - w[1])) / box_h[i]
-                if dn <= near_box_h:
-                    out.append({"frame": i, "x": int(ball[0]), "y": int(ball[1])})
-                    last_f = i
-                    i += min_gap
-                    continue
-        i += 1
-    return out
+
+    for side in sides:
+        # track this side's racket wrist per frame (the more-confident of L/R)
+        wrist = [None] * n           # (x, y)
+        box_h = [None] * n           # the player's box height (the normalizer)
+        for i in range(n):
+            p = _side_player(players_per_frame[i], side)
+            if p is None:
+                continue
+            w = _wrist_xy(p)
+            if w is None:
+                continue
+            box = p["box"]
+            wrist[i] = w
+            box_h[i] = max(float(box[3] - box[1]), 1.0)
+
+        # per-frame box-normalized wrist speed on real consecutive frames
+        speed = np.full(n, np.nan)
+        for i in range(1, n):
+            if wrist[i] is not None and wrist[i - 1] is not None and box_h[i] is not None:
+                d = float(np.hypot(wrist[i][0] - wrist[i - 1][0],
+                                   wrist[i][1] - wrist[i - 1][1]))
+                speed[i] = d / box_h[i]
+        # 5-frame median smooth (robust to a 1-frame pose jitter)
+        sm = speed.copy()
+        for i in range(n):
+            lo, hi = max(0, i - 2), min(n, i + 3)
+            win = sm[lo:hi]
+            win = win[~np.isnan(win)]
+            if win.size:
+                speed[i] = float(np.median(win))
+
+        last_f = -min_gap
+        i = 1
+        while i < n - 1:
+            s = speed[i]
+            if (not np.isnan(s) and s >= floor
+                    and (np.isnan(speed[i - 1]) or s >= speed[i - 1])
+                    and (np.isnan(speed[i + 1]) or s > speed[i + 1])
+                    and i - last_f >= min_gap):
+                # ball must be near THIS wrist at the peak (the contact geometry) —
+                # the firewall-safe gate: no ball-at-wrist => no candidate.
+                w = wrist[i]
+                ball = ball_centers[i] if i < len(ball_centers) else None
+                if w is not None and ball is not None and box_h[i] is not None:
+                    dn = float(np.hypot(ball[0] - w[0], ball[1] - w[1])) / box_h[i]
+                    if dn <= near_box_h:
+                        out.append({"frame": i, "x": int(ball[0]), "y": int(ball[1])})
+                        last_f = i
+                        i += min_gap
+                        continue
+            i += 1
+    return sorted(out, key=lambda h: h["frame"])
+
+
+# Back-compat alias (the original name was far-only; the generator now scans both
+# sides because some NEAR swings are also dropped by detect_hits' NMS/bookkeeping).
+detect_far_wrist_hits = detect_wrist_hits
 
 
 # ───────────────────────── direction features ─────────────────────────
@@ -466,14 +480,19 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
     # far GT hits never enter hit_cands. Recover them from the now-dense far pose
     # with a box-height-NORMALIZED wrist-speed peak gated on ball-at-wrist (so the
     # extra candidates can only ever become HIT under the firewall — never a
-    # bounce). Merge them in, deduping any that coincide with an existing hit cand.
+    # bounce). Merge them in, deduping any that coincide with an existing hit cand
+    # OR a bounce candidate: a far-wrist hit landing inside a bounce's merge cluster
+    # would set hit=True there and (wrongly) make a real floor bounce hit_like,
+    # blocking it from BOUNCE. The bounce/hit detectors' own evidence wins; the
+    # far-wrist generator only FILLS the gaps where neither fired.
     all_hits = list(hit_cands)
     if far_wrist_hits and players_per_frame is not None and smoothed_centers is not None:
         dedup_gap = max(1, round(fps * merge_frac))
-        existing = sorted(int(h["frame"]) for h in hit_cands)
-        for fh_ in detect_far_wrist_hits(players_per_frame, smoothed_centers, fps,
-                                         frame_width, frame_height):
-            if not any(abs(fh_["frame"] - e) <= dedup_gap for e in existing):
+        occupied = sorted([int(h["frame"]) for h in hit_cands]
+                          + [int(fr) for (fr, _x, _y) in bounce_cands])
+        for fh_ in detect_wrist_hits(players_per_frame, smoothed_centers, fps,
+                                     frame_width, frame_height):
+            if not any(abs(fh_["frame"] - e) <= dedup_gap for e in occupied):
                 all_hits.append(fh_)
 
     # ── PASS 0: merge into physical events (span-capped, NOT transitive) ──

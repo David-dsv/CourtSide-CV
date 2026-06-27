@@ -59,8 +59,11 @@ def legacy_events(fps, fw, fh, kal, kal_real, ppf):
     # suppress the real hit. NO-OP on this cache (no turn-bounce lands inside a box,
     # incl. real b308); fires on the live track (f82 at a near-court contact).
     b_cands, _dropped = drop_turn_bounces_inside_players(b_cands, turn_frames, ppf)
-    bounce_frames = [b[0] for b in b_cands]
-    hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=bounce_frames,
+    # suppress hits only near HIGH-CONFIDENCE y-V bounces, NOT turn-only bounces, so a
+    # real hit at a mislabeled turn-bounce surfaces and wins the frame (confusion_H→B
+    # guard). Mirrors prod.
+    yv_bset = [int(b[0]) for b in b_cands if int(b[0]) not in set(turn_frames)]
+    hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=yv_bset,
                        wrist_prox_max=1.2)
     evs = [{"frame": int(f), "label": "BOUNCE"} for (f, x, y) in b_cands]
     evs += [{"frame": int(h["frame"]), "label": "HIT"} for h in hits]

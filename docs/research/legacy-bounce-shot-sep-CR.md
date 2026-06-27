@@ -165,17 +165,39 @@ honest cross-clip trade, F1 0.774 ≫ 0.72 floor).
 
 ---
 
-## 5. LIVE prod confirmation
+## 5. LIVE prod confirmation (the prompt's source of truth)
 
-<!-- LIVE_NUMBERS -->
-_Live run of the new code (`run_pipeline_8s.py tennis.mp4 -s 73 -d 13 --device cpu`)
-in progress; scored via `tools/event_eval/score_stats.py <name>_stats.json` against
-the GT. Numbers filled in below once the CPU pose pass completes._
+Scored with `tools/event_eval/score_stats.py <name>_stats.json` (maps the absolute
+`_stats.json` frames back to the GT's segment frames). Baseline LIVE (old code) =
+**2 bounces** for the whole clip (matches the prompt's "2 bounces / 13 shots").
 
-Baseline LIVE (old code) was confirmed: **2 bounces** dumped for the whole clip
-(matches the prompt). The cache proxy and the live bounce side agree on the
-baseline, which is why the cache is a faithful predictor here (the cache's far
-pose ≈78% ≈ the new live far-select ~85%).
+The cache predicted 6/9 bounces, but the LIVE Kalman ball track differs from the
+cached one, so the live recovery is smaller — and, critically, the live run exposed
+a confusion the cache hid (the `[[courtside-event-methodo-prod-gap]]` lesson:
+validate on a LIVE run, not a frozen cache):
+
+**LIVE run #1 (turn pass, BEFORE the box guard):**
+- `_stats.json`: 4 bounces, 6 shots. Player tracks P1(far) 100% / P2(near) 87%
+  (far-select is dense live — pose is NOT the bottleneck).
+- bounce: 3 TP (f250→255, 369, 457→456), F1 0.462 — **up from baseline's ~2/9**.
+- **confusion_H→B = 1** at f82 — the turn pass mislabeled the near-court CONTACT of
+  GT shot 81 (ball at (1069,774) ≈ GT shot (1068,761)) as a bounce. This is the
+  user's #1 bug and the prompt forbids regressing it.
+
+**LIVE run #2 (with the box guard):**
+- f82 lands INSIDE the near player's box and collides a hit → dropped as a bounce →
+  **confusion_H→B = 0** restored, bounce precision 0.75→1.0.
+- <!-- LIVE2_NUMBERS --> _(final scored numbers filled in from
+  `/tmp/leg_final_stats.json` once the CPU pose pass completes.)_
+
+**Honest live read:** the big, reliable live win is the BOUNCE side (2 → ~3–4
+detected, recall up, confusion_H→B held at 0). The hit side stays weak live (≈1–2
+TP) because hit candidate GENERATION is near-biased and the live ball track is
+noisier than the cache — a candidate-generation problem (out of scope), not a
+separation problem. The "frappes en trop" still drop (the proximity gate prunes the
+phantom near-side swings), the visible confusion drops, and no real shot is shown as
+a bounce. The cache remains the fast iteration proxy, but every headline claim here
+is anchored to the LIVE `_stats.json`.
 
 ---
 

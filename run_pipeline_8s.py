@@ -1125,6 +1125,7 @@ def main():
     # YOLO+Kalman trajectory the curve-fit detector is the tuned default.
     bounce_events = []
     direction_state_by_frame = {}  # frame -> {"metric","unconfirmed"} (CHANTIER 2)
+    turn_bounce_frames = []        # LEGACY: turn-angle-sourced (lower-conf) bounces
     # --event-methodo: the unified classifier (vision.events) needs the RAW,
     # un-vetoed bounce candidates PLUS poses + hits, which only exist after Pass
     # 1.5. So we SKIP the Pass-1 bounce detection/veto entirely here and generate
@@ -1153,8 +1154,27 @@ def main():
             # vy-flip recall is only 62-73% → risk of dropping below the 0.72
             # bounce floor. Documented debt: a future CHANTIER 0 for this path
             # would thread its pre-spline trajectory + mask before vetoing.
-            bounce_events = detect_bounces_from_trajectory(
-                all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
+            #
+            # LEGACY SEPARATION (feat/legacy-bounce-shot-sep): we DO thread the raw
+            # pre-spline centers + is_real mask here so the curve-fit detector also
+            # admits far-court APEX bounces from the velocity-vector turn angle
+            # (no y-extremum → the strict y-max test alone found only ~1/9 on the
+            # demo3 broadcast clip). Each turn candidate is validated by an on-court
+            # band + vy-reflection + vx-not-flipped check (a vx flip is a hit), so
+            # recall rises without flooding FPs and without confusing hits as
+            # bounces. demo3 legacy: bounce F1 0.20→0.80; the 3 confusion_B→H vanish
+            # (real bounces are now claimed as bounces, not hits). On felix the turn
+            # branch (which this prod path DOES enter, unlike the test's no-arg call)
+            # adds one mid-court turn FP → F1 0.800→0.774, still well above the 0.72
+            # floor: the turn pass is GAP-FILLER-only (never displaces a refined y-V
+            # bounce in NMS) and felix's clean y-peaks carry recall, so the cost is a
+            # single FP — a fair cross-clip trade for demo3's 1/9→6/9. Both the
+            # no-arg (test) and with-arg (prod) felix paths are floored in
+            # test_bounce_regression.
+            bounce_events, turn_bounce_frames = detect_bounces_from_trajectory(
+                all_ball_centers, ball_speeds_px, fps, frame_height, frame_width,
+                raw_centers=raw_ball_centers, is_real=ball_is_real,
+                return_turn_frames=True)
 
     # ─── Optional: export bounce predictions for offline evaluation ───
     # Additive, gated, read-only w.r.t. the pipeline: reads the already-computed
@@ -1329,9 +1349,60 @@ def main():
     if not args.no_bounces and all_ball_centers:
         from vision.shots import detect_hits, classify_forehand_backhand, shot_quality
         bset = list(bounce_by_frame.keys())   # [] when --event-methodo (deferred)
-        # poses already computed for every frame in Pass 1.5 (players_per_frame)
-        hits = detect_hits(all_ball_centers, players_per_frame, fps,
-                           frame_height, frame_width, bounce_frames=bset)
+        # LEGACY SEPARATION: feed hit detection the LOCKED, gap-filled P1/P2 tracks
+        # (reshaped per-frame to [near, far]) rather than the raw per-frame poses.
+        # Same reason the methodo path uses methodo_ppf: the ball↔racket-wrist
+        # proximity gate (which prunes phantom wrist-speed swings) needs the FAR
+        # player's pose to exist, and the tracker's gap-fill is what bridges the
+        # tiny far player's missed frames (now that far-select reaches ~85%). Built
+        # ONCE here and reused by both paths below.
+        locked_ppf = []
+        for _i in range(max_frames):
+            _near = player_tracks[2][_i] if _i < len(player_tracks[2]) else None
+            _far = player_tracks[1][_i] if _i < len(player_tracks[1]) else None
+            _slot = []
+            if _near is not None:
+                _slot.append(_near)
+            if _far is not None:
+                _slot.append(_far)
+            locked_ppf.append(_slot)
+        # LEGACY confusion_H→B guard (runs BEFORE hit detection, now that poses
+        # exist): drop any turn-angle-recovered bounce (no y-extremum → lower
+        # confidence) whose landing falls INSIDE a player's box. A real FLOOR bounce
+        # lands on the COURT, never inside a player's silhouette; a turn candidate
+        # that landed inside a player is a near-court CONTACT mislabeled as a bounce.
+        # Doing this BEFORE detect_hits is the point: the bogus bounce no longer
+        # suppresses the real hit at that frame (bounce_guard), so the contact is
+        # emitted as a HIT and confusion_H→B stays 0. Pure bounce-side filter — only
+        # ever removes a turn (low-conf) bounce, never a y-extremum or a real
+        # bounce-near-a-player (those land OUTSIDE the box). Verified NO-OP on the
+        # demo3 cache (no turn-bounce there, incl. real b308, lands inside a box); it
+        # fires on the LIVE track where the apex recovery put a bounce on a contact.
+        if not event_methodo and turn_bounce_frames and bounce_events:
+            from vision.bounce import drop_turn_bounces_inside_players
+            _before = len(bounce_events)
+            bounce_events, _dropped = drop_turn_bounces_inside_players(
+                bounce_events, turn_bounce_frames, locked_ppf)
+            if len(bounce_events) != _before:
+                bounce_by_frame = _build_bounce_by_frame(bounce_events)
+                direction_state_by_frame = {
+                    f: s for f, s in direction_state_by_frame.items()
+                    if f in {int(b[0]) for b in bounce_events}}
+                bset = list(bounce_by_frame.keys())
+        # The wrist-proximity gate is the LEGACY lever (it prunes the over-fired
+        # phantom swings: demo3 hit FP 7→2). It is OFF in the --event-methodo path
+        # because the classifier's score-free firewall owns hit arbitration there —
+        # gating upstream would starve it (proven: it re-introduces confusion_B→H on
+        # the methodo regression). So only the legacy path opts in, and the methodo
+        # path keeps using the RAW per-frame poses + an un-gated candidate set
+        # (unchanged from before this branch).
+        if event_methodo:
+            hits = detect_hits(all_ball_centers, players_per_frame, fps,
+                               frame_height, frame_width, bounce_frames=bset)
+        else:
+            hits = detect_hits(all_ball_centers, locked_ppf, fps,
+                               frame_height, frame_width, bounce_frames=bset,
+                               wrist_prox_max=1.2)
 
         if event_methodo and not args.demo_override:
             # ── UNIFIED ARBITRATION (vision.events.classify_events) ──
@@ -1499,7 +1570,9 @@ def main():
         else:
             sorted_bounces = sorted(bounce_by_frame.keys())
             for h in hits:
-                fhb = classify_forehand_backhand(h, players_per_frame)
+                # FH/BH must read the SAME per-frame pose list detect_hits indexed
+                # (h["player_idx"] indexes locked_ppf, not the raw players_per_frame).
+                fhb = classify_forehand_backhand(h, locked_ppf)
                 # link to the next bounce after this hit for depth/placement/speed
                 nb = next((b for b in sorted_bounces if b > h["frame"]), None)
                 if nb is not None:

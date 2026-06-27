@@ -198,11 +198,35 @@ def _fwhm_at(speed, peak_idx):
 
 
 def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
-                bounce_frames=None):
+                bounce_frames=None, wrist_prox_max=float("inf")):
     """
     Detect racket→ball contact (hit) frames via racket-wrist speed peaks, and
     attribute each to a player. Returns list of dicts:
       {frame, x, y, player_idx, player_side, anchor, right_handed, wrist_speed}
+
+    A wrist-speed peak alone over-fires: the arm also swings on a split-step,
+    a follow-through, or a pose-tracker identity flip — none of which are a real
+    racket→ball contact. The discriminator (now that the FAR player's pose is
+    dense — far-select 0.9%→84.9%) is BALL↔RACKET-WRIST PROXIMITY: a real contact
+    has the ball reach the racket wrist. We require, over the ±ball_win contact
+    window, the MINIMUM ball↔wrist distance (in player-height units) to fall below
+    ``wrist_prox_max``. The min is taken over the window — not at the wrist-speed
+    peak frame, which LAGS contact by a few frames (the arm swings through), so
+    the ball is already leaving at the peak. A None wrist (pose miss) ABSTAINS
+    (the candidate is kept) rather than dropping — proximity can only ADD
+    precision here, never silently cut recall on an unreadable pose.
+
+    wrist_prox_max is a fraction of the player's bounding-box HEIGHT (scale-free:
+    an arm+racket spans ~1.0-1.2·height, and the windowed-MIN over the contact
+    window pulls a true contact well under that, so 1.2 means "the ball came within
+    roughly a body-length of the racket at closest approach"). It DEFAULTS TO
+    float('inf') — i.e. the gate is OFF and detect_hits is byte-identical to before
+    for every existing caller (the --event-methodo path, felix, etc.). The LEGACY
+    prod path opts in with wrist_prox_max≈1.2: on the demo3 legacy cache 1.0-1.2 is
+    a stable plateau (hit FP 7→2, no real near-side contact lost, confusion 0/0);
+    the 1.5-2.0 band is AVOIDED (it kills a hit that was shadowing a bounce-as-hit,
+    re-introducing confusion_B→H). Keeping the default OFF is what makes this change
+    safe for the methodo path (its firewall owns hit arbitration there).
     """
     n = len(ball_centers)
     if n < 7:
@@ -271,6 +295,28 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
         h = max(_player_height(me), 1.0)
         if best_d / h > 2.5:  # ball never came near this player → not a real contact
             continue
+        # WRIST-PROXIMITY GATE: a real contact has the ball reach the RACKET WRIST,
+        # not just the torso. The per-frame racket wrist comes from the wrist_xy
+        # series (a (player, wrist) tuple, or None where the pose missed it). We
+        # take the MIN ball↔wrist distance over the window (contact LAGS the speed
+        # peak). A None wrist on the whole window ABSTAINS (kept) — proximity only
+        # adds precision, it never cuts recall on an unreadable pose. The torso
+        # search above already located the contact; this gate only filters phantom
+        # swings (split-step / follow-through / a tracker identity flip) where the
+        # ball never came near the racket.
+        wmin = float("inf")
+        for j in range(lo, hi):
+            if ball_centers[j] is None:
+                continue
+            wj = wrist_xy[j] if 0 <= j < len(wrist_xy) else None
+            if wj is None or wj is False:
+                continue
+            wpos = wj[1]
+            dw = np.hypot(ball_centers[j][0] - wpos[0], ball_centers[j][1] - wpos[1])
+            if dw < wmin:
+                wmin = dw
+        if wmin != float("inf") and wmin / h > wrist_prox_max:
+            continue  # ball never reached the racket wrist → phantom swing, not a hit
         contact_frame = j
         ball_pos = best_j
         # re-attribute at the contact frame (player pose there is what we classify on)

@@ -1370,6 +1370,50 @@ def main():
                 if far is not None:
                     slot.append(far)
                 methodo_ppf.append(slot)
+            # DIAGNOSTIC (inert unless COURTSIDE_DUMP_METHODO_INPUTS is set): dump
+            # the EXACT live classify_events inputs so the prod-vs-cache event
+            # divergence can be replayed offline candidate-by-candidate. No behavior
+            # change — pure side-effect serialization of what is fed below.
+            import os as _os_diag
+            _dump_path = _os_diag.environ.get("COURTSIDE_DUMP_METHODO_INPUTS")
+            if _dump_path:
+                def _ser_ppf(ppf):
+                    out = []
+                    for slot in ppf:
+                        s = []
+                        for p in slot:
+                            if p is None:
+                                continue
+                            box = p.get("box")
+                            kx = p.get("kps_xy")
+                            kc = p.get("kps_conf")
+                            s.append({
+                                "box": (np.asarray(box).tolist() if box is not None else None),
+                                "kps_xy": (np.asarray(kx).tolist() if kx is not None else None),
+                                "kps_conf": (np.asarray(kc).tolist() if kc is not None else None),
+                            })
+                        out.append(s)
+                    return out
+                _dump = {
+                    "fps": fps, "width": frame_width, "height": frame_height,
+                    "start_frame": int(start_frame),
+                    "raw_ball_centers": [list(c) if c is not None else None
+                                         for c in raw_ball_centers],
+                    "ball_is_real": [bool(x) for x in ball_is_real],
+                    "all_ball_centers": [list(c) if c is not None else None
+                                         for c in all_ball_centers],
+                    "b_cands": [[int(f), int(x), int(y)] for (f, x, y) in b_cands],
+                    "turns": sorted(int(t) for t in turns),
+                    "hits": [{"frame": int(h["frame"]), "x": int(h["x"]),
+                              "y": int(h["y"]), "player_side": h.get("player_side")}
+                             for h in hits],
+                    "methodo_ppf": _ser_ppf(methodo_ppf),
+                }
+                Path(_dump_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(_dump_path, "w") as _mf:
+                    json.dump(_dump, _mf)
+                logger.info(f"[diag] dumped live methodo inputs -> {_dump_path}")
+
             events, evt_report = classify_events(
                 b_cands, hits, raw_ball_centers, ball_is_real, methodo_ppf,
                 fps, frame_width, frame_height,

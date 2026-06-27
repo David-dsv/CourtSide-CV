@@ -124,7 +124,14 @@ RECONCILED (far-wrist OFF) replay sur inputs LIVE :
   HIT    F1 = 0.750  (6 TP / 2 FP / 2 FN)
   -> BYTE-IDENTIQUE à S1-base sur les mêmes inputs (zéro régression)
 ```
-(La première version far-wrist ON donnait `0/0, bounce 0.667, hit 0.556` sur ces mêmes inputs — d'où le passage OFF, §4.0. Le run end-to-end live confirme le même `_stats.json` 0/0 ; la détection balle est déterministe sur ce clip, vérifiée sur 3 runs.)
+**Run END-TO-END live confirmant (pas un replay — `_stats.json` réel, défaut far-wrist OFF) :**
+```
+predicted: 6 bounces / 8 shots   vs GT 9 bounces / 8 shots
+  confusion_H->B = 0   confusion_B->H = 0
+  BOUNCE  P=0.833 R=0.556 F1=0.667  (TP=5 FP=1 FN=4 ; misses 62,120,174,308)
+  HIT     P=0.750 R=0.750 F1=0.750  (TP=6 FP=2 FN=2)
+```
+→ identique au replay. (La première version far-wrist ON donnait `0/0, bounce 0.667, hit 0.556` sur ces mêmes inputs — d'où le passage OFF, §4.0. La détection balle est déterministe sur ce clip, vérifiée sur plusieurs runs.)
 
 **Lecture honnête :**
 - ✅ **L'objectif DUR de la session — confusion 0/0 EN LIVE — est ATTEINT** (le `_stats.json` réel scoré contre la GT : `H→B=0, B→H=0`), déterministe. Le firewall (`_reward` renvoie `None` sur `hit_like`) le **garantit par construction**. C'était le but : *« la confusion rebond/frappe DISPARAÎT du `_stats.json` de PROD »*.

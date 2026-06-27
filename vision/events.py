@@ -136,6 +136,146 @@ _L_WRIST, _R_WRIST = 9, 10
 _KP_CONF = 0.30
 
 
+# ───────────────────── far-court wrist-hit candidates ─────────────────────
+
+def detect_wrist_hits(players_per_frame, ball_centers, fps, frame_width,
+                      frame_height, net_frac=0.47,
+                      speed_norm_frac=0.03, min_gap_frac=0.20,
+                      near_box_h=0.8, sides=("far",)):
+    """Extra HIT candidates from a player's racket-wrist swing, measured in the
+    player's OWN scale (box-height-normalized) so it works on the tiny far player.
+
+    Why this is needed (measured on demo3): the production wrist-speed hit detector
+    (`vision.shots.detect_hits`) gates peaks on an AMPLITUDE floor scaled to the
+    FRAME height (`0.008*frame_height` ≈ 8.6px @1080p). A FRAME-scaled floor is
+    blind to a perspective-small subject: the FAR player is ~10× smaller, so a full
+    far swing only moves the wrist ~3px/frame and never crosses the floor — far GT
+    hits (e.g. demo3 f525) are invisible to detect_hits, even with a dense far pose.
+    This generator recovers them by normalizing the wrist motion by the SUBJECT's
+    box height, not the frame's.
+
+    A local peak of the box-normalized wrist speed, WITH the ball within
+    `near_box_h` box-heights of that wrist at the peak, is a contact candidate. The
+    ball-at-wrist gate is what makes this firewall-safe: such a candidate sets
+    hit=True in its `classify_events` cluster, so it can ONLY ever be labeled HIT
+    (a hit_like event is forbidden from BOUNCE by the score-free firewall) — adding
+    these candidates therefore CANNOT create confusion-into-bounce, by construction.
+
+    `sides` defaults to FAR ONLY. The near player is large and detect_hits handles
+    it well; scanning near here is NET-NEGATIVE on demo3 — a near swing fires next
+    to a far-court bounce that the near player is reaching for (no vx/vy reversal
+    yet at the swing-peak frame), and the merged hit candidate makes that turn-
+    bounce hit_like, flipping a real BOUNCE to HIT (confusion_B→H). So near is
+    opt-in (`sides=("near","far")`) for callers that have already removed that
+    ambiguity. All thresholds are ratios of fps / box height — no per-video consts.
+
+    Returns a list of dicts {frame, x, y} (the `detect_hits` candidate contract).
+    """
+    n = len(players_per_frame)
+    if n < 5:
+        return []
+    net_y = frame_height * net_frac
+
+    def _side_player(players, side):
+        """The player on `side` (near=feet below the net line, far=above) with the
+        most-confident wrists (matches detect_hits' per-side pick)."""
+        best, best_score = None, -1.0
+        for p in (players or []):
+            if p is None:
+                continue
+            box = p.get("box")
+            if box is None or len(box) < 4:
+                continue
+            p_side = "near" if box[3] >= net_y else "far"
+            if p_side != side:
+                continue
+            kc = p.get("kps_conf")
+            if kc is None:
+                continue
+            score = sum((kc[i] if i < len(kc) else 0.0) for i in (_L_WRIST, _R_WRIST))
+            if score > best_score:
+                best, best_score = p, score
+        return best
+
+    def _wrist_xy(p):
+        """The more-confident wrist (x,y) of player p, or None."""
+        kx = p.get("kps_xy")
+        kc = p.get("kps_conf")
+        if kx is None or kc is None:
+            return None
+        kx = np.asarray(kx)
+        kc = np.asarray(kc)
+        best, best_c = None, _KP_CONF
+        for wi in (_L_WRIST, _R_WRIST):
+            if wi < len(kc) and kc[wi] >= best_c:
+                best, best_c = (float(kx[wi][0]), float(kx[wi][1])), kc[wi]
+        return best
+
+    floor = speed_norm_frac          # normalized: a real swing moves the wrist
+    #                                  > a few % of its own box-height per frame; the
+    #                                  ball-at-wrist gate (not amplitude) is the real
+    #                                  precision mechanism, so this stays just above jitter.
+    min_gap = max(1, int(fps * min_gap_frac))
+    out = []
+
+    for side in sides:
+        # track this side's racket wrist per frame (the more-confident of L/R)
+        wrist = [None] * n           # (x, y)
+        box_h = [None] * n           # the player's box height (the normalizer)
+        for i in range(n):
+            p = _side_player(players_per_frame[i], side)
+            if p is None:
+                continue
+            w = _wrist_xy(p)
+            if w is None:
+                continue
+            box = p["box"]
+            wrist[i] = w
+            box_h[i] = max(float(box[3] - box[1]), 1.0)
+
+        # per-frame box-normalized wrist speed on real consecutive frames
+        speed = np.full(n, np.nan)
+        for i in range(1, n):
+            if wrist[i] is not None and wrist[i - 1] is not None and box_h[i] is not None:
+                d = float(np.hypot(wrist[i][0] - wrist[i - 1][0],
+                                   wrist[i][1] - wrist[i - 1][1]))
+                speed[i] = d / box_h[i]
+        # 5-frame median smooth (robust to a 1-frame pose jitter)
+        sm = speed.copy()
+        for i in range(n):
+            lo, hi = max(0, i - 2), min(n, i + 3)
+            win = sm[lo:hi]
+            win = win[~np.isnan(win)]
+            if win.size:
+                speed[i] = float(np.median(win))
+
+        last_f = -min_gap
+        i = 1
+        while i < n - 1:
+            s = speed[i]
+            if (not np.isnan(s) and s >= floor
+                    and (np.isnan(speed[i - 1]) or s >= speed[i - 1])
+                    and (np.isnan(speed[i + 1]) or s > speed[i + 1])
+                    and i - last_f >= min_gap):
+                # ball must be near THIS wrist at the peak (the contact geometry) —
+                # the firewall-safe gate: no ball-at-wrist => no candidate.
+                w = wrist[i]
+                ball = ball_centers[i] if i < len(ball_centers) else None
+                if w is not None and ball is not None and box_h[i] is not None:
+                    dn = float(np.hypot(ball[0] - w[0], ball[1] - w[1])) / box_h[i]
+                    if dn <= near_box_h:
+                        out.append({"frame": i, "x": int(ball[0]), "y": int(ball[1])})
+                        last_f = i
+                        i += min_gap
+                        continue
+            i += 1
+    return sorted(out, key=lambda h: h["frame"])
+
+
+# Back-compat alias (the original name was far-only; the generator now scans both
+# sides because some NEAR swings are also dropped by detect_hits' NMS/bookkeeping).
+detect_far_wrist_hits = detect_wrist_hits
+
 # ───────────────────────── direction features ─────────────────────────
 
 def _direction_features(f, raw_centers, is_real, fps, frame_width,
@@ -288,7 +428,8 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
                     keep=0.3, lam=0.5, miss_cost=1.0, slot_rad=0.4,
                     decoder="global",
                     turning_frames=None, smoothed_centers=None,
-                    wasb_centers=None, wasb_is_real=None):
+                    wasb_centers=None, wasb_is_real=None,
+                    far_wrist_hits=False, far_wrist_span_frac=0.26):
     """Merge candidates, commit pure anchors, estimate cadence, parity-decode the
     deferred events, and return the labeled event list + a WASB-consistency report.
 
@@ -344,6 +485,117 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             gap_frac=gap_frac, eps_rel=eps_rel, eps_floor_frac=eps_floor_frac,
             min_netdx_frac=min_netdx_frac)
 
+    def _is_y_maximum(fr, win=None):
+        """True if the smoothed ball is at a local y-MAXIMUM near fr — its LOWEST
+        screen point (image-y grows downward), the shape a floor bounce makes (down
+        then up). Read on the spline track over a small window so a 1-frame wobble
+        doesn't hide it. Used only as POSITIVE bounce evidence to relax the
+        proximity firewall for swing-less events (never to label a hit)."""
+        if smoothed_centers is None:
+            return False
+        w = win if win is not None else max(2, round(fps * 0.10))
+        n2 = len(smoothed_centers)
+        ys = [smoothed_centers[k][1] for k in range(max(0, fr - w), min(n2, fr + w + 1))
+              if smoothed_centers[k] is not None]
+        here = smoothed_centers[fr][1] if (0 <= fr < n2 and smoothed_centers[fr] is not None) else None
+        if here is None or len(ys) < 3:
+            return False
+        return here >= max(ys) - 0.5      # at (within ½px of) the lowest screen point
+
+    def _velocity_turn_angle(fr, win_frac=0.06):
+        """Max ball VELOCITY-VECTOR turn angle (deg) in a small window around fr,
+        read on the RAW pre-spline track + is_real mask (same safety invariant as
+        the veto — never across an interpolated gap).
+
+        Physics discriminant (measured on demo3): a racket HIT sharply REVERSES the
+        velocity vector — the incoming and outgoing directions point ~opposite, so
+        the turn angle is large (f83/H81 ~179°, f335/H333 ~160°, f196/H196 ~170°).
+        A GENTLE far-court FLOOR bounce only nudges the VERTICAL component while the
+        horizontal flows straight through, so the velocity vector barely turns
+        (f179/B174 ~0°, f258/B255 ~0.9°). This is rotation/position-invariant and is
+        the SAME turn-angle physics detect_sharp_turns uses — here we read it to
+        prove a y-max apex is a GENTLE floor reversal, not a racket redirect.
+
+        Returns the max angle (deg) over fr±half, or None if unreadable."""
+        n2 = len(raw_centers)
+        k = max(2, round(fps * win_frac))
+        best = None
+        for ff in range(fr - 3, fr + 4):
+            if not (k <= ff < n2 - k):
+                continue
+            if not (is_real[ff - k] and is_real[ff] and is_real[ff + k]):
+                continue
+            c0, c1, c2 = raw_centers[ff - k], raw_centers[ff], raw_centers[ff + k]
+            if c0 is None or c1 is None or c2 is None:
+                continue
+            ax, ay = c1[0] - c0[0], c1[1] - c0[1]
+            bx, by = c2[0] - c1[0], c2[1] - c1[1]
+            na = (ax * ax + ay * ay) ** 0.5
+            nb = (bx * bx + by * by) ** 0.5
+            if na < 1.0 or nb < 1.0:
+                continue
+            cos = max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))
+            a = float(np.degrees(np.arccos(cos)))
+            if best is None or a > best:
+                best = a
+        return best
+
+    def _is_edge_artifact(fr):
+        """True if a 'bounce' candidate at fr is really a TRACKING DROPOUT, not a
+        floor bounce: the ball falls off the bottom of the frame (y near the bottom
+        edge) and the track TELEPORTS across this frame (the tracker reinits at the
+        far side). A real floor bounce's lowest point sits inside the court, with a
+        continuous trajectory. demo3 f159: y=1060/1080=0.98 then jumps 1060->364.
+        This only ever REMOVES spurious bounce evidence (firewall-neutral)."""
+        n2 = len(smoothed_centers) if smoothed_centers is not None else 0
+        if not (0 <= fr < n2) or smoothed_centers[fr] is None:
+            return False
+        y = smoothed_centers[fr][1]
+        if y > 0.93 * frame_height:          # at the bottom frame edge => off-court
+            return True
+        # teleport across the candidate: a one-frame jump > 25% of the diagonal
+        diag = float(np.hypot(frame_width, frame_height))
+        for a, b in ((fr - 1, fr), (fr, fr + 1)):
+            if 0 <= a < n2 and 0 <= b < n2 and smoothed_centers[a] is not None \
+                    and smoothed_centers[b] is not None:
+                jump = np.hypot(smoothed_centers[b][0] - smoothed_centers[a][0],
+                                smoothed_centers[b][1] - smoothed_centers[a][1])
+                if jump > 0.25 * diag:
+                    return True
+        return False
+
+    # FAR-court wrist hits (OPT-IN, default OFF — see far_wrist_hits): detect_hits'
+    # amplitude floor is frame-scaled and blind to the tiny far player (its full
+    # swing moves the wrist below the floor), so far GT hits never enter hit_cands.
+    # This generator recovers them from a dense far pose with a box-height-NORMALIZED
+    # wrist-speed peak gated on ball-at-wrist (so the extra candidates can only ever
+    # become HIT under the firewall — never a bounce). Deduped vs existing hit AND
+    # bounce candidates so a far-wrist hit can't make a real floor bounce hit_like.
+    #
+    # WHY DEFAULT OFF (reconciliation, measured apples-to-apples on a LIVE track):
+    # on the gap-filled CACHE far pose it recovers far hit f525 cleanly, but on the
+    # noisier LIVE far pose its box-normalized wrist-speed peaks over-fire — it adds
+    # spurious far HIT-FPs and NET-REGRESSES live hit F1 (S1 0.750 -> 0.556 on the
+    # same demo3 live inputs) for no live bounce benefit (the f174 gain comes from
+    # the GENTLE-APEX anchor below, which is INDEPENDENT of this generator: cache
+    # bounce F1 0.947 holds with this OFF, and hit F1 is actually HIGHER, 0.778 vs
+    # 0.737). So it ships OFF; callers with a clean dense far pose opt in via
+    # far_wrist_hits=True (the demo3 cache regression test does, to lock the f525
+    # path). Tightening its live precision is upstream S2/far-pose work, out of the
+    # firewall-reconciliation scope. Firewall holds 0/0 either way (HIT-only FPs).
+    all_hits = list(hit_cands)
+    if far_wrist_hits and players_per_frame is not None and smoothed_centers is not None:
+        dedup_gap = max(1, round(fps * merge_frac))
+        occupied = sorted([int(h["frame"]) for h in hit_cands]
+                          + [int(fr) for (fr, _x, _y) in bounce_cands])
+        for fh_ in detect_wrist_hits(players_per_frame, smoothed_centers, fps,
+                                     frame_width, frame_height):
+            if not any(abs(fh_["frame"] - e) <= dedup_gap for e in occupied):
+                fh_ = dict(fh_)
+                fh_["far_wrist"] = True       # tag: a committed far contact (see PASS 0)
+                all_hits.append(fh_)
+
+
     # ── PASS 0: merge into physical events (span-capped, NOT transitive) ──
     cand = []
     for (fr, x, y) in bounce_cands:
@@ -352,7 +604,7 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         xy = _xy_at(int(fr))
         if xy is not None:
             cand.append((int(fr), "turn", xy, None))
-    for h in hit_cands:
+    for h in all_hits:
         cand.append((int(h["frame"]), "hit", (int(h["x"]), int(h["y"])), h))
     cand.sort(key=lambda c: c[0])
 
@@ -363,6 +615,25 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             cur = {"start": fr, "members": []}
             clusters.append(cur)
         cur["members"].append((fr, src, xy, hm))
+
+    # CONTACT SHADOW of a committed far-wrist hit. A far swing's wrist-speed peak
+    # PRECEDES the ball's outgoing apex by the ball's flight time, which is LONGER
+    # than a near contact's because the ball travels far before turning. So the
+    # apex-turn it induces (and any spurious bounce on the descending limb) can
+    # land beyond merge_gap and FRAGMENT into its OWN cluster — an orphan with no
+    # hit member, which the alternation DP is then free to label a spurious BOUNCE
+    # right next to the real GT hit (the measured confusion_H->B=1 at demo3 f146:
+    # the outgoing apex of the far hit committed at f134). We do NOT re-cluster
+    # (that shifts the DP cadence and drops real bounces); instead we record each
+    # far-wrist hit frame here and, at the firewall below, force such an orphan
+    # cluster hit_like (forbidden from BOUNCE) — WITHOUT removing any candidate, so
+    # the rally cadence is unperturbed. The shadow is shape-gated at the firewall:
+    # a genuine floor bounce (vy-flip OR a y-maximum) inside the window is NEVER
+    # shadowed, so a real bounce just after a far hit (demo3 GT bounce@255, 7f
+    # after far hit@248) survives.
+    fw_shadow = max(merge_gap, round(fps * far_wrist_span_frac))
+    far_wrist_frames = [int(h["frame"]) for h in all_hits
+                        if isinstance(h, dict) and h.get("far_wrist")]
 
     evs = []
     for cl in clusters:
@@ -408,24 +679,102 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         _vxf = feat.get("vx_flip")
         vy_bounce = bool(vy) and not (_vxf is not None and bool(_vxf))
 
+        # POSITIVE bounce-trajectory evidence (S2): a turn that sits at the ball's
+        # lowest screen point (y-MAXIMUM, where a floor bounce happens) OR keeps its
+        # vx sign, with NO swing. Used to RELAX the proximity firewall so a real
+        # floor bounce landing at a (non-swinging) player's feet is not blocked from
+        # BOUNCE (demo3 f174). A real hit always carries a swing (hit source) or a
+        # vx-flip => never reaches this relaxation. (Reconciliation note: this
+        # `y_max` is also the SAME shape signal that protects a genuine floor bounce
+        # from the far-wrist contact shadow below — one notion of "this IS a bounce
+        # apex", used both to relax the hit firewall and to gate the bounce firewall.)
+        vx_preserved = any(mfeat[fr]["vx_flip"] is False for fr, _, _, _ in members)
+        y_max = any(_is_y_maximum(fr) for fr, _, _, _ in members
+                    if not _is_edge_artifact(fr))
+        bounce_traj = turn and (y_max or vx_preserved) and not hit
+
+        # CONTACT SHADOW (the S1×S2 reconciliation fix). An orphan cluster with NO
+        # hit member that sits in the outgoing-arc window AFTER a committed far-wrist
+        # hit is that hit's own trajectory (its apex-turn + descending-limb spurious
+        # bounce), not a new floor bounce — so force it hit_like (firewall it from
+        # BOUNCE). This is the leak the naive S1+S2 merge left: far hit committed at
+        # demo3 f134, its outgoing apex f146 fragmenting into its own cluster and the
+        # DP labeling it a spurious BOUNCE that the matcher pins on the real GT hit
+        # (confusion_H->B=1). Gated three ways so it can NEVER suppress a real
+        # bounce: (1) only a SWING-LESS cluster (hit=False) — a real far hit's own
+        # cluster has hit=True and is already hit_like; (2) NOT a floor-bounce SHAPE
+        # (no vy_bounce, no y_max) — a genuine floor bounce just after a far hit
+        # (demo3 GT bounce@255, 7f after far hit@248: vy-flip/y-max) splits out
+        # untouched; (3) within fw_shadow frames AFTER the far hit only (the ball's
+        # flight to apex), never before. It removes NO candidate, so the rally
+        # cadence (PASS 2) is byte-unperturbed — the property the re-clustering
+        # attempt violated (it dropped real bounce f174). Same vx_flip_veto physics
+        # family as the rest of the firewall: a struck ball's wake is a HIT's, not a
+        # floor's.
+        in_far_wrist_shadow = (not hit and not vy_bounce and not y_max
+                               and any(0 < rep_fr - fwf <= fw_shadow
+                                       for fwf in far_wrist_frames))
+
+        # ── NARROW GENTLE-APEX bounce anchor (S2 f174 recovery) ──────────────
+        # A real far-court floor bounce can have NO vy_flip and NO bounce_cand: its
+        # vertical dip is too shallow for either detector (demo3 f179/B174, dmin
+        # 0.18 at the receiving player's feet — only a y-MAXIMUM turning point). The
+        # naive merge "recovered" it parasitically on a spurious f146(B)/f162(H)
+        # parity-bridge that IS the H->B leak; once the firewall removes that bridge
+        # the DP collapses H@134->H@196 (k=2 missed beat, legal) and f179 drops.
+        #
+        # To re-pin f179 on its OWN legitimate floor evidence WITHOUT re-opening any
+        # leak, we promote a y-max apex to a (mandatory) BOUNCE anchor — but ONLY
+        # under a VERY narrow, physics-grounded gate that f179 meets and the
+        # hit-region y-max apexes (f83/H81, f335/H333) do NOT:
+        #
+        #   (1) y-MAXIMUM  : the ball is at its lowest screen point (floor shape).
+        #   (2) GENTLE turn: the velocity-vector turn angle is SMALL (the ball glides
+        #       through the apex). Measured: f179 ~0°, f258/B255 ~0.9°, vs the hit
+        #       apexes f83 ~179°, f335 ~160°, f196 ~170° — a racket SHARPLY reverses
+        #       the velocity; a far floor bounce barely turns it. Gate well below the
+        #       70° detect_sharp_turns "sharp" floor (half of it, 35°), so a sharp
+        #       hit-reversal can NEVER qualify. THIS is the discriminant.
+        #   (3) NO racket evidence: not hit, not a far-wrist swing, no redirect
+        #       vy-flip, not inside a far-wrist contact shadow.
+        # All scale-free (angle in deg, fps-windowed). The gate is the dual of the
+        # vy anchor: vy proves a floor bounce by vertical reversal; here a gentle
+        # y-max turn proves one by floor SHAPE + the ABSENCE of a racket reversal.
+        _ang = _velocity_turn_angle(rep_fr)
+        gentle_apex_bounce = bool(
+            turn and y_max and not hit and not vy_bounce
+            and not in_far_wrist_shadow
+            and not any(isinstance(h, dict) and h.get("far_wrist")
+                        for _, _, _, h in members)
+            and _ang is not None and _ang <= 35.0)
+
         # ── scores + firewall predicate ──
         # hit_like = ball at a wrist OR a swing, and NO floor rebound. This is the
         # LOGICAL firewall: a hit_like event can never be a bounce. (vy_bounce, not
         # raw vy: a redirect vy-flip no longer shields a hit from the firewall.)
-        hit_like = (hit or dmin < near) and not vy_bounce
+        hit_like = ((hit or (dmin < near and not bounce_traj) or in_far_wrist_shadow)
+                    and not vy_bounce)
         bscore = (1.0 * vy_bounce + 0.6 * bnc + 0.6 * (turn and dmin >= near))
         hscore = (1.0 * hit + 1.0 * (dmin < near) + 0.4 * (near <= dmin < far))
         anchor = None
         if vy_bounce:
             anchor = BOUNCE                       # vy-flip (vx preserved) = floor bounce
+        elif gentle_apex_bounce:
+            anchor = BOUNCE                       # gentle y-max apex = shallow floor bounce
         elif hit and dmin < near:
             anchor = HIT                          # swing WITH ball at racket
+
+        # bscore credit for the gentle apex so the firewall's positive-evidence
+        # check (_reward needs turn/bnc/vy) and the anchor_bonus path both pass.
         evs.append({
             "frame": rep_fr, "x": rep_xy[0], "y": rep_xy[1],
             "src": sorted(set(s for _, s, _, _ in members)),
             "hit_meta": rep_hm, "features": feat,
             "hit": hit, "bnc": bnc, "turn": turn, "vy": vy_bounce, "dmin": dmin,
-            "hit_like": hit_like, "bscore": bscore, "hscore": hscore,
+            "gentle_apex": gentle_apex_bounce,
+            "hit_like": hit_like,
+            "bscore": bscore + (1.0 * gentle_apex_bounce),
+            "hscore": hscore,
             "anchor": anchor, "label": None,
         })
     evs.sort(key=lambda e: e["frame"])
@@ -521,7 +870,13 @@ def _global_alternation_decode(evs, step, keep, lam, miss_cost, anchor_bonus=3.0
         if e["anchor"] == HIT and rH is not None:
             rH += anchor_bonus
         # A vy-flip bounce is MANDATORY: the chain cannot skip it (no SKIP carry).
-        mandatory = bool(e["vy"]) and rB is not None
+        # A NARROW gentle-apex bounce (y-max + gentle velocity turn + no racket
+        # evidence, see the cluster loop) is ALSO mandatory — it is the only
+        # evidence a shallow far-court floor bounce leaves, and the mandatory
+        # RESTART below is precisely what lets it bridge an even-k parity gap that
+        # would otherwise drop it (demo3 H@134->B@179, gap 45, k=2 even, flip
+        # illegal -> the chain collapses H->H and f179 is lost without this).
+        mandatory = bool(e["vy"] or e.get("gentle_apex")) and rB is not None
         nstates = {} if mandatory else dict(states)  # SKIP carry unless mandatory
         for (ll, lf), (sc, path) in states.items():
             for lab, r in ((BOUNCE, rB), (HIT, rH)):

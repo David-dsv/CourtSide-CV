@@ -37,13 +37,17 @@ GT_S = ROOT / "tests" / "fixtures" / "shots" / "tennis_demo3.shots.json"
 # confusion_H->B is a HARD 0 (the user's bug, non-negotiable) and confusion_B->H
 # is also held at 0. The far-court apex-bounce candidate generator
 # (detect_sharp_turns, feat/ball-tracking-density) recovers GT bounces 120 & 369
-# into the pool, lifting bounce recall 4/9 -> 8/9: bounce F1 0.533 -> 0.842, hit
-# F1 0.667 -> 0.632 (3 pre-existing tail wrist-peak hit-candidates promoted by the
-# shifted alternation cadence; net strongly positive). Firewall H->B/B->H stay 0.
+# into the pool, lifting bounce recall 4/9 -> 8/9: bounce F1 0.533 -> 0.842.
+#
+# RECONCILIATION (feat/event-methodo-reconciled): S1's vx-gate + S2's far-wrist
+# generator + y-max relaxation are merged WITHOUT the H->B leak the naive merge
+# left, and f174 is recovered on its OWN floor-bounce physics (the gentle
+# velocity-turn-angle apex anchor), not the spurious parity-bridge. Bounce recall
+# 8/9 -> 9/9: bounce F1 0.842 -> 0.947; hit F1 0.737. Firewall H->B/B->H stay 0.
 CONF_HtoB_MAX = 0
 CONF_BtoH_MAX = 0
-BOUNCE_F1_FLOOR = 0.80
-HIT_F1_FLOOR = 0.60
+BOUNCE_F1_FLOOR = 0.90
+HIT_F1_FLOOR = 0.70
 
 
 def evaluate():

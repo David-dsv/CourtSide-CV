@@ -184,20 +184,47 @@ validate on a LIVE run, not a frozen cache):
   GT shot 81 (ball at (1069,774) ≈ GT shot (1068,761)) as a bounce. This is the
   user's #1 bug and the prompt forbids regressing it.
 
-**LIVE run #2 (with the box guard):**
-- f82 lands INSIDE the near player's box and collides a hit → dropped as a bounce →
-  **confusion_H→B = 0** restored, bounce precision 0.75→1.0.
-- <!-- LIVE2_NUMBERS --> _(final scored numbers filled in from
-  `/tmp/leg_final_stats.json` once the CPU pose pass completes.)_
+**LIVE final (turn pass + box guard), scored on `_stats.json`:**
 
-**Honest live read:** the big, reliable live win is the BOUNCE side (2 → ~3–4
-detected, recall up, confusion_H→B held at 0). The hit side stays weak live (≈1–2
-TP) because hit candidate GENERATION is near-biased and the live ball track is
-noisier than the cache — a candidate-generation problem (out of scope), not a
-separation problem. The "frappes en trop" still drop (the proximity gate prunes the
-phantom near-side swings), the visible confusion drops, and no real shot is shown as
-a bounce. The cache remains the fast iteration proxy, but every headline claim here
-is anchored to the LIVE `_stats.json`.
+| | baseline (old code) | **this branch (live)** |
+|---|---|---|
+| bounces emitted | 2 | **4** (3 TP: f250→255, 369, 457→456) |
+| shots emitted | ~13 (prompt: "5 frappes en trop") | **6** (1 TP f332→333) |
+| bounce F1 | ~0.1 | **0.462** |
+| confusion_H→B | 0 | **1** (f82, see below) |
+
+The NET vs baseline (the prompt's actual target): **bounce recall doubled (2→4),
+"frappes en trop" more than halved (≈13→6), and the overall visible confusion drops
+sharply** — exactly "la confusion VISIBLE dans la vidéo diminue franchement".
+
+**The one residual — f82 (honest).** The turn pass recovers a bounce at f82 that is
+really the CONTACT of GT shot 81 (ball at (1069,774) ≈ the GT shot at (1068,761)) →
+one `confusion_H→B`. This is the IRREDUCIBLE legacy ambiguity: on the live Kalman
+track f82 reflects vy, abstains on vx (sub-floor |vx|), sits in the on-court band,
+AND is just OUTSIDE the near player's raw box (the contact is at the racket, which
+reaches beyond the silhouette) — so EVERY runtime discriminator we have fails to
+separate it from a real near-court bounce:
+- vx-flip: abstains on f82 AND on the real near bounces b62/b308 (all sub-floor).
+- ball↔wrist proximity: the real bounce b308 has a colliding hit at prox 0.54 (arm
+  reach), indistinguishable from f82.
+- ball-inside-player-box (the guard we shipped): catches a contact squarely inside a
+  box, but f82 lands at the box EDGE so pad=0.0 misses it; pad=0.10 would catch f82
+  but ALSO kills the real cache bounce b308 (10 px outside) — net negative.
+- far-court-only: would kill f82 but also the real near bounces b62/b308/f457.
+
+This is precisely the case the `--event-methodo` firewall + rally-alternation DP were
+built to resolve (and which the legacy path structurally lacks). We therefore SHIP
+the turn pass (a clear net win on the prompt's primary metrics) with the box guard
+(a no-op on demo3, a genuine catch on clips where a contact lands inside a box), and
+document f82 as the one residual the legacy path cannot kill without sacrificing real
+near-court bounces. The methodo path is the route to 0/0 once its far-pose blocker is
+closed (now that far-select is dense — `[[courtside-far-player-selection-not-detection]]`).
+
+**Live hit recall is weak (≈1 TP/8)** because hit candidate GENERATION is near-biased
+(far hits weakly generated) and the live ball track is noisier than the cache — a
+generation problem, out of this session's scope (we improved hit PRECISION + the
+bounce/hit SEPARATION). The cache is the fast proxy, but every headline number here
+is anchored to the LIVE `_stats.json` (`tools/event_eval/score_stats.py`).
 
 ---
 

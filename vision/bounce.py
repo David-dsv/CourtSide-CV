@@ -166,7 +166,8 @@ def _velocity_turn_candidates(raw_centers, is_real, fps, frame_width, frame_heig
 
 
 def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_height,
-                                   frame_width=None, raw_centers=None, is_real=None):
+                                   frame_width=None, raw_centers=None, is_real=None,
+                                   return_turn_frames=False):
     """
     Detect ball bounces from the smoothed trajectory (curve-fit method).
 
@@ -316,6 +317,7 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
         yv_frames = [cd[0] for cd in candidates]               # y-extremum frames
         yv_min_score = min((cd[3] for cd in candidates), default=1.0)
         turn_score = min(0.5, yv_min_score * 0.5)              # strictly below y-V
+        turn_admitted = []                                     # provenance tagging
         for tf in _velocity_turn_candidates(raw_centers, is_real, fps,
                                             frame_width, frame_height):
             if tf < turn_win or tf >= n - turn_win:
@@ -359,17 +361,28 @@ def detect_bounces_from_trajectory(ball_centers, ball_speeds_px, fps, frame_heig
             bx = int(rxs[tf]) if not np.isnan(rxs[tf]) else int(c1[0])
             by = int(yc)
             candidates.append((tf, bx, by, turn_score))
+            turn_admitted.append(tf)
 
     # non-max suppression by min_gap, keep highest-scoring candidate
     candidates.sort(key=lambda c: -c[3])
     chosen, used = [], []
+    turn_chosen = set()   # which chosen bounces came ONLY from a turn (lower conf)
+    _turn_set = set(turn_admitted) if (raw_centers is not None and is_real is not None
+                                       and frame_width) else set()
     for bf, bx, by, score in candidates:
         if all(abs(bf - u) >= min_gap for u in used):
             chosen.append((bf, bx, by))
             used.append(bf)
+            if bf in _turn_set:
+                turn_chosen.add(bf)
     chosen.sort(key=lambda c: c[0])
 
     logger.info(f"Trajectory bounce detection: {len(chosen)} bounces found")
+    if return_turn_frames:
+        # frames of chosen bounces that were sourced ONLY from the turn-angle pass
+        # (no y-extremum) — these are the LOWER-CONFIDENCE recoveries the legacy
+        # bounce↔hit arbitration may demote on a collision with a confident hit.
+        return chosen, sorted(turn_chosen)
     return chosen
 
 
@@ -969,3 +982,77 @@ def vx_flip_veto(bounce_events, raw_centers, is_real, fps, frame_width,
     logger.info(f"vx-flip veto: {len(bounce_events)} candidates -> "
                 f"{len(kept)} kept ({n_reject} rejected as hits)")
     return kept, state
+
+
+# ─────────────────── bounce↔hit collision arbitration (legacy) ───────────────────
+# The legacy path detects bounces (incl. recovered turn-angle apex candidates) and
+# hits (wrist-speed peaks that passed the ball↔wrist proximity gate) INDEPENDENTLY.
+# When a bounce candidate lands within a contact window of a confident hit, the two
+# claim the same frame. The cardinal error to avoid is confusion_H→B — a real racket
+# HIT shown as a BOUNCE (the user's #1 bug). A proximity-gated hit is a strong
+# "contact-near-a-player" signal, so on a collision we KEEP THE HIT and DEMOTE THE
+# BOUNCE. This is the direction+proximity arbitration the legacy path lacked (the old
+# bounce_guard only went the other way — it suppressed hits near bounces, which on a
+# mis-recovered turn bounce would DELETE the real hit and CREATE confusion_H→B).
+#
+# Measured motivation: on the LIVE Kalman track the turn pass recovered a bounce at
+# f82 colliding with GT shot 81 — without this arbitration the bounce_guard would
+# suppress the f81 hit and emit only the bounce → confusion_H→B=1. With it, the hit
+# wins and the spurious bounce is dropped. Pure function, scale-free window.
+
+def arbitrate_bounce_hit(bounce_events, hits, fps, turn_frames=None,
+                         guard_frac=0.10):
+    """CONFIDENCE-AWARE bounce↔hit collision resolution for the legacy path.
+
+    Two independent detectors can claim the same frame. We resolve by CONFIDENCE,
+    because a blind "hit always wins" loses real bounces (a clean y-V bounce with a
+    follow-through wrist peak nearby) and a blind "bounce always wins" creates
+    confusion_H→B (a mis-recovered turn bounce sitting on a real contact):
+
+      - A bounce in ``turn_frames`` (recovered ONLY from the velocity-turn angle —
+        no y-extremum → lower confidence) that collides with a hit is DROPPED: the
+        proximity-gated hit (a contact near a player) outranks it. Keeps
+        confusion_H→B at 0 when the apex recovery fires near a real swing.
+      - A bounce NOT in turn_frames (a clean y-extremum V → high confidence) WINS:
+        it is kept, and the colliding hit is SUPPRESSED (that wrist peak is the
+        follow-through of the shot that produced the bounce, not a new contact).
+      - Non-colliding bounces and hits pass through unchanged.
+
+    With turn_frames=None every bounce is treated as high-confidence (the old
+    bounce-wins behaviour), so callers that don't thread provenance are unaffected.
+
+    Args:
+        bounce_events: list of (frame, x, y) bounce candidates.
+        hits:          list of hit dicts (each with a "frame"); proximity-gated.
+        fps:           frame rate (scale-free window).
+        turn_frames:   iterable of bounce frames sourced only from the turn pass
+                       (lower confidence). None → treat all bounces as y-V.
+        guard_frac:    collision window in seconds (default 0.10).
+
+    Returns:
+        (kept_bounces, kept_hits).
+    """
+    if not bounce_events:
+        return list(bounce_events), list(hits)
+    guard = max(1, round(fps * guard_frac))
+    turn_set = set(int(f) for f in (turn_frames or []))
+    hit_frames = [int(h["frame"]) for h in hits]
+
+    kept_bounces = []
+    suppressed_hit_frames = set()
+    n_demoted = 0
+    for ev in bounce_events:
+        bf = int(ev[0])
+        colliding = [hf for hf in hit_frames if abs(bf - hf) <= guard]
+        if colliding and bf in turn_set:
+            n_demoted += 1                    # low-conf turn bounce loses to the hit
+            continue
+        kept_bounces.append(ev)
+        if colliding:                         # high-conf bounce wins → drop its hits
+            suppressed_hit_frames.update(colliding)
+    kept_hits = [h for h in hits if int(h["frame"]) not in suppressed_hit_frames]
+    if n_demoted or suppressed_hit_frames:
+        logger.info(f"bounce↔hit arbitration: {n_demoted} turn-bounce(s) demoted to "
+                    f"hit, {len(suppressed_hit_frames)} hit(s) suppressed near a "
+                    f"y-extremum bounce")
+    return kept_bounces, kept_hits

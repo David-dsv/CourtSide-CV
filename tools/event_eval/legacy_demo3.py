@@ -50,8 +50,8 @@ def legacy_events(fps, fw, fh, kal, kal_real, ppf):
     """EXACT prod legacy story on the Kalman path (default tracker, no methodo)."""
     all_centers = smooth_ball_trajectory(kal, max_gap=int(fps * 0.4))
     speeds = [0.0] * len(all_centers)
-    b_cands = detect_bounces_from_trajectory(all_centers, speeds, fps, fh, fw,
-                                             raw_centers=kal, is_real=kal_real)
+    b_cands = detect_bounces_from_trajectory(
+        all_centers, speeds, fps, fh, fw, raw_centers=kal, is_real=kal_real)
     bounce_frames = [b[0] for b in b_cands]
     hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=bounce_frames,
                        wrist_prox_max=1.2)

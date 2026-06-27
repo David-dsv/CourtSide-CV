@@ -22,7 +22,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ball-tracker", default="kalman", choices=["kalman", "wasb"])
+    ap.add_argument("--select", default="kalman", choices=["kalman", "highscore"],
+                    help="YOLO-path selection: 'kalman' = the actual prod track "
+                         "(Kalman gating rejects parasites); 'highscore' = raw "
+                         "most-confident per frame (upper-bound detection coverage, "
+                         "no gating). Ignored for --ball-tracker wasb.")
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--ball-conf", type=float, default=0.10,
+                    help="ball-only conf floor (prod default 0.10, cross-clip safe). "
+                         "Pass 0.20 to reproduce the true pre-change prod baseline; "
+                         "0.03-0.05 for max demo3 recall (regresses felix).")
+    ap.add_argument("--ball-imgsz", type=int, default=1280,
+                    help="ball inference resolution (prod detector default 1280; "
+                         "1920 = max recall on tiny/far balls).")
     ap.add_argument("--tol-frac", type=float, default=0.02,
                     help="a tracked ball is CORRECT within tol_frac*W of the GT point")
     args = ap.parse_args()
@@ -39,28 +51,53 @@ def main():
     rdr.release()
     tol = args.tol_frac * fw
 
-    # Build the pipeline's ball track the same way Pass 1 does.
+    # Build the pipeline's ball track the same way Pass 1 does (prod detector
+    # config: imgsz=1280 + a SEPARATE low ball conf + chosen ball imgsz).
     from models.yolo_detector import TennisYOLODetector
-    det = TennisYOLODetector(device=args.device)
+    det = TennisYOLODetector(device=args.device, imgsz=1280,
+                             ball_conf=args.ball_conf, ball_imgsz=args.ball_imgsz)
+    print(f"ball detection: conf={det.ball_conf} imgsz={det.ball_imgsz}", flush=True)
     track = [None] * total
     if args.ball_tracker == "wasb":
         from models.wasb_ball_tracker import HeatmapBallTracker
-        tr = HeatmapBallTracker(device=args.device)
+        weights = str(ROOT / "training" / "wasb" / "wasb_tennis.pth.tar")
+        tr = HeatmapBallTracker(weights, device=args.device)
         centers = tr.track_ball(frames)
         for i, c in enumerate(centers):
             if i < total:
                 track[i] = c
     else:
-        # raw YOLO26 ball detection (highest-score), the candidate the Kalman uses
-        for i, frame in enumerate(frames):
+        # Collect ALL ball candidates per frame at the prod ball conf/imgsz, then
+        # run the SAME selection prod does. --select highscore = raw upper-bound
+        # detection coverage (pick the most confident, no gating); --select kalman
+        # = the actual prod track (static-FP + adaptive-gate Kalman that picks the
+        # candidate CLOSEST to the prediction → rejects the low-conf parasites).
+        per_frame = []
+        for frame in frames:
             d = det.detect(frame, classes=[32])
             m = d["class_ids"] == 32
+            cands = []
             if m.any():
                 b = d["boxes"][m]
                 s = d["scores"][m]
-                bi = int(s.argmax())
-                track[i] = ((float(b[bi][0]) + float(b[bi][2])) / 2.0,
-                            (float(b[bi][1]) + float(b[bi][3])) / 2.0)
+                for k in range(len(b)):
+                    cands.append({"cx": (float(b[k][0]) + float(b[k][2])) / 2.0,
+                                  "cy": (float(b[k][1]) + float(b[k][3])) / 2.0,
+                                  "score": float(s[k])})
+            per_frame.append(cands)
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "_rs", str(Path(__file__).resolve().parent / "replay_strat.py"))
+        _rs = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_rs)
+        select_kalman, select_highscore = _rs.select_kalman, _rs.select_highscore
+        if args.select == "highscore":
+            sel = select_highscore(per_frame, det.ball_conf, fw, fh)
+        else:
+            sel = select_kalman(per_frame, det.ball_conf, fw, fh, fps)
+        for i, c in enumerate(sel):
+            if i < total:
+                track[i] = c
 
     # score: coverage (any ball) + correct (within tol of GT) — overall and START
     start_n = int(4.0 * fps)  # cold-start window (first 4s)

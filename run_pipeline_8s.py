@@ -553,7 +553,25 @@ def parse_args():
                         help="Duration in seconds from start (alternative to --end)")
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda, mps (default: cpu)")
     parser.add_argument("--trail-length", type=int, default=12, help="Ball trail length in frames")
-    parser.add_argument("--conf", type=float, default=0.2, help="Detection confidence threshold")
+    parser.add_argument("--conf", type=float, default=0.2, help="Detection confidence threshold (persons)")
+    parser.add_argument("--ball-conf", type=float, default=0.10,
+                        help="BALL-only confidence floor, decoupled from --conf (persons stay "
+                             "0.2). The tennis ball is tiny/faint and sits below the person "
+                             "conf; the OLD code ran the ball at --conf (0.2). Default 0.10 is "
+                             "the CROSS-CLIP-SAFE value: vs the human ball GT it beats 0.2 on "
+                             "both clips (demo3 ball coverage 82.6%%->87.8%%; felix bounce F1 "
+                             "0.667->0.774). Lower (0.03-0.05) lifts demo3 CORRECT further but "
+                             "REGRESSES felix bounce F1 below the 0.72 floor (low-conf parasites "
+                             "in its busy far field) — use only on clean broadcast. Kalman "
+                             "gating, not confidence, keeps the real ball. See "
+                             "docs/research/ball-track-density-CR.md.")
+    parser.add_argument("--ball-imgsz", type=int, default=None,
+                        help="BALL-only inference resolution, decoupled from the detector imgsz "
+                             "(1280). Default: 1280 (same as detector). 1920 lifts demo3 "
+                             "cold-start CORRECT but COLLAPSES felix bounce tracking (cleaner "
+                             "but denser far-field parasites the Kalman locks onto) — NOT a safe "
+                             "default. Opt in (1920) only for clean broadcast where tiny/far "
+                             "balls dominate. See docs/research/ball-track-density-CR.md.")
     parser.add_argument("--pose-conf", type=float, default=0.10, help="Pose estimation confidence")
     parser.add_argument("--pose-model", default="yolov8m-pose.pt",
                         help="Pose model (yolov8m-pose.pt or yolov8x-pose.pt for better small player detection)")
@@ -662,8 +680,11 @@ def main():
     # ─── Init models ───
     logger.info("Initializing models...")
     detector = TennisYOLODetector(
-        conf_threshold=args.conf, iou_threshold=0.45, device=device, imgsz=1280
+        conf_threshold=args.conf, iou_threshold=0.45, device=device, imgsz=1280,
+        ball_conf=args.ball_conf, ball_imgsz=args.ball_imgsz,
     )
+    logger.info(f"Ball detection: conf={detector.ball_conf}, imgsz={detector.ball_imgsz} "
+                f"(persons: conf={args.conf}, imgsz=1280)")
     if args.pose_backend == "rtmw":
         from vision.pose_rtmw import RTMWPose
         logger.info("Pose backend: RTMW whole-body (rtmlib, CPU) — 133 kpts, slower")
@@ -858,7 +879,11 @@ def main():
 
     # ─── Pass 1: Detect ball positions + bounces ───
     logger.info("=== PASS 1: Detect ball ===")
-    ball_conf_thresh = 0.15  # low threshold — we filter by motion, not confidence
+    # The ball model already ran at detector.ball_conf (the real, low floor); this
+    # secondary gate stays equal to it so it never re-filters at a higher value
+    # (a stale 0.15 here would silently undo the low-conf densification). We keep
+    # the real ball by MOTION (Kalman gating) + static-FP, not by confidence.
+    ball_conf_thresh = detector.ball_conf
 
     # ─── WASB heatmap tracker path (--ball-tracker wasb) ───
     # A heatmap-temporal tracker (WASB) produces a far denser, cleaner trajectory

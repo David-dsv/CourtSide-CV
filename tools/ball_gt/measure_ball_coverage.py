@@ -28,10 +28,11 @@ def main():
                          "most-confident per frame (upper-bound detection coverage, "
                          "no gating). Ignored for --ball-tracker wasb.")
     ap.add_argument("--device", default="cpu")
-    ap.add_argument("--ball-conf", type=float, default=0.14,
-                    help="ball-only conf floor (prod default 0.14, plateau-safe). "
-                         "Pass 0.20 to reproduce the true pre-change prod baseline; "
-                         "0.03-0.05 for max demo3 recall (regresses felix).")
+    ap.add_argument("--ball-conf", type=float, default=0.16,
+                    help="ball-only conf floor (prod default 0.16, felix-floor-safe "
+                         "with cliff margin). Pass 0.20 to reproduce the true "
+                         "pre-change prod baseline; 0.03-0.05 for max demo3 recall "
+                         "(regresses felix).")
     ap.add_argument("--ball-imgsz", type=int, default=1280,
                     help="ball inference resolution (prod detector default 1280; "
                          "1920 = max recall on tiny/far balls).")

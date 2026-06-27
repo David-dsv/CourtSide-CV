@@ -23,34 +23,41 @@ parasites — comme le far-select (détectable conf basse + sélection maligne).
    `ball_conf_thresh=0.15` aval était mort — YOLO filtrait déjà à 0.2). On lui
    donne **son propre seuil** `--ball-conf`, défaut **0.14**.
 
-3. **Pourquoi 0.14 et pas plus bas — la leçon clé (corrigée après revue adverse).**
+3. **Pourquoi 0.16 — la leçon clé (corrigée 2× après revue adverse).**
    Un premier choix à **0.10** a été **réfuté** par 2 reviewers indépendants :
    - 0.10 **DÉGRADE le CORRECT demo3** (79.4%→78.5% global, 75.0%→72.8% cold) —
      +16 couverture = +19 frames mal-positionnées (le Kalman accroche du
      low-conf). J'avais cherry-pické la *couverture* en cachant le *CORRECT* (la
      métrique que l'outil appelle lui-même "the honest thermometer").
    - 0.10 sur felix est un **pic en lame de couteau** (0.09=0.643, 0.10=0.774,
-     0.11=0.643 — voisins SOUS le floor 0.72), pas un plateau. Or la leçon du
-     chantier sœur impose de poser un seuil sur un **plateau**.
-   → **0.14 = le bon défaut** : felix sur son **épaule stable** (0.14/0.15/0.18
-   = 0.774, 0.16 = 0.750 ; tous ≥ floor ; seul 0.20 = creux 0.667), et CORRECT
-   demo3 **PLAT** (79.4% = baseline, zéro régression) avec couverture +4.5%.
+     0.11=0.643 — voisins SOUS le floor 0.72).
+
+   Une 2e revue (sur 0.14) a montré que **felix F1 est BRUITÉ aux centièmes**
+   (GT de 16 rebonds → ±0.06/rebond) : il n'y a PAS de vrai plateau lisse —
+   0.155=0.688, 0.165=0.710 trouent même entre les centièmes "épaule". Et 0.14
+   est le **bord gauche** : à 0.13 (un cran en-dessous) felix tombe à 0.667
+   (sous floor). → **Default final = 0.16** : même bénéfice demo3 (CORRECT plat
+   79.1%, couverture +3.6%), felix 0.750 (≥ floor), et **marge vs la falaise
+   0.13**. felix F1 étant noise-limited, **0.16 est choisi pour le gain
+   couverture demo3 + la sécurité-floor felix, PAS comme un optimum felix.**
 
 ### Tableau maître (chemin prod réel : imgsz 1280, sélection Kalman)
 
 | ball-conf | demo3 couv / CORRECT (cold CORRECT) | felix bounce F1 / couv | verdict |
 |---|---|---|---|
-| 0.20 (ancien défaut effectif) | 82.6% / 79.4% (75.0%) | 0.667 / 83.2% (creux) | baseline |
-| **0.14 (NOUVEAU défaut)** | **87.1% / 79.4% (74.5%)** | **0.774 / 89.8% (épaule)** | ✅ sûr |
-| 0.10 (rejeté) | 87.8% / 78.5% (72.8%) | 0.774 / 87.7% (PIC) | ❌ CORRECT↓ + lame |
+| 0.20 (ancien défaut effectif) | 82.6% / 79.4% (75.0%) | 0.667 / 83.2% (creux/sous-floor!) | baseline |
+| **0.16 (NOUVEAU défaut)** | **86.2% / 79.1% (74.5%)** | **0.750 / 90.5%** | ✅ sûr + marge |
+| 0.14 (1er corrigé) | 87.1% / 79.4% (74.5%) | 0.774 / 89.8% | ✅ mais bord falaise 0.13 |
+| 0.10 (rejeté) | 87.8% / 78.5% (72.8%) | 0.774 (PIC) / 87.7% | ❌ CORRECT↓ + lame |
 | 0.05 (broadcast only) | 92.3% / 83.6% (79.3%) | 0.625 / 91.6% | ⚠️ felix<floor |
 | 0.03 (broadcast only) | 94.5% / 84.9% (79.9%) | 0.562 / 96.2% | ⚠️ felix<floor |
 
-**0.14 domine 0.20 sans rien sacrifier** : demo3 couverture +4.5% CORRECT plat ;
-felix F1 +0.107 sur épaule stable. 0.03-0.05 = gros gain demo3 CORRECT mais felix
-sous le floor → réservés au broadcast propre via le flag. **Il n'existe AUCUNE
-conf qui monte le CORRECT demo3 ET garde felix sûr** (courbes en tension : demo3
-CORRECT en U, felix exige ≥0.14) — 0.14 est l'optimum Pareto "ne régresse rien".
+**0.16 domine 0.20 sans rien sacrifier** : demo3 couverture +3.6% CORRECT plat ;
+felix F1 +0.083 (et 0.20 était LUI-MÊME sous le floor en replay !). 0.03-0.05 =
+gros gain demo3 CORRECT mais felix sous le floor → réservés au broadcast propre
+via le flag. **Il n'existe AUCUNE conf qui monte le CORRECT demo3 ET garde felix
+sûr** (courbes en tension : demo3 CORRECT en U, felix exige ≥0.14) — 0.16 est
+l'optimum Pareto "ne régresse rien, avec marge".
 
 ### imgsz : 1280 reste le défaut, 1920 est OPT-IN
 

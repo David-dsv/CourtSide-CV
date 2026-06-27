@@ -4,8 +4,11 @@ test_bounce_regression replays a frozen felix cache at conf 0.15, so it is BLIND
 to the actual --ball-conf default the pipeline ships. This test closes that hole:
 it reads the live argparse default for --ball-conf and scores felix bounce F1 at
 THAT conf, on a committed felix detection cache (floor 0.03 → any conf >= 0.03 is
-replayable). If someone lowers the default into felix's sub-floor zone (≤0.08, or
-the 0.10/0.11/0.12 knife-edge), this trips.
+replayable). It guards the FELIX BOUNCE-F1 FLOOR only (not demo3 ball CORRECT):
+on the committed cache it trips at conf 0.05/0.08/0.11/0.12/0.13 (all <0.72) and
+passes at 0.14/0.16/0.18. (Note 0.10 happens to score 0.774 here, so this test
+does NOT by itself reject 0.10 — 0.10 was rejected for the SEPARATE reason that
+it dips demo3 ball CORRECT; see docs/research/ball-track-density-CR.md.)
 
 Run:  venv/bin/python tests/test_ball_conf_regression.py
 """
@@ -71,8 +74,9 @@ def test_shipped_ball_conf_no_felix_regression():
     assert f1 >= F1_FLOOR, (
         f"Shipped --ball-conf={conf} REGRESSES felix bounce F1 to {f1:.3f} "
         f"< floor {F1_FLOOR} (P={p:.3f} R={r:.3f} TP={tp} FP={fp} FN={fn}). "
-        f"felix needs ball-conf on its stable shoulder (0.14-0.18); conf <=0.08 "
-        f"and the 0.10/0.11/0.12 knife-edge drop below the floor.")
+        f"felix bounce F1 is noise-limited (16-bounce GT); conf <=0.08 and the "
+        f"0.11/0.12/0.13 region drop below the floor — keep the default at/above "
+        f"0.14 (0.16 is the shipped value, with margin from the 0.13 cliff).")
 
 
 if __name__ == "__main__":

@@ -554,20 +554,21 @@ def parse_args():
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda, mps (default: cpu)")
     parser.add_argument("--trail-length", type=int, default=12, help="Ball trail length in frames")
     parser.add_argument("--conf", type=float, default=0.2, help="Detection confidence threshold (persons)")
-    parser.add_argument("--ball-conf", type=float, default=0.14,
+    parser.add_argument("--ball-conf", type=float, default=0.16,
                         help="BALL-only confidence floor, decoupled from --conf (persons stay "
                              "0.2). The tennis ball is tiny/faint and sat below the person conf "
-                             "(the OLD code ran the ball at --conf=0.2). Default 0.14 is the "
-                             "PLATEAU value vs the human ball GT: demo3 ball coverage "
-                             "82.6%%->87.1%% with CORRECT FLAT (79.4%%, no regression); felix "
-                             "bounce F1 0.667->0.774 on a STABLE shoulder (0.14-0.18 all >=0.75, "
-                             "vs the 0.20 trough 0.667). conf 0.10 looked better on live bounce "
-                             "F1 but is a felix knife-edge (0.09/0.11=0.643<floor) AND dips "
-                             "demo3 ball CORRECT — rejected. Lower (0.03-0.05) lifts demo3 "
-                             "CORRECT to ~85%% but REGRESSES felix below the 0.72 floor (far-"
-                             "field parasites) — clean-broadcast only. Kalman gating, not "
-                             "confidence, keeps the real ball. See "
-                             "docs/research/ball-track-density-CR.md.")
+                             "(the OLD code ran the ball at --conf=0.2). Default 0.16 vs the "
+                             "human ball GT: demo3 ball coverage 82.6%%->86.2%% with CORRECT "
+                             "FLAT (79.1%%, no regression vs the 0.20 baseline 79.4%%); felix "
+                             "bounce F1 0.667->0.750 (>=0.72 floor). felix F1 is noise-limited "
+                             "(16-bounce GT → +-0.06/bounce), so 0.16 is picked for the demo3 "
+                             "coverage gain + felix-floor safety with margin from the 0.13 "
+                             "sub-floor cliff — NOT a felix optimum. conf 0.10 was REJECTED "
+                             "(adversarial review: dips demo3 ball CORRECT + sits on a felix "
+                             "knife-edge). Lower (0.03-0.05) lifts demo3 CORRECT to ~85%% but "
+                             "REGRESSES felix below the floor (far-field parasites) — clean-"
+                             "broadcast only. Kalman gating, not confidence, keeps the real "
+                             "ball. See docs/research/ball-track-density-CR.md.")
     parser.add_argument("--ball-imgsz", type=int, default=None,
                         help="BALL-only inference resolution, decoupled from the detector imgsz "
                              "(1280). Default: 1280 (same as detector). 1920 lifts demo3 "

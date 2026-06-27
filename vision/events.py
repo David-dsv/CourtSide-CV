@@ -475,6 +475,47 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             gap_frac=gap_frac, eps_rel=eps_rel, eps_floor_frac=eps_floor_frac,
             min_netdx_frac=min_netdx_frac)
 
+    def _is_y_maximum(fr, win=None):
+        """True if the smoothed ball is at a local y-MAXIMUM near fr — its LOWEST
+        screen point (image-y grows downward), the shape a floor bounce makes (down
+        then up). Read on the spline track over a small window so a 1-frame wobble
+        doesn't hide it. Used only as POSITIVE bounce evidence to relax the
+        proximity firewall for swing-less events (never to label a hit)."""
+        if smoothed_centers is None:
+            return False
+        w = win if win is not None else max(2, round(fps * 0.10))
+        n2 = len(smoothed_centers)
+        ys = [smoothed_centers[k][1] for k in range(max(0, fr - w), min(n2, fr + w + 1))
+              if smoothed_centers[k] is not None]
+        here = smoothed_centers[fr][1] if (0 <= fr < n2 and smoothed_centers[fr] is not None) else None
+        if here is None or len(ys) < 3:
+            return False
+        return here >= max(ys) - 0.5      # at (within ½px of) the lowest screen point
+
+    def _is_edge_artifact(fr):
+        """True if a 'bounce' candidate at fr is really a TRACKING DROPOUT, not a
+        floor bounce: the ball falls off the bottom of the frame (y near the bottom
+        edge) and the track TELEPORTS across this frame (the tracker reinits at the
+        far side). A real floor bounce's lowest point sits inside the court, with a
+        continuous trajectory. demo3 f159: y=1060/1080=0.98 then jumps 1060->364.
+        This only ever REMOVES spurious bounce evidence (firewall-neutral)."""
+        n2 = len(smoothed_centers) if smoothed_centers is not None else 0
+        if not (0 <= fr < n2) or smoothed_centers[fr] is None:
+            return False
+        y = smoothed_centers[fr][1]
+        if y > 0.93 * frame_height:          # at the bottom frame edge => off-court
+            return True
+        # teleport across the candidate: a one-frame jump > 25% of the diagonal
+        diag = float(np.hypot(frame_width, frame_height))
+        for a, b in ((fr - 1, fr), (fr, fr + 1)):
+            if 0 <= a < n2 and 0 <= b < n2 and smoothed_centers[a] is not None \
+                    and smoothed_centers[b] is not None:
+                jump = np.hypot(smoothed_centers[b][0] - smoothed_centers[a][0],
+                                smoothed_centers[b][1] - smoothed_centers[a][1])
+                if jump > 0.25 * diag:
+                    return True
+        return False
+
     # FAR-court wrist hits: detect_hits' amplitude floor is frame-scaled and blind
     # to the tiny far player (its full swing moves the wrist below the floor), so
     # far GT hits never enter hit_cands. Recover them from the now-dense far pose
@@ -548,7 +589,32 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         # ── scores + firewall predicate ──
         # hit_like = ball at a wrist OR a swing, and NO floor rebound. This is the
         # LOGICAL firewall: a hit_like event can never be a bounce.
-        hit_like = (hit or dmin < near) and not vy
+        #
+        # PROXIMITY RELAXATION (recovers a bounce that lands at a player's feet):
+        # the `dmin < near` term exists so a HIT whose swing detect_hits missed is
+        # still firewalled — but it also (wrongly) blocks a real floor BOUNCE that
+        # lands where the receiving player is standing (demo3 f174: the ball bounces
+        # at the near player's racket height, dwrist 0.18, yet the player is NOT
+        # swinging — it's a bounce, not a contact). We suppress the PROXIMITY-only
+        # term ONLY for an event that carries POSITIVE bounce-trajectory evidence
+        # AND no swing: a turn that sits at a local y-MAXIMUM (the ball's lowest
+        # screen point — where a floor bounce happens) with NO hit source.
+        #
+        # Firewall safety: a real racket HIT *requires a swing*, so detect_hits or
+        # the far-wrist generator gives it a hit source => hit=True => it stays
+        # hit_like and is never relaxed. The relaxation only ever reaches a
+        # swing-LESS event; a swing-less event at a y-maximum next to a stationary
+        # player is a floor bounce, not a contact. (vx-preserved is accepted as an
+        # equivalent bounce signature when the direction read is confident.) The
+        # alternation DP is the second guard. Verified 0/0 across the plateau.
+        # A y-maximum read for the relaxation must sit on a continuous trajectory:
+        # exclude EDGE ARTIFACTS (ball off the bottom edge + a teleport — a tracking
+        # dropout, not a floor bounce) so a glitch can't masquerade as a bounce apex.
+        vx_preserved = any(mfeat[fr]["vx_flip"] is False for fr, _, _, _ in members)
+        y_max = any(_is_y_maximum(fr) for fr, _, _, _ in members
+                    if not _is_edge_artifact(fr))
+        bounce_traj = turn and (y_max or vx_preserved) and not hit
+        hit_like = (hit or (dmin < near and not bounce_traj)) and not vy
         bscore = (1.0 * vy + 0.6 * bnc + 0.6 * (turn and dmin >= near))
         hscore = (1.0 * hit + 1.0 * (dmin < near) + 0.4 * (near <= dmin < far))
         anchor = None

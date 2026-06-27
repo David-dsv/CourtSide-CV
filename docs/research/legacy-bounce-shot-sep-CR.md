@@ -197,28 +197,34 @@ The NET vs baseline (the prompt's actual target): **bounce recall doubled (2→4
 "frappes en trop" more than halved (≈13→6), and the overall visible confusion drops
 sharply** — exactly "la confusion VISIBLE dans la vidéo diminue franchement".
 
-**The one residual — f82 (honest).** The turn pass recovers a bounce at f82 that is
-really the CONTACT of GT shot 81 (ball at (1069,774) ≈ the GT shot at (1068,761)) →
-one `confusion_H→B`. This is the IRREDUCIBLE legacy ambiguity: on the live Kalman
-track f82 reflects vy, abstains on vx (sub-floor |vx|), sits in the on-court band,
-AND is just OUTSIDE the near player's raw box (the contact is at the racket, which
-reaches beyond the silhouette) — so EVERY runtime discriminator we have fails to
-separate it from a real near-court bounce:
-- vx-flip: abstains on f82 AND on the real near bounces b62/b308 (all sub-floor).
-- ball↔wrist proximity: the real bounce b308 has a colliding hit at prox 0.54 (arm
+**The one residual — f82 (honest, and the named guardrail tests all stay green).**
+The turn pass recovers a bounce at f82 that is really the CONTACT of GT shot 81 (ball
+at (1069,774) ≈ the GT shot at (1068,761)) → one `confusion_H→B`. The named hard-
+constraint tests are unaffected (`test_event_confusion_regression` is the demo3
+confusion test and holds 0/0); f82 is a real-world residual on the LIVE tennis.mp4
+clip, not a test regression. It is the IRREDUCIBLE legacy ambiguity — FOUR
+independent mitigations were tried and each failed or cost real bounces:
+- **vx-flip**: abstains on f82 AND on the real near bounces b62/b308 (all sub-floor |vx|).
+- **ball↔wrist proximity**: the real bounce b308 has a colliding hit at prox 0.54 (arm
   reach), indistinguishable from f82.
-- ball-inside-player-box (the guard we shipped): catches a contact squarely inside a
-  box, but f82 lands at the box EDGE so pad=0.0 misses it; pad=0.10 would catch f82
-  but ALSO kills the real cache bounce b308 (10 px outside) — net negative.
-- far-court-only: would kill f82 but also the real near bounces b62/b308/f457.
+- **ball-inside-player-box guard (shipped)**: catches a contact squarely inside a box,
+  but f82 lands at the box EDGE (the racket reaches past the silhouette) so pad=0.0
+  misses it; pad=0.10 would catch f82 but ALSO kills the real cache bounce b308 (10 px
+  outside) — net negative. SHIPPED at pad=0.0 anyway (no-op on demo3, a genuine catch
+  on clips where a contact lands squarely inside a box).
+- **suppress hits only near y-V bounces (tried, reverted)**: the idea was to let the
+  real f81 hit "surface" and win the frame, demoting f82 to a harmless spurious bounce.
+  But MEASURED on the live track there is NO detectable hit at f81 (the near wrist-speed
+  peak / proximity never fires there), so nothing surfaces — the change didn't kill f82
+  and it cost cache hit F1 (0.571→0.40), so it was reverted.
 
 This is precisely the case the `--event-methodo` firewall + rally-alternation DP were
-built to resolve (and which the legacy path structurally lacks). We therefore SHIP
-the turn pass (a clear net win on the prompt's primary metrics) with the box guard
-(a no-op on demo3, a genuine catch on clips where a contact lands inside a box), and
-document f82 as the one residual the legacy path cannot kill without sacrificing real
-near-court bounces. The methodo path is the route to 0/0 once its far-pose blocker is
-closed (now that far-select is dense — `[[courtside-far-player-selection-not-detection]]`).
+built to resolve (and which the legacy path structurally lacks). We therefore SHIP the
+turn pass — a clear NET win on the prompt's primary metrics (live bounce 2→4, frappes
+≈13→6, overall visible confusion down sharply) — and document f82 as the single
+residual the legacy path cannot kill without sacrificing real near-court bounces. The
+route to 0/0 is the methodo path, now unblockable since far-select is dense
+(`[[courtside-far-player-selection-not-detection]]`).
 
 **Live hit recall is weak (≈1 TP/8)** because hit candidate GENERATION is near-biased
 (far hits weakly generated) and the live ball track is noisier than the cache — a

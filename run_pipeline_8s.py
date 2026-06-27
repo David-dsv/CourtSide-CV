@@ -1396,17 +1396,8 @@ def main():
             hits = detect_hits(all_ball_centers, players_per_frame, fps,
                                frame_height, frame_width, bounce_frames=bset)
         else:
-            # SUPPRESS hits only near HIGH-CONFIDENCE (y-extremum) bounces, NOT near
-            # turn-only bounces. A turn bounce can be a near-court CONTACT mislabeled
-            # (e.g. live f82 on GT shot 81); if it suppressed the real hit there, the
-            # contact would be emitted ONLY as a bounce → confusion_H→B. Letting the
-            # real hit surface makes it WIN the frame (the cross-matcher / a human
-            # reads the racket contact), demoting the bogus turn-bounce to a harmless
-            # spurious bounce instead of a hit-shown-as-bounce. demo3: confusion stays
-            # 0/0, all 6 bounces kept; one extra spurious hit is the (small) cost.
-            _yv_bset = [f for f in bset if f not in set(turn_bounce_frames)]
             hits = detect_hits(all_ball_centers, locked_ppf, fps,
-                               frame_height, frame_width, bounce_frames=_yv_bset,
+                               frame_height, frame_width, bounce_frames=bset,
                                wrist_prox_max=1.2)
 
         if event_methodo and not args.demo_override:

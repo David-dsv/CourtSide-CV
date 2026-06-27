@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from vision.bounce import (  # noqa: E402
-    smooth_ball_trajectory, detect_bounces_from_trajectory)
+    smooth_ball_trajectory, detect_bounces_from_trajectory, arbitrate_bounce_hit)
 from vision.shots import detect_hits  # noqa: E402
 from tools.event_eval.event_eval import match_events, print_report, scores  # noqa: E402
 
@@ -50,11 +50,17 @@ def legacy_events(fps, fw, fh, kal, kal_real, ppf):
     """EXACT prod legacy story on the Kalman path (default tracker, no methodo)."""
     all_centers = smooth_ball_trajectory(kal, max_gap=int(fps * 0.4))
     speeds = [0.0] * len(all_centers)
-    b_cands = detect_bounces_from_trajectory(
-        all_centers, speeds, fps, fh, fw, raw_centers=kal, is_real=kal_real)
+    b_cands, turn_frames = detect_bounces_from_trajectory(
+        all_centers, speeds, fps, fh, fw, raw_centers=kal, is_real=kal_real,
+        return_turn_frames=True)
     bounce_frames = [b[0] for b in b_cands]
     hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=bounce_frames,
                        wrist_prox_max=1.2)
+    # confusion_H→B guard (no-op on this cache — b308 lands outside the box): drop a
+    # turn-bounce that lands INSIDE a player box AND collides a hit (a contact
+    # mislabeled). Mirrors the prod legacy wiring exactly.
+    b_cands, hits = arbitrate_bounce_hit(
+        b_cands, hits, fps, turn_frames=turn_frames, players_per_frame=ppf)
     evs = [{"frame": int(f), "label": "BOUNCE"} for (f, x, y) in b_cands]
     evs += [{"frame": int(h["frame"]), "label": "HIT"} for h in hits]
     return evs, b_cands, hits

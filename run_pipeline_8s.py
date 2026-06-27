@@ -1121,6 +1121,7 @@ def main():
     # YOLO+Kalman trajectory the curve-fit detector is the tuned default.
     bounce_events = []
     direction_state_by_frame = {}  # frame -> {"metric","unconfirmed"} (CHANTIER 2)
+    turn_bounce_frames = []        # LEGACY: turn-angle-sourced (lower-conf) bounces
     # --event-methodo: the unified classifier (vision.events) needs the RAW,
     # un-vetoed bounce candidates PLUS poses + hits, which only exist after Pass
     # 1.5. So we SKIP the Pass-1 bounce detection/veto entirely here and generate
@@ -1166,9 +1167,10 @@ def main():
             # single FP — a fair cross-clip trade for demo3's 1/9→6/9. Both the
             # no-arg (test) and with-arg (prod) felix paths are floored in
             # test_bounce_regression.
-            bounce_events = detect_bounces_from_trajectory(
+            bounce_events, turn_bounce_frames = detect_bounces_from_trajectory(
                 all_ball_centers, ball_speeds_px, fps, frame_height, frame_width,
-                raw_centers=raw_ball_centers, is_real=ball_is_real)
+                raw_centers=raw_ball_centers, is_real=ball_is_real,
+                return_turn_frames=True)
 
     # ─── Optional: export bounce predictions for offline evaluation ───
     # Additive, gated, read-only w.r.t. the pipeline: reads the already-computed
@@ -1374,6 +1376,29 @@ def main():
             hits = detect_hits(all_ball_centers, locked_ppf, fps,
                                frame_height, frame_width, bounce_frames=bset,
                                wrist_prox_max=1.2)
+            # LEGACY confusion_H→B guard: a turn-angle-recovered bounce (no
+            # y-extremum → lower confidence) that lands INSIDE a player's box AND
+            # collides with a hit is that hit mislabeled (the ball reversed at the
+            # racket, not on the court) → drop it as a bounce so the hit owns the
+            # frame. A real floor bounce that merely happens NEAR a player lands
+            # OUTSIDE the box and is kept (so this never touches a genuine bounce —
+            # verified no-op on the demo3 cache, where b308 lands outside the box).
+            # This is what keeps confusion_H→B at 0 on the LIVE track, where the
+            # apex recovery otherwise mislabels a near-court contact as a bounce.
+            if turn_bounce_frames and bounce_events:
+                from vision.bounce import arbitrate_bounce_hit
+                _before = len(bounce_events)
+                bounce_events, hits = arbitrate_bounce_hit(
+                    bounce_events, hits, fps, turn_frames=turn_bounce_frames,
+                    players_per_frame=locked_ppf)
+                if len(bounce_events) != _before:
+                    # a bounce was demoted → rebuild the bounce structures that were
+                    # built from the pre-arbitration list (Pass-1 bounce_by_frame).
+                    bounce_by_frame = _build_bounce_by_frame(bounce_events)
+                    direction_state_by_frame = {
+                        f: s for f, s in direction_state_by_frame.items()
+                        if f in {int(b[0]) for b in bounce_events}}
+                    bset = list(bounce_by_frame.keys())
 
         if event_methodo and not args.demo_override:
             # ── UNIFIED ARBITRATION (vision.events.classify_events) ──

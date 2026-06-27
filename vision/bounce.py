@@ -1000,59 +1000,83 @@ def vx_flip_veto(bounce_events, raw_centers, is_real, fps, frame_width,
 # suppress the f81 hit and emit only the bounce → confusion_H→B=1. With it, the hit
 # wins and the spurious bounce is dropped. Pure function, scale-free window.
 
+def _ball_inside_a_player(bx, by, players, pad_frac=0.0):
+    """True if (bx,by) falls inside any player's bounding box (optionally padded by
+    pad_frac of the box height/width). A real FLOOR bounce lands on the court, NOT
+    inside a player's silhouette; a racket HIT is at the player. players is a list
+    of dicts with a "box" = (x0,y0,x1,y1)."""
+    for p in (players or []):
+        b = p.get("box")
+        if b is None:
+            continue
+        x0, y0, x1, y1 = b[0], b[1], b[2], b[3]
+        px = (x1 - x0) * pad_frac
+        py = (y1 - y0) * pad_frac
+        if (x0 - px) <= bx <= (x1 + px) and (y0 - py) <= by <= (y1 + py):
+            return True
+    return False
+
+
 def arbitrate_bounce_hit(bounce_events, hits, fps, turn_frames=None,
-                         guard_frac=0.10):
-    """CONFIDENCE-AWARE bounce↔hit collision resolution for the legacy path.
+                         players_per_frame=None, pad_frac=0.10, guard_frac=0.10):
+    """Bounce↔hit collision resolution for the legacy path, protecting BOTH the
+    user's #1 bug (confusion_H→B — a HIT shown as a bounce) AND real floor bounces
+    that happen near a player (confusion_B→H).
 
-    Two independent detectors can claim the same frame. We resolve by CONFIDENCE,
-    because a blind "hit always wins" loses real bounces (a clean y-V bounce with a
-    follow-through wrist peak nearby) and a blind "bounce always wins" creates
-    confusion_H→B (a mis-recovered turn bounce sitting on a real contact):
+    The hard case is a TURN-recovered bounce (no y-extremum → lower confidence) that
+    lands where a player is. Two physically distinct events look alike to a single
+    detector:
+      - a racket HIT (the ball reverses AT the player's racket — INSIDE the player's
+        silhouette), and
+      - a real FLOOR BOUNCE that merely happens NEAR a player (the ball reflects off
+        the COURT, OUTSIDE the player's silhouette — the arm/wrist may still be close
+        by reach, which is why a pure ball↔wrist-proximity test can't separate them).
 
-      - A bounce in ``turn_frames`` (recovered ONLY from the velocity-turn angle —
-        no y-extremum → lower confidence) that collides with a hit is DROPPED: the
-        proximity-gated hit (a contact near a player) outranks it. Keeps
-        confusion_H→B at 0 when the apex recovery fires near a real swing.
-      - A bounce NOT in turn_frames (a clean y-extremum V → high confidence) WINS:
-        it is kept, and the colliding hit is SUPPRESSED (that wrist peak is the
-        follow-through of the shot that produced the bounce, not a new contact).
-      - Non-colliding bounces and hits pass through unchanged.
+    So the discriminator is the PLAYER BOX, not wrist proximity: a turn-bounce whose
+    landing point is INSIDE a player's (padded) bounding box AND collides with a hit
+    is the hit mislabeled → DROP it (the hit wins → confusion_H→B stays 0). A
+    turn-bounce OUTSIDE every player box is a genuine floor bounce → KEEP it (this is
+    what spares the real bounce-near-a-player, e.g. demo3's b308). y-extremum bounces
+    (high confidence) are always kept.
 
-    With turn_frames=None every bounce is treated as high-confidence (the old
-    bounce-wins behaviour), so callers that don't thread provenance are unaffected.
+    Measured: on the demo3 cache b314 (real bounce 308) lands OUTSIDE the near box →
+    kept; on the live track the f82 turn-bounce lands AT the near contact (GT shot 81)
+    → dropped, killing the lone confusion_H→B the turn pass introduced.
+
+    With players_per_frame=None or turn_frames=None the function is a no-op pass-
+    through (callers that don't thread provenance/poses are unaffected).
 
     Args:
-        bounce_events: list of (frame, x, y) bounce candidates.
-        hits:          list of hit dicts (each with a "frame"); proximity-gated.
-        fps:           frame rate (scale-free window).
-        turn_frames:   iterable of bounce frames sourced only from the turn pass
-                       (lower confidence). None → treat all bounces as y-V.
-        guard_frac:    collision window in seconds (default 0.10).
+        bounce_events:     list of (frame, x, y) bounce candidates.
+        hits:              list of hit dicts (each with "frame").
+        fps:               frame rate (scale-free collision window).
+        turn_frames:       iterable of turn-only (lower-confidence) bounce frames.
+        players_per_frame: per-frame list of player dicts (with "box"); the box test.
+        pad_frac:          box padding (fraction of box size) for the inside test.
+        guard_frac:        collision window in seconds (default 0.10).
 
     Returns:
-        (kept_bounces, kept_hits).
+        (kept_bounces, hits) — hits pass through unchanged.
     """
-    if not bounce_events:
+    if not bounce_events or not hits or players_per_frame is None:
         return list(bounce_events), list(hits)
     guard = max(1, round(fps * guard_frac))
     turn_set = set(int(f) for f in (turn_frames or []))
     hit_frames = [int(h["frame"]) for h in hits]
 
-    kept_bounces = []
-    suppressed_hit_frames = set()
+    kept = []
     n_demoted = 0
     for ev in bounce_events:
-        bf = int(ev[0])
-        colliding = [hf for hf in hit_frames if abs(bf - hf) <= guard]
-        if colliding and bf in turn_set:
-            n_demoted += 1                    # low-conf turn bounce loses to the hit
+        bf, bx, by = int(ev[0]), ev[1], ev[2]
+        colliding = any(abs(bf - hf) <= guard for hf in hit_frames)
+        players = players_per_frame[bf] if 0 <= bf < len(players_per_frame) else None
+        if (colliding and bf in turn_set
+                and _ball_inside_a_player(bx, by, players, pad_frac)):
+            n_demoted += 1     # a turn-bounce AT a player colliding a hit = the hit
             continue
-        kept_bounces.append(ev)
-        if colliding:                         # high-conf bounce wins → drop its hits
-            suppressed_hit_frames.update(colliding)
-    kept_hits = [h for h in hits if int(h["frame"]) not in suppressed_hit_frames]
-    if n_demoted or suppressed_hit_frames:
-        logger.info(f"bounce↔hit arbitration: {n_demoted} turn-bounce(s) demoted to "
-                    f"hit, {len(suppressed_hit_frames)} hit(s) suppressed near a "
-                    f"y-extremum bounce")
-    return kept_bounces, kept_hits
+        kept.append(ev)
+    if n_demoted:
+        logger.info(f"bounce↔hit arbitration: {n_demoted} turn-bounce(s) inside a "
+                    f"player box + colliding a hit → dropped (kept as hit, "
+                    f"confusion_H→B guard)")
+    return kept, hits

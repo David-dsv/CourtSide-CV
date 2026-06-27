@@ -101,7 +101,17 @@ bounce F1 = 0.667   hit F1 = 0.750
 ```
 → **confusion_H→B 4→0, B→H 1→0**. bounce recall nettement > les 2/9 legacy. hit F1 0.333→0.750.
 
-<!-- FINAL-LIVE-PLACEHOLDER -->
+**Confirmation sur le `_stats.json` RÉEL d'un run end-to-end complet** (pas un replay — `tennis.mp4 -s 73 -d 13 --event-methodo`, far-pose 100 %, fix actif) :
+```
+predicted: 6 bounces / 8 shots   vs GT 9 bounces / 8 shots
+  GT BOUNCE        5            0         4
+  GT HIT           0            6         2
+  confusion_H->B = 0   confusion_B->H = 0
+  bounce F1 = 0.667 (P=0.833 R=0.556)   hit F1 = 0.750 (P=0.750 R=0.750)
+```
+→ **La matrice de confusion est DIAGONALE : 0 frappe montrée comme rebond, 0 rebond montré comme frappe.** L'objectif dur de la session (« la confusion rebond/frappe DISPARAÎT dans le `_stats.json` de PROD ») est **atteint**. (Les frames exactes diffèrent légèrement du replay §4 car la détection balle n'est pas déterministe d'un run à l'autre — mais les DEUX atterrissent à 0/0 : la garantie firewall+vx-gate est structurelle, indépendante de la piste précise.)
+
+Les rebonds manqués restants (62/120/174/308) sont un plafond de **recall** (génération de candidats far-court / occlusion poignet far), PAS de la confusion — orthogonaux à la cible de ce CR (cf. `courtside-ball-density-apex-bounce` : 268 = non-détection YOLO, territoire GPU re-train).
 
 ---
 

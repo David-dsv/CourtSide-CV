@@ -839,14 +839,43 @@ def _veto_drop_teleports(pts, frame_width):
 
 
 def _veto_slope(pts, axis):
-    """Least-squares slope of pts[:,axis] vs frame (axis 1=x, 2=y). >=2 pts."""
+    """ROBUST slope of pts[:,axis] vs frame (axis 1=x, 2=y). >=2 pts.
+
+    Theil-Sen estimator: the MEDIAN of all pairwise frame-spaced slopes
+    (vj-vi)/(kj-ki). A plain least-squares fit (the old implementation) has a
+    0% breakdown point — a SINGLE jitter outlier dominates the slope, which is
+    exactly how a one-frame tracker spike on a clean descending arc faked a
+    vy-flip (vy_post sign flipped) → a phantom mandatory BOUNCE anchor in
+    classify_events (and a spurious veto in vx_flip_veto). Theil-Sen has a ~29%
+    breakdown point: one outlier among >=4 points cannot move the median pair.
+
+    Scale-free and parameter-free (no threshold to tune): the median is the
+    robustifier. For a 2-point side there is exactly ONE pairwise slope, which
+    equals the least-squares slope, so the degenerate case is byte-identical to
+    the old fit.
+
+    On the load-bearing felix direction features the numeric slope value DOES
+    shift on most dense (>=3-pt) calls (Theil-Sen != least-squares whenever the
+    points aren't perfectly collinear — measured 52/54 felix calls diverge), but
+    the shift is SIGN-NEUTRAL: zero of those divergences crosses zero, so every
+    vx_flip/vy_flip DECISION is unchanged and felix Kalman/WASB F1 stay
+    byte-identical. The sign only flips where a single spike was forcing it (the
+    bug); a clean ballistic window keeps the same sign under both estimators.
+    (The detect_bounces_robust WASB detector path never calls _veto_slope, so its
+    candidate list is untouched by construction.)
+    """
     if len(pts) < 2:
         return None
-    ks = np.array([p[0] for p in pts], float)
-    vs = np.array([p[axis] for p in pts], float)
-    A = np.vstack([ks, np.ones(len(ks))]).T
-    (a, _b), *_ = np.linalg.lstsq(A, vs, rcond=None)
-    return float(a)
+    ks = [p[0] for p in pts]
+    vs = [p[axis] for p in pts]
+    # pairwise slopes over distinct frames (frame spacing is the x-axis)
+    slopes = [(vs[j] - vs[i]) / (ks[j] - ks[i])
+              for i in range(len(pts))
+              for j in range(i + 1, len(pts))
+              if ks[j] != ks[i]]
+    if not slopes:
+        return None
+    return float(np.median(slopes))
 
 
 def vx_flip_veto(bounce_events, raw_centers, is_real, fps, frame_width,

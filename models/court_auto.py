@@ -37,7 +37,6 @@ copyrightable); attribution in the CR. No GPL/AGPL/no-license code is used.
 from __future__ import annotations
 
 import itertools
-from pathlib import Path
 
 import numpy as np
 import cv2
@@ -49,7 +48,7 @@ from models.court_lines import (
     MASK_COVERAGE_SANE_BAND, SPREAD_TIGHT_HIGH_FRAC_DIAG,
 )
 from models.court_calibrator import (
-    WORLD_LANDMARKS, homography_from_points, _assess_conditioning,
+    homography_from_points,
     DOUBLES_HALF_W, SINGLES_HALF_W, HALF_LEN, SERVICE_FROM_NET,
 )
 

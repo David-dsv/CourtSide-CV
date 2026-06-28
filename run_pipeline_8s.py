@@ -615,6 +615,16 @@ def parse_args():
                              "homography is fine for a fixed camera).")
     parser.add_argument("--court-model", default="training/court/tennis_court_det.pt",
                         help="Path to the court-keypoint model weights (for --homography).")
+    parser.add_argument("--auto-court", action="store_true",
+                        help="Automatic CLASSICAL court homography (no GPU, no learned "
+                             "model, license-clean): extract the white court lines → "
+                             "vanishing-point pencils → Farin/gchlebus order-preserving "
+                             "warp-back fit (models/court_auto.py). The deployable "
+                             "replacement for the no-LICENSE keypoint model on oblique/"
+                             "amateur/court-level angles. Runs AFTER --homography and "
+                             "BEFORE the calibration sidecar in the cascade; ABSTAINS "
+                             "honestly (→ sidecar/scalar) on grazing angles where the "
+                             "depth axis is unobservable (e.g. felix). Off by default.")
     parser.add_argument("--ball-tracker", choices=["kalman", "wasb"], default="kalman",
                         help="Ball tracker. 'kalman' = YOLO26 + Kalman (default). 'wasb' = "
                              "WASB heatmap-temporal tracker (denser/cleaner trajectory, higher "
@@ -735,7 +745,7 @@ def main():
 
     # ─── Read first frame (used for court homography + zones) ───
     first_frame = None
-    if (not args.no_court or not args.no_bounces) or args.homography:
+    if (not args.no_court or not args.no_bounces) or args.homography or args.auto_court:
         first_frame = next(reader.iter_frames())
         reader.release()
         reader = VideoReader(video_path)
@@ -764,6 +774,34 @@ def main():
         except Exception as e:
             logger.warning(f"Court homography failed ({e}) → scalar scale fallback")
             court_homography = None
+
+    # ─── Automatic classical court homography (--auto-court, default OFF) ───
+    # The no-GPU, license-clean replacement for the keypoint model on oblique /
+    # amateur / court-level framings (where the keypoint model domain-shifts to
+    # <4 points). models/court_auto.py extracts the white court lines, finds the
+    # two vanishing-point pencils, and fits an image↔meters homography by the
+    # Farin/gchlebus order-preserving warp-back self-score — with NO learned model.
+    # It ABSTAINS honestly (confidence='fallback' → None here) on grazing angles
+    # where the depth axis is unobservable (felix), deferring to the sidecar/scalar
+    # below. Runs AFTER the keypoint solve (so a broadcast clip keeps using the
+    # keypoint H it already nails) and BEFORE the sidecar (so a calibrated clip
+    # still prefers its exact manual points). Same dict contract → drop-in.
+    if court_homography is None and args.auto_court and first_frame is not None:
+        try:
+            from models.court_auto import AutoCourtDetector
+            auto = AutoCourtDetector().compute_homography(first_frame, frame_diag)
+            if auto is not None and auto.get("confidence") != "fallback":
+                court_homography = auto
+                logger.info(f"Auto court homography (classical, no-GPU): "
+                            f"confidence={auto['confidence']}, n_used={auto['n_used']}, "
+                            f"warp-back={auto.get('warpback_score', float('nan')):.2f} "
+                            f"→ metric homography enabled")
+            else:
+                reason = (auto or {}).get("abstain_reason", "no court fit")
+                logger.info(f"Auto court homography abstained ({reason}) "
+                            "→ falling through to calibration sidecar / scalar")
+        except Exception as e:
+            logger.warning(f"Auto court homography failed ({e}) → sidecar/scalar fallback")
 
     # ─── Calibration homography (semi-auto 4-corner) ───
     # On oblique/amateur angles the keypoint model can't localize the court, but a

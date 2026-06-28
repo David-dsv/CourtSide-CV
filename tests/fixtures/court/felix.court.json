@@ -1,0 +1,29 @@
+{
+  "video": "felix.mp4",
+  "frame_wh": [
+    1920,
+    1080
+  ],
+  "points": {
+    "far_bl_left": [
+      329.0,
+      600.0
+    ],
+    "far_bl_right": [
+      1690.0,
+      545.0
+    ],
+    "near_bl_left": [
+      540.0,
+      758.0
+    ],
+    "far_svc_center": [
+      913.0,
+      660.0
+    ]
+  },
+  "difficulty": "grazing",
+  "frame_index": 0,
+  "annotator": "davidsv",
+  "license": "repo-internal eval only"
+}

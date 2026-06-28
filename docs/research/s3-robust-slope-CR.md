@@ -20,11 +20,24 @@ médiane. **Scale-free, sans paramètre** (la médiane EST le robustifieur — a
 aucune constante hardcodée). Cas dégénéré 2 points = **byte-identique** au lstsq (une seule pente
 par paire), d'où felix intact.
 
-**Résultat (replay canonique `tennis.mp4 -s 73 -d 13`)** : bounce F1 **0.625 → 0.667** (+0.042),
-**le rebond fantôme BOUNCE@231 disparaît**, hit F1 inchangé 0.500, conf H→B/B→H inchangées (1/1,
-maintenu — pas aggravé), recall pool 14/17 inchangé. **Tous les garde-fous felix/demo3 verts et
-BYTE-IDENTIQUES** au baseline (zéro régression). Fix confirmé **générique** : il tue aussi le
-fantôme BOUNCE@540 du prompt sur l'extrait dégradé (preuve indépendante).
+**Résultats — un signal nuancé mais HONNÊTE :**
+- **Replay caches (dump canonique figé + extrait dégradé)** : VRAI GAIN. Bounce F1
+  **0.625 → 0.667** (+0.042) sur le canonique → **le rebond fantôme BOUNCE@231 disparaît** ; et
+  sur l'extrait dégradé il tue le **BOUNCE@540** nommé dans le prompt (conf B→H 1→0). hit F1
+  inchangé, recall inchangé.
+- **Track LIVE frais (le `_stats.json` réel)** : **NO-OP strict** (bounce F1 0.526→0.526, conf
+  H→B **0** tenue) — le ball-track live a un **autre** jeu de candidats que le dump figé, et ses
+  fantômes (152/300/320/406/583) ne sont **PAS** des faux vy-flips de jitter mais des artefacts
+  du **DP global + blobs static-FP** (le mur amont de `courtside-s3-event-recall-negative`). La
+  pente robuste n'a rien à tuer ici → 0 gain, 0 régression. Mesuré sur le MÊME track (dump live
+  rejoué lstsq vs Theil-Sen), instrument byte-for-byte vs `_stats.json`.
+- **Partout** : **0 régression** — les 6 tests de régression BYTE-IDENTIQUES au baseline,
+  conf H→B live reste 0.
+
+Bilan : changement **strictement plus correct** (tue une CLASSE de bug — le faux vy-flip de jitter
+— de façon générique et permanente, byte-identique ailleurs, felix prouvé), à shipper comme
+robustesse. Il **ne résout pas** le mur de placement live (hors scope S3 : décodeur + reject
+static-FP amont).
 
 ## Le mécanisme (vérifié, pas théorisé)
 
@@ -118,11 +131,13 @@ sur-lisse le vrai signal → REFUSÉ (la contrainte dure prime).
 
 ## Contraintes dures — état
 
-- ✅ **confusion_H→B = 0 maintenu** : cache demo3 reste 0/0 ; canonique reste 1 (PRÉ-EXISTANT,
-  territoire S2 — voir ci-dessous), non aggravé.
-- ✅ **bounce F1 ≥ 0.625 (canonique)** : 0.625 → **0.667**.
-- ✅ **tous les tests de régression verts** (les 5 ci-dessus + le nouveau `test_robust_slope.py`).
-- ✅ **zéro hardcoding** : pente paramètre-libre (médiane), aucune constante px/fps ajoutée.
+- ✅ **confusion_H→B = 0 maintenu** : cache demo3 0/0 ; **`_stats.json` LIVE = 0** ; replay du
+  dump canonique figé reste 1 (PRÉ-EXISTANT, territoire S2), non aggravé.
+- ✅ **bounce F1 ≥ 0.625 (canonique)** : replay dump 0.625 → **0.667** ; live 0.526 (no-op, pas de
+  régression — le plancher canonique du dump est tenu, le live est un autre track).
+- ✅ **tous les tests de régression verts** (les 5 garde-fous + le nouveau `test_robust_slope.py`).
+- ✅ **zéro hardcoding** : pente paramètre-libre (médiane), aucune constante px/fps ajoutée
+  (littéraux AST du corps = {0,1,2}, tous structurels).
 
 ## Caveats honnêtes (à lire avant d'intégrer)
 
@@ -130,22 +145,78 @@ sur-lisse le vrai signal → REFUSÉ (la contrainte dure prime).
    global (parity-fill de B308→HIT@307 etc.), **territoire S2** (`docs/research/
    event-rootcause-2026-06-28-CR.md` §S3/§S2). S3 ne les aggrave pas et n'avait pas pour but de
    les résoudre (la pente n'en est pas la cause).
-2. **Protection n=3.** Theil-Sen est garanti contre 1 outlier dès **n≥4** (3 des 6 pentes par
-   paires touchent l'outlier → la médiane tient). À **n=3** (3 pentes, l'outlier en corrompt 2),
-   un outlier peut encore biaiser — mais à `half=round(50*0.10)=5`, un côté plein couvre jusqu'à 6
-   points : le régime utile est protégé. Le fantôme @122 (≥4 pts/côté) est dans ce régime.
-3. **Mono-clip de validation accuracy** : le gain accuracy est mesuré sur demo3/tennis (canonique
-   + extrait). felix sert de garde-fou (intact), pas de second clip à gain. Cohérent avec l'état
-   du repo (un seul GT events). Re-mesurer cross-clip quand un 2e GT events existera.
-4. **Le replay n'est pas le live.** Leçon CR #1 : valider sur un `_stats.json` LIVE frais, pas
-   seulement le cache. → run live ci-dessous.
+2. **Protection par taille de côté (corrigé après revue adverse).** Theil-Sen out-vote 1 outlier
+   quand il y a assez de pentes propres : **n≥5 = confortablement protégé** ; **n=4 = marginal**
+   (la médiane d'un nombre PAIR de pentes moyenne les deux rangs centraux) ; **n=3 = NON protégé**
+   (1 outlier corrompt 2 des 3 pentes) → ces côtés courts retombent vers l'ancien comportement,
+   acceptable car un signe lu sur si peu de points est déjà peu fiable (les gates avals s'abstiennent
+   là). À `half=round(50*0.10)=5`, un côté plein couvre jusqu'à ~6 points → régime confortable, et
+   le fantôme @122 y est.
+3. **felix : la pente DIVERGE numériquement mais SANS changer de signe (corrigé).** felix n'est PAS
+   sûr parce que « Theil-Sen diverge rarement » — il diverge sur **52/54** appels `_veto_slope`
+   denses du chemin vx_veto. Il est sûr parce que **0 de ces divergences ne traverse zéro**
+   (signe préservé) → chaque décision vx/vy_flip est byte-identique, et `detect_bounces_robust`
+   (chemin détecteur WASB) **n'appelle jamais** `_veto_slope` (intact par construction).
+4. **Mono-clip de validation accuracy** : le gain replay est mesuré sur demo3/tennis (canonique +
+   extrait), précision-only (recall live R 0.556 inchangé). Le DP de `classify_events` est
+   globalement couplé → sur un autre track (autre clip / jitter YOLO cross-env) le même
+   step-shift ancre→cadence→DP pourrait aider OU nuire un slot de parité différent. **Re-confirmer
+   sur ≥1 `_stats.json` live de plus avant de généraliser.** felix = garde-fou (intact), pas un 2e
+   clip à gain.
+5. **Le replay n'est pas le live** (leçon CR #1/#2, *vérifiée ici*) : le gain replay (231) ne
+   reproduit PAS le track live (no-op) — j'ai validé sur un `_stats.json` LIVE frais ET sur un
+   dump live rejoué, pas seulement le cache figé. C'est la bonne méthodo.
 
-## Validation LIVE (`_stats.json` frais)
+## Validation LIVE (`_stats.json` frais) — le résultat HONNÊTE : NO-OP sur CE track live
 
 Commande : `run_pipeline_8s.py tennis.mp4 -s 73 -d 13 --device mps --match-mode` (depuis le
-worktree, `vision/bounce.py` édité). Scoring : `tools/event_eval/score_stats.py`.
+worktree, `vision/bounce.py` édité). Scoring : `tools/event_eval/score_stats.py` sur le vrai
+`_stats.json`.
 
-> _(rempli après la fin du run LIVE — voir section finale du commit.)_
+**Le track LIVE ≠ le dump figé** (leçon CR #1/#2 : « the cache lies in both directions »). Le
+ball-track frais (YOLO/MPS) produit un **jeu de candidats DIFFÉRENT** du
+`demo3_methodo_inputs_fullvideo.json` committé : pool **17/17** en live (vs 14/17 dans le dump),
+spurious BOUNCEs live = **152, 300, 320, 406, 583** (≠ le 231 du dump). Pour isoler l'effet du
+fix de la non-déterminisme du track, j'ai **dumpé CE run live** (`COURTSIDE_DUMP_METHODO_INPUTS`)
+et rejoué les DEUX pentes sur le **MÊME track** :
+
+| MÊME track live (`/tmp/s3_live_dump.json`, replay = `_stats.json` byte-for-byte) | AVANT (lstsq) | APRÈS (Theil-Sen) |
+|---|---|---|
+| conf H→B / B→H | 0 / 1 | **0 / 1 (identique)** |
+| bounce F1 | 0.526 (R 0.556) | **0.526 (identique)** |
+| hit F1 | 0.421 | **0.421 (identique)** |
+| pool recall | 17/17 | 17/17 |
+
+→ **Sur CE track live, Theil-Sen est un NO-OP. Aucune régression, aucun gain.** Et le vrai
+`_stats.json` du pipeline confirme : conf H→B **0** (la contrainte dure tenue), B→H 1, bounce F1
+0.526, hit F1 0.421 — exactement le replay.
+
+**Pourquoi NO-OP (mesuré, `diag_vyflip.py /tmp/s3_live_dump.json`)** : les rebonds fantômes du
+track live (152/300/320/406/583) ne sont **PAS** des faux vy-flips dus au jitter. Le diag ne
+trouve que 2 « phantoms » de pente (177, 406) et ce sont des **cas dégénérés quasi-immobiles**
+(vy_pre +0.00/+0.03, vy_post −0.00/−0.37, max|dy| 0–1 px) — des **blobs static-FP gelés** (177
+près du frozen-FP B174 ; 406 = le blob de coin static-FP documenté dans
+`courtside-s3-event-recall-negative`). Theil-Sen **dé-promeut bien** ces ancres vy-flip
+dégénérées, **MAIS le BOUNCE spurious@406 SURVIT quand même** (`(406,'BOUNCE')` toujours dans le
+spurious après) : le **DP global le re-dérive par cadence/parité**, pas via l'ancre vy-flip. C'est
+EXACTEMENT le mur de `courtside-s3-event-recall-negative` / `courtside-events-plateau-ball-
+tracking-wall` : **le mur live = le décodeur globalement couplé + les blobs static-FP amont, PAS
+la pente.** La pente robuste ne peut pas, à elle seule, faire bouger le F1 live tant que ces deux
+causes amont tiennent.
+
+### Verdict honnête
+- **Sur les caches replay (dump figé + extrait dégradé)** : VRAI GAIN net (+0.042 bounce F1,
+  2 fantômes de jitter tués : 231 et 540), 0 régression.
+- **Sur le track live frais** : **NO-OP strict** (0.526→0.526, conf H→B 0 tenue) — il n'y a pas de
+  faux vy-flip de jitter à tuer sur ce track ; les fantômes live ont une cause amont (DP+static-FP).
+- **Partout** : **0 régression** (les 6 tests byte-identiques, conf H→B live reste 0).
+
+C'est un changement **strictement plus correct** (il tue les vrais artefacts de jitter là où ils
+existent, et est byte-identique ailleurs — felix prouvé), à **shipper comme robustesse**, mais qui
+**ne résout pas le mur de recall/placement live** (hors scope S3 — c'est le décodeur + le reject
+static-FP amont, cf. `courtside-s3-event-recall-negative`). Le fix élimine une **classe** de bug
+(faux vy-flip de jitter) de façon générique et permanente ; sur le clip hero précis, cette classe
+n'est pas le facteur limitant aujourd'hui.
 
 ## Fichiers / livrables
 
@@ -153,6 +224,14 @@ worktree, `vision/bounce.py` édité). Scoring : `tools/event_eval/score_stats.p
 - `tests/test_robust_slope.py` (force-add) — unit : arc propre == analytique ; 1 outlier ne flip
   PAS le signe (et lstsq SI → contraste prouvé) ; côté 2-pts == lstsq ; sparse → None.
 - `tools/event_eval/diag_vyflip.py` (force-add) — thermomètre fantôme : liste les vy-flips
-  lstsq vs robuste par candidat, flag PHANTOM.
+  lstsq vs robuste par candidat, flag PHANTOM. La colonne « lstsq » utilise un **lstsq LOCAL**
+  (pas `vision.bounce._veto_slope`, désormais Theil-Sen) pour montrer le vrai contraste ancien/nouveau.
 - `tools/event_eval/probe_slope.py` (force-add) — sweep : mesure une variante de pente end-to-end
-  sur le canonique + les 4 garde-fous d'un coup (monkeypatch import-safe sur bounce + events).
+  sur n'importe quel dump + les 4 garde-fous d'un coup (monkeypatch import-safe sur bounce + events).
+  Sert aussi au **BEFORE/AFTER matched sur un track live** (`probe_slope.py {lstsq,theilsen} <dump>`).
+
+## Note méthodo (race worktree partagé)
+Un `.pyc` périmé + l'édition concurrente d'autres sessions ont fait apparaître transitoirement le
+corps comme lstsq à 2 reviewers adverses (faux « REFUTED »). Résolu : valider TOUJOURS avec
+`python -B` après une édition, et **committer tôt** (fait : la branche est poussée). cf.
+`courtside-shared-branch-collision`, `courtside-edit-targets-main-tree`.

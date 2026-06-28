@@ -847,7 +847,13 @@ def _veto_slope(pts, axis):
     exactly how a one-frame tracker spike on a clean descending arc faked a
     vy-flip (vy_post sign flipped) → a phantom mandatory BOUNCE anchor in
     classify_events (and a spurious veto in vx_flip_veto). Theil-Sen has a ~29%
-    breakdown point: one outlier among >=4 points cannot move the median pair.
+    breakdown point: a single outlier is out-voted once there are enough clean
+    pairwise slopes. n>=5 is comfortably protected (the half=round(fps*0.10)
+    window spans up to ~6 points, the common case); n=4 is marginal (an even
+    median averages the two central ranks) and n=3 is NOT protected (one outlier
+    corrupts 2 of the 3 pairwise slopes) — those short sides fall back toward the
+    old behavior, which is acceptable because a sign read on so few points is
+    already low-confidence and the downstream gates abstain there.
 
     Scale-free and parameter-free (no threshold to tune): the median is the
     robustifier. For a 2-point side there is exactly ONE pairwise slope, which

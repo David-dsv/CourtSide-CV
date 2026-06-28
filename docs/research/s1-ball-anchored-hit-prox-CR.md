@@ -178,9 +178,10 @@ no-arg:        F1=0.800 P=0.857 R=0.750 (TP=12 FP=2 FN=4)   PASS  (floor 0.72)
 PROD turn-pass:F1=0.774 P=0.800 R=0.750 (TP=12 FP=3 FN=4)   PASS  (floor 0.72)
 ```
 
-### D. All committed tests green
+### D. All committed tests green (+ a new focused guard)
 
 ```
+test_ball_anchored_prox         : PASS  (NEW — see below)
 test_event_confusion_regression : PASS  (0/0, bounce 0.889, hit 0.737)
 test_bounce_regression          : PASS  (felix 0.800 / 0.774 >= 0.72)
 test_sharp_turns                : PASS  (pool recall 17/17, firewall plateau holds)
@@ -188,6 +189,20 @@ test_vx_veto                    : PASS  (felix WASB F1 0.9143)
 ```
 
 `py_compile vision/events.py` clean.
+
+**`tests/test_ball_anchored_prox.py` (NEW, force-added — tests are gitignored here).**
+A fast synthetic guard that locks the fix and is DISCRIMINATING (verified to FAIL on
+HEAD~2's pre-fix code):
+
+- `test_proximity_anchored_at_ball_not_wrist` — a hit member whose ball is ~600px off the
+  player while its self-reported wrist xy sits ON a wrist. Asserts the emitted event's
+  `dist_norm` is **large** (ball-anchored). Pre-fix this read **0.000** (circular
+  wrist-on-wrist); post-fix it reads **6.002**. This is the exact mechanism the fix removes.
+- `test_fallback_to_wrist_when_ball_untracked` — the ball is `None` at the hit frame, forcing
+  `_xy_at`→None so proximity falls back to the wrist xy (graceful degradation). This branch
+  is **dead on the committed methodo input** (0/13 hit frames have an untracked ball), so the
+  test is the only place it is exercised — it locks the contract so a future sparse clip
+  can't silently change behavior. (Closes the adversarial verifier's only open nice-to-have.)
 
 ---
 

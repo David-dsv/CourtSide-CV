@@ -581,6 +581,48 @@ def parse_args():
                              "above which as PARASITE-heavy (-> 1280/0.16). Measured separation: "
                              "demo3 2.0, tennis 2.5, felix 6.9 — thr robust across 3.0-5.0. "
                              "Derived from detected features, no per-video constant.")
+    # ─── Dynamic ROI ball fallback (search-region tracking) ───
+    parser.add_argument("--no-ball-roi", dest="ball_roi", action="store_false",
+                        help="Disable the dynamic-ROI ball fallback. When full-frame "
+                             "detection misses the ball on a frame where the Kalman has a "
+                             "prediction, the pipeline crops a window around the prediction, "
+                             "upscales it and re-detects (search-region tracking — the ball is "
+                             "bigger/sharper there and off-court parasites are excluded). The "
+                             "recovered candidate is gated through the SAME Kalman gate as a "
+                             "full-frame one. FALLBACK ONLY (fires on gap frames) → marginal "
+                             "cost. ON by default; gated to the CLEAN (1920/0.05) density path "
+                             "unless --ball-roi-all (parasite clips like felix don't fire it, "
+                             "to avoid injecting far-field FPs). See "
+                             "docs/research/ball-roi-dynamic-CR.md.")
+    parser.set_defaults(ball_roi=True)
+    parser.add_argument("--ball-roi-all", action="store_true",
+                        help="Fire the dynamic-ROI ball fallback on ALL clips, including the "
+                             "parasite-heavy (1280/0.16) density path. Default keeps the ROI on "
+                             "the clean path only (felix-safe).")
+    parser.add_argument("--ball-roi-half-frac", type=float, default=0.1667,
+                        help="Dynamic-ROI half-window as a FRACTION of frame width (crop side = "
+                             "2*half). Default 0.1667 (~320px half on 1920W) — wide enough to "
+                             "absorb prediction error when the ball reverses (bounce/hit); a "
+                             "tighter crop misses the ball at the turn. A ratio of frame width, "
+                             "not a per-video pixel constant. (Measured: the WIDE window is the "
+                             "CLEAN-win choice — 0 wrong/0 poison — vs a narrow window's noisier "
+                             "+coverage. See docs/research/ball-roi-dynamic-CR.md.)")
+    parser.add_argument("--ball-roi-zoom", type=float, default=2.0,
+                        help="Dynamic-ROI upscale factor before re-detection. Default 2.0 "
+                             "(moderate: enough to enlarge the tiny ball, not so much it blurs "
+                             "past recognition). Measured 1.5/2.0/2.5 on the ball GT.")
+    parser.add_argument("--ball-roi-gate-frac", type=float, default=0.25,
+                        help="ROI candidates are gated to this FRACTION of the (grown) full "
+                             "Kalman gate — TIGHTER than full-frame. Default 0.25. WHY: an "
+                             "off-target ROI hit inside the wide grown gate feeds kf.correct() "
+                             "and POISONS the Kalman state, corrupting neighbour frames (measured "
+                             "-5 CORRECT unguarded). A fallback recovery must be CLOSE to the "
+                             "prediction. Stable across 0.15-0.6 on the GT.")
+    parser.add_argument("--ball-roi-min-conf", type=float, default=0.10,
+                        help="ROI candidate must clear this conf (the 2x crop upscaling inflates "
+                             "faint parasites). Default 0.10. With the tight gate this gives a "
+                             "CLEAN win: demo3 coverage 95.5%%->96.8%%, CORRECT 92.3%%->93.2%%, "
+                             "0 wrong/0 poisoned recoveries.")
     parser.add_argument("--pose-conf", type=float, default=0.10, help="Pose estimation confidence")
     parser.add_argument("--pose-model", default="yolov8m-pose.pt",
                         help="Pose model (yolov8m-pose.pt or yolov8x-pose.pt for better small player detection)")
@@ -602,6 +644,11 @@ def parse_args():
                         help="Also write detected bounces to PATH as a predictions JSON "
                              "(eval_bounces.py format) for scoring against ground truth. "
                              "Off by default; does not affect the annotated video.")
+    parser.add_argument("--dump-ball-track", metavar="PATH", default=None,
+                        help="Also write the LIVE tracked ball centers (raw, pre-spline) per "
+                             "frame to PATH as JSON, for scoring against the ball GT "
+                             "(tools/ball_gt/score_live_track.py). The honest end-to-end "
+                             "thermometer for the ROI fallback. Off by default.")
     parser.add_argument("--demo-override", metavar="PATH", default=None,
                         help="Manual ground-truth sidecar (JSON from tools/annotate_demo.py) "
                              "that OVERRIDES this clip's bounces with bounces_true (replacing "
@@ -944,6 +991,7 @@ def main():
     # tennis 2.5 / felix 6.9, robust 3.0-5.0). Skipped if auto is off, the user
     # pinned --ball-imgsz / --ball-conf (explicit always wins), or the WASB tracker
     # is selected (its heatmap path ignores YOLO conf/imgsz, so probing is wasted).
+    ball_clean = None  # set by the density probe below; gates the ROI fallback too
     if (args.ball_auto and args.ball_tracker != "wasb"
             and (args.ball_imgsz is None or args.ball_conf is None)):
         probe_reader = VideoReader(video_path)
@@ -961,6 +1009,7 @@ def main():
         density = detector.probe_ball_density(probe_frames, probe_conf=0.05,
                                               probe_imgsz=1280, subsample=1)
         clean = density <= args.ball_density_thr
+        ball_clean = clean
         # Explicit user values always win; auto only fills the unset ones.
         auto_imgsz = 1920 if clean else 1280
         auto_conf = 0.05 if clean else 0.16
@@ -985,6 +1034,27 @@ def main():
     # (a stale 0.15 here would silently undo the low-conf densification). We keep
     # the real ball by MOTION (Kalman gating) + static-FP, not by confidence.
     ball_conf_thresh = detector.ball_conf
+
+    # ─── Dynamic-ROI ball fallback gating (search-region tracking) ───
+    # Fires only when full-frame detection misses on a frame the Kalman can predict
+    # (a gap). Gated to the CLEAN broadcast density path by default: a parasite-heavy
+    # oblique clip (felix) would get extra far-field candidates from the crop that
+    # could leak through the gate, so we don't fire it there unless --ball-roi-all.
+    # When --ball-auto ran, ball_clean is the measured density verdict; when auto is
+    # off / pinned, treat a high-res ball pass (>=1920) as the clean-broadcast intent.
+    if ball_clean is None:
+        _clean_path = detector.ball_imgsz >= 1920
+    else:
+        _clean_path = ball_clean
+    ball_roi_active = (args.ball_roi and not (args.ball_tracker == "wasb")
+                       and (args.ball_roi_all or _clean_path))
+    if ball_roi_active:
+        ball_roi_half = max(20, int(args.ball_roi_half_frac * frame_width))
+        logger.info(
+            f"Ball ROI fallback: ON (half={ball_roi_half}px="
+            f"{args.ball_roi_half_frac:.3f}W, zoom={args.ball_roi_zoom}, "
+            f"gate×{args.ball_roi_gate_frac}, min_conf={args.ball_roi_min_conf}, "
+            f"path={'clean' if _clean_path else 'parasite (--ball-roi-all)'})")
 
     # ─── WASB heatmap tracker path (--ball-tracker wasb) ───
     # A heatmap-temporal tracker (WASB) produces a far denser, cleaner trajectory
@@ -1022,10 +1092,16 @@ def main():
     # Step 1a: Collect ALL ball candidates per frame (YOLO+Kalman path)
     if not wasb_path:
         raw_detections = []  # list of list of (cx, cy, score)
+        # When the dynamic-ROI fallback is active we keep the decoded frames so
+        # Pass 1b can re-crop them around the Kalman prediction on a gap frame.
+        # (The WASB path already buffers all frames; this mirrors that pattern.)
+        roi_frames = [] if ball_roi_active else None
         frame_count = 0
         for frame in tqdm(reader.iter_frames(), total=max_frames, desc="Pass 1a: detect"):
             if frame_count >= max_frames:
                 break
+            if roi_frames is not None:
+                roi_frames.append(frame)
             # shot-guard CUT: no detection on a non-court frame (it won't be written
             # nor counted). Keep the per-frame array aligned with an empty slot.
             if shot_guard_enabled and frame_count not in keep_set:
@@ -1126,6 +1202,35 @@ def main():
                             best_dist = dist
                             best_det = (cx, cy)
 
+                    # ─── Dynamic-ROI fallback (search-region tracking) ───
+                    # Full-frame gave no in-gate candidate on a frame the Kalman can
+                    # predict → crop a window around the prediction, upscale, re-detect.
+                    # The ball is larger/sharper there and off-court parasites are
+                    # excluded. Recovered candidates are gated through the SAME Kalman
+                    # gate (TIGHTER, see below), so a spurious crop hit far from the
+                    # prediction is rejected exactly like a full-frame parasite. Fires
+                    # ONLY on this gap (~32% of frames on a clean clip → ~+15-25% of the
+                    # ball pass). See docs/research/ball-roi-dynamic-CR.md.
+                    if (best_det is None and ball_roi_active
+                            and roi_frames is not None and predicted is not None):
+                        # ROI candidate must clear a HIGHER conf bar (crop upscaling
+                        # inflates faint parasites) and a TIGHTER gate (0.25× the grown
+                        # full gate) — an off-target ROI hit poisons the Kalman state.
+                        roi_conf = max(ball_conf_thresh, args.ball_roi_min_conf)
+                        roi_gate = current_gate * args.ball_roi_gate_frac
+                        rcands = detector.detect_ball_roi(
+                            roi_frames[frame_idx], predicted[0], predicted[1],
+                            half=ball_roi_half, zoom=args.ball_roi_zoom,
+                            conf=roi_conf)
+                        for r in rcands:
+                            rcx, rcy = r["cx"], r["cy"]
+                            if is_static(rcx, rcy):
+                                continue
+                            dist = ball_kf.gating_distance(rcx, rcy)
+                            if dist < roi_gate and dist < best_dist:
+                                best_dist = dist
+                                best_det = (rcx, rcy)
+
                     if best_det is not None:
                         # Good match — update Kalman
                         ball_kf.update(best_det[0], best_det[1])
@@ -1167,6 +1272,12 @@ def main():
 
             raw_ball_centers.append(ball_center)
 
+        # Free the ROI frame buffer immediately — it is only needed during Pass 1b
+        # (the ROI re-crops the decoded frame at the gap). Holding every decoded BGR
+        # frame would otherwise scale memory with clip length (~6 MB/frame at 1080p);
+        # releasing here caps the peak to the detection pass, not the whole run.
+        roi_frames = None
+
     # ─── CHANTIER 0: pre-spline real/interpolated mask (for the vx-flip veto) ───
     # The vx-flip bounce-vs-hit veto MUST read direction on the RAW tracker
     # centers (pre-spline) with a real/interpolated mask — never on the spline,
@@ -1175,6 +1286,23 @@ def main():
     # returned), so it stays available at the bounce call site. See
     # docs/research/bounce-vs-shot-direction.md.
     ball_is_real = [c is not None for c in raw_ball_centers]
+
+    # ─── Optional: dump the LIVE tracked ball centers for GT scoring ───
+    # The honest end-to-end thermometer: the ACTUAL prod track (raw, pre-spline —
+    # what tools/ball_gt/measure_ball_coverage.py scores), so a lab measurement can
+    # be confirmed against a real pipeline run (not a frozen cache).
+    if getattr(args, "dump_ball_track", None):
+        import json as _json
+        with open(args.dump_ball_track, "w") as _f:
+            _json.dump({
+                "start_frame": int(start_frame),
+                "fps": float(fps),
+                "width": int(frame_width), "height": int(frame_height),
+                "centers": [None if c is None else [float(c[0]), float(c[1])]
+                            for c in raw_ball_centers],
+            }, _f)
+        logger.info(f"Dumped {sum(1 for c in raw_ball_centers if c is not None)}/"
+                    f"{len(raw_ball_centers)} live ball centers -> {args.dump_ball_track}")
 
     # ─── Post-process ball: cubic spline interpolation ───
     interp_gap = int(fps * 0.4)  # interpolate gaps up to 0.4s

@@ -7,6 +7,7 @@ Outputs use COCO-compatible class IDs (0=person, 32=sports_ball) so the
 downstream pipeline (tracking, action recognition, annotation) works unchanged.
 """
 
+import cv2
 import numpy as np
 from pathlib import Path
 from ultralytics import YOLO
@@ -339,3 +340,85 @@ class TennisYOLODetector:
             b = res[0].boxes
             counts.append(0 if b is None else len(b))
         return float(np.mean(counts)) if counts else 0.0
+
+    def detect_ball_roi(
+        self,
+        frame: np.ndarray,
+        cx: float,
+        cy: float,
+        half: int,
+        zoom: float = 2.0,
+        conf: Optional[float] = None,
+    ) -> List[Dict]:
+        """SEARCH-REGION ball re-detection: crop a window around a PREDICTED ball
+        position, upscale it, re-run the ball model inside, and remap detections to
+        full-frame coords. Returns a list of {cx, cy, score} in FULL-FRAME pixels.
+
+        WHY (search-region tracking, classic SOTA): when full-frame detection misses
+        the ball (tiny/faint far ball, a frame where it blends into the background),
+        a moderately-zoomed crop around where the tracker EXPECTS the ball makes it
+        larger and sharper, and excludes off-court parasites (crowd / scoreboard /
+        minimap) the full frame would surface. This is a FALLBACK the caller fires
+        only on a gap frame (no in-gate full-frame candidate). Cost is NOT free: each
+        ROI inference runs at imgsz ~1280 (~0.44x a 1920 full-frame pass) on the gap
+        frames (~32% of frames on a clean clip) → roughly +15-25% on the
+        ball-detection pass, paid only where full-frame failed.
+
+        Distinct from SAHI/tiling (a fixed blind grid over the whole image, measured
+        a no-go here): this is ONE crop, dynamically centered on the Kalman
+        prediction — we know where to look.
+
+        Args:
+            frame: full BGR frame.
+            cx, cy: predicted ball center (full-frame px) — the crop center.
+            half: half-window in px (crop is 2*half on a side, clamped to frame).
+                  Pass a value derived from frame size / ball speed, never a
+                  per-video constant (the caller scales it by frame width).
+            zoom: upscale factor for the crop before inference (moderate: too high
+                  blurs the ball past recognition; ~2x measured best).
+            conf: ball conf floor inside the crop (defaults to self.ball_conf).
+
+        Returns:
+            List of {"cx","cy","score"} ball detections in full-frame coords (may be
+            empty). The caller gates these through the SAME Kalman gate as full-frame
+            candidates, so a spurious crop detection far from the prediction is
+            rejected exactly like a full-frame parasite.
+        """
+        if conf is None:
+            conf = self.ball_conf
+        fh, fw = frame.shape[:2]
+        x0 = max(0, int(cx - half))
+        y0 = max(0, int(cy - half))
+        x1 = min(fw, int(cx + half))
+        y1 = min(fh, int(cy + half))
+        # Degenerate crop (prediction off-frame / window collapsed) → nothing.
+        if x1 - x0 < 20 or y1 - y0 < 20:
+            return []
+        crop = frame[y0:y1, x0:x1]
+        if zoom != 1.0:
+            crop = cv2.resize(crop, None, fx=zoom, fy=zoom,
+                              interpolation=cv2.INTER_LINEAR)
+        # The crop is small after the window clamp; a 1280 cap is plenty and keeps
+        # inference cheap (the crop rarely exceeds it even after the 2x upscale).
+        roi_imgsz = min(1280, max(crop.shape[0], crop.shape[1]))
+        cls = [0] if self.is_yolo26_ball else [1]
+        res = self.custom_model(
+            crop,
+            conf=conf,
+            iou=self.iou_threshold,
+            device=self.device,
+            imgsz=roi_imgsz,
+            classes=cls,
+            verbose=False,
+        )
+        out: List[Dict] = []
+        b = res[0].boxes
+        if b is not None and len(b) > 0:
+            xyxy = b.xyxy.cpu().numpy()
+            scores = b.conf.cpu().numpy()
+            for i in range(len(xyxy)):
+                # remap crop-local (upscaled) coords back to full-frame px
+                rcx = float((xyxy[i][0] + xyxy[i][2]) / 2.0) / zoom + x0
+                rcy = float((xyxy[i][1] + xyxy[i][3]) / 2.0) / zoom + y0
+                out.append({"cx": rcx, "cy": rcy, "score": float(scores[i])})
+        return out

@@ -554,28 +554,33 @@ def parse_args():
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda, mps (default: cpu)")
     parser.add_argument("--trail-length", type=int, default=12, help="Ball trail length in frames")
     parser.add_argument("--conf", type=float, default=0.2, help="Detection confidence threshold (persons)")
-    parser.add_argument("--ball-conf", type=float, default=0.16,
+    parser.add_argument("--ball-conf", type=float, default=None,
                         help="BALL-only confidence floor, decoupled from --conf (persons stay "
-                             "0.2). The tennis ball is tiny/faint and sat below the person conf "
-                             "(the OLD code ran the ball at --conf=0.2). Default 0.16 vs the "
-                             "human ball GT: demo3 ball coverage 82.6%%->86.2%% with CORRECT "
-                             "FLAT (79.1%%, no regression vs the 0.20 baseline 79.4%%); felix "
-                             "bounce F1 0.667->0.750 (>=0.72 floor). felix F1 is noise-limited "
-                             "(16-bounce GT → +-0.06/bounce), so 0.16 is picked for the demo3 "
-                             "coverage gain + felix-floor safety with margin from the 0.13 "
-                             "sub-floor cliff — NOT a felix optimum. conf 0.10 was REJECTED "
-                             "(adversarial review: dips demo3 ball CORRECT + sits on a felix "
-                             "knife-edge). Lower (0.03-0.05) lifts demo3 CORRECT to ~85%% but "
-                             "REGRESSES felix below the floor (far-field parasites) — clean-"
-                             "broadcast only. Kalman gating, not confidence, keeps the real "
-                             "ball. See docs/research/ball-track-density-CR.md.")
+                             "0.2). DEFAULT None = density-adaptive (--ball-auto): clean "
+                             "broadcast gets 0.05, parasite-heavy oblique gets 0.16. Pass an "
+                             "explicit value to OVERRIDE auto (pins both paths to it). The "
+                             "tennis ball is tiny/faint and sat below the person conf (the OLD "
+                             "code ran it at --conf=0.2). Kalman gating, not confidence, keeps "
+                             "the real ball. See docs/research/s1-ball-sota-CR.md.")
     parser.add_argument("--ball-imgsz", type=int, default=None,
                         help="BALL-only inference resolution, decoupled from the detector imgsz "
-                             "(1280). Default: 1280 (same as detector). 1920 lifts demo3 "
-                             "cold-start CORRECT but COLLAPSES felix bounce tracking (cleaner "
-                             "but denser far-field parasites the Kalman locks onto) — NOT a safe "
-                             "default. Opt in (1920) only for clean broadcast where tiny/far "
-                             "balls dominate. See docs/research/ball-track-density-CR.md.")
+                             "(1280). DEFAULT None = density-adaptive (--ball-auto): clean "
+                             "broadcast gets 1920 (tiny/far ball win: demo3 cov 86.2%%->95.5%%, "
+                             "CORRECT 79.1%%->92.3%%, cold-start 74.5%%->90.8%%), parasite-heavy "
+                             "oblique stays 1280 (1920 floods far-field parasites the Kalman "
+                             "locks onto, collapsing bounce F1 — felix). Pass an explicit value "
+                             "to OVERRIDE auto. See docs/research/s1-ball-sota-CR.md.")
+    parser.add_argument("--no-ball-auto", dest="ball_auto", action="store_false",
+                        help="Disable density-adaptive ball resolution/conf. Falls back to the "
+                             "legacy fixed defaults (imgsz 1280, conf 0.16) unless --ball-imgsz / "
+                             "--ball-conf are given. Auto is ON by default.")
+    parser.set_defaults(ball_auto=True)
+    parser.add_argument("--ball-density-thr", type=float, default=3.5,
+                        help="Mean ball-candidate density (per probed frame, probe conf 0.05) "
+                             "below which a clip is treated as CLEAN broadcast (-> 1920/0.05) and "
+                             "above which as PARASITE-heavy (-> 1280/0.16). Measured separation: "
+                             "demo3 2.0, tennis 2.5, felix 6.9 — thr robust across 3.0-5.0. "
+                             "Derived from detected features, no per-video constant.")
     parser.add_argument("--pose-conf", type=float, default=0.10, help="Pose estimation confidence")
     parser.add_argument("--pose-model", default="yolov8m-pose.pt",
                         help="Pose model (yolov8m-pose.pt or yolov8x-pose.pt for better small player detection)")
@@ -683,12 +688,18 @@ def main():
 
     # ─── Init models ───
     logger.info("Initializing models...")
+    # Ball detection config resolution order (set the detector's effective
+    # ball_conf/ball_imgsz AFTER a density probe below if --ball-auto is on and the
+    # user did not pin them). Seed the detector with felix-safe legacy defaults so
+    # it is valid even before the probe / when auto is off.
+    _ball_conf_seed = args.ball_conf if args.ball_conf is not None else 0.16
+    _ball_imgsz_seed = args.ball_imgsz if args.ball_imgsz is not None else 1280
     detector = TennisYOLODetector(
         conf_threshold=args.conf, iou_threshold=0.45, device=device, imgsz=1280,
-        ball_conf=args.ball_conf, ball_imgsz=args.ball_imgsz,
+        ball_conf=_ball_conf_seed, ball_imgsz=_ball_imgsz_seed,
     )
-    logger.info(f"Ball detection: conf={detector.ball_conf}, imgsz={detector.ball_imgsz} "
-                f"(persons: conf={args.conf}, imgsz=1280)")
+    logger.info(f"Ball detection (pre-probe): conf={detector.ball_conf}, "
+                f"imgsz={detector.ball_imgsz} (persons: conf={args.conf}, imgsz=1280)")
     if args.pose_backend == "rtmw":
         from vision.pose_rtmw import RTMWPose
         logger.info("Pose backend: RTMW whole-body (rtmlib, CPU) — 133 kpts, slower")
@@ -883,6 +894,54 @@ def main():
 
     # ─── Pass 1: Detect ball positions + bounces ───
     logger.info("=== PASS 1: Detect ball ===")
+
+    # ─── Density-adaptive ball resolution/conf (--ball-auto, default ON) ───
+    # The tiny/far ball wins big from a high-res low-conf pass (1920/0.05) on CLEAN
+    # broadcast, but the SAME config floods a parasite-heavy oblique/amateur clip
+    # with far-field false candidates the Kalman locks onto (measured: demo3 ~2
+    # cand/frame -> 1920/0.05 lifts coverage 86%->96% & CORRECT 79%->92%; felix ~7
+    # cand/frame -> 1920 collapses its bounce track). We probe the mean candidate
+    # density on a cheap subsample at a low floor and pick the path accordingly —
+    # a threshold on a DETECTED feature, not a per-video constant (demo3 2.0 /
+    # tennis 2.5 / felix 6.9, robust 3.0-5.0). Skipped if auto is off, the user
+    # pinned --ball-imgsz / --ball-conf (explicit always wins), or the WASB tracker
+    # is selected (its heatmap path ignores YOLO conf/imgsz, so probing is wasted).
+    if (args.ball_auto and args.ball_tracker != "wasb"
+            and (args.ball_imgsz is None or args.ball_conf is None)):
+        probe_reader = VideoReader(video_path)
+        if start_frame > 0:
+            probe_reader.seek(start_frame)
+        probe_step = 10  # keep only every 10th frame (probe is subsample-stable)
+        probe_frames = []
+        for i, f in enumerate(probe_reader.iter_frames()):
+            if i >= max_frames:
+                break
+            if i % probe_step == 0:
+                probe_frames.append(f)
+        probe_reader.release()
+        # frames are pre-subsampled, so probe at subsample=1
+        density = detector.probe_ball_density(probe_frames, probe_conf=0.05,
+                                              probe_imgsz=1280, subsample=1)
+        clean = density <= args.ball_density_thr
+        # Explicit user values always win; auto only fills the unset ones.
+        auto_imgsz = 1920 if clean else 1280
+        auto_conf = 0.05 if clean else 0.16
+        if args.ball_imgsz is None:
+            detector.ball_imgsz = auto_imgsz
+        if args.ball_conf is None:
+            detector.ball_conf = auto_conf
+        logger.info(
+            f"Ball-auto: density={density:.2f} (thr={args.ball_density_thr}) → "
+            f"{'CLEAN broadcast' if clean else 'PARASITE-heavy'} → "
+            f"imgsz={detector.ball_imgsz}, conf={detector.ball_conf}")
+        # Re-seek the main reader to the range start for the detection pass.
+        reader.release()
+        reader = VideoReader(video_path)
+        if start_frame > 0:
+            reader.seek(start_frame)
+
+    logger.info(f"Ball detection: conf={detector.ball_conf}, imgsz={detector.ball_imgsz} "
+                f"(persons: conf={args.conf}, imgsz=1280)")
     # The ball model already ran at detector.ball_conf (the real, low floor); this
     # secondary gate stays equal to it so it never re-filters at a higher value
     # (a stale 0.15 here would silently undo the low-conf densification). We keep

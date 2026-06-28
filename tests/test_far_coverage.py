@@ -3,9 +3,19 @@
 Background: the far/P1 slot used to lock onto a static spectator above the net —
 far-CORRECT was 2/225 = 0.9% on the demo3 human pose GT (mean 572px off). The
 integrated selector (far-select A's unified ``hcv`` score + far-select B's
-skeleton-decoupling) lifts it to 191/225 = 84.9% LIVE, while keeping the
+skeleton-decoupling) fixed it. Measured LIVE on the corrected demo3 clip (S2), the
+production pipeline now selects the far player within ~6px of the human GT on
+**225/225 = 100.0%** of frames (at every threshold down to 1.5%W), while keeping the
 corner-filmed felix clip at 87.9% (a pure-centrality score regressed felix to 4.5%;
 a hard keypoint gate regressed demo3 to 26.7% — the hcv score wins both).
+
+NOTE (S2): the previously-committed cache fixture reported only 84.4% because it was
+built against the OLD annotated ``tennis_demo3.mp4`` before the clip was re-extracted
+(corrected). The candidate boxes came from a *different image* than the current frame,
+so the replay lost frames the live pipeline nails. The fixture has been REBUILT against
+the corrected clip and the replay now reproduces the live 100%. See
+``docs/research/s2-far-pose-sota-CR.md``. (Lesson, again: validate on a LIVE run, not a
+frozen cache — here the stale cache *understated* the truth.)
 
 This test is FAST (no GPU / no video decode): it replays the committed cache of
 posed FAR candidates per GT frame (``demo3_far_select_cache.json``) through the
@@ -29,12 +39,12 @@ from vision.pose import _hcv_far_score  # noqa: E402
 
 CACHE = ROOT / "tests" / "fixtures" / "pose_gt" / "demo3_far_select_cache.json"
 
-# Locked floor: measured LIVE far-CORRECT is 84.9% (191/225); the cache replay of the
-# SAME scoring reproduces it within detection-density noise. Floor set safely below
-# the achieved number (and far, far above the 0.9% baseline and B's 81.3%) so it
-# locks the gain without being a knife-edge. Selection-only ceiling on this cache is
-# higher; we assert the conservative live-equivalent.
-FLOOR = 0.80
+# Locked floor: measured LIVE far-CORRECT is 100.0% (225/225, mean 6px) and the rebuilt
+# cache replay of the SAME scoring reproduces it exactly (225/225, 0 losses). Floor set
+# to 0.95 — below the achieved 100% with margin for detector/pose float-noise (the cache
+# can be rebuilt on CPU or MPS) and future model drift, yet far above the prior 0.80 and
+# the 0.9% baseline, so it genuinely locks the gain without being a knife-edge.
+FLOOR = 0.95
 MATCH_FRAC = 0.10        # a far pick is CORRECT within 10% of frame width of GT
 
 
@@ -88,12 +98,12 @@ def test_far_select_above_floor():
 
 def test_far_select_beats_individual_approaches():
     """The integrated selector must clear BOTH prior single-clip results on demo3:
-    far-select A 84.9% (we match it, hcv core) and far-select B 81.3% (we beat it).
-    Floor 0.80 sits below A and at/above B — clearing it proves we did not regress
-    below either approach's demo3 number."""
+    far-select A 84.9% and far-select B 81.3%. On the rebuilt (corrected-clip) cache the
+    replay is 100% — comfortably above both — so this asserts we never regress below the
+    stronger of the two prior approaches (A's 84.9%)."""
     correct, checked = _coverage()
     frac = correct / max(1, checked)
-    assert frac >= 0.80, f"far-CORRECT {frac:.1%} fell below B's 81.3% demo3 result"
+    assert frac >= 0.849, f"far-CORRECT {frac:.1%} fell below A's 84.9% demo3 result"
 
 
 def test_hcv_scoring_is_height_dominant_and_valid_soft():
@@ -119,7 +129,7 @@ if __name__ == "__main__":
     correct, checked = _coverage()
     print(f"far-CORRECT (cache replay of prod hcv selection): "
           f"{correct}/{checked} = {100 * correct / max(1, checked):.1f}%  "
-          f"(floor {FLOOR:.0%}, live measured 84.9%)")
+          f"(floor {FLOOR:.0%}, live measured 100.0%)")
     for name in sorted(globals()):
         if name.startswith("test_"):
             globals()[name]()

@@ -15,6 +15,7 @@ This recovers full skeletons for both near and far players (measured on felix:
 17/17 and 16/17 keypoints at conf ~0.90, vs the far player being undetected by
 full-frame pose).
 """
+import cv2
 import numpy as np
 
 
@@ -81,6 +82,57 @@ def pose_on_crop(pose_model, frame, box, device, pad_frac=0.25, imgsz=640, conf=
     kxy[:, 0] += cx1
     kxy[:, 1] += cy1
     return kxy, kconf
+
+
+def _roi_redetect(detector, frame, net_y, fw, fh, device, conf, imgsz, scale=2.0):
+    """SAFETY NET for the FAR player: when full-frame detection returns NO above-net
+    box at all (the far slot would be empty), re-detect on an UPSCALED crop of the
+    upper-central court band where the far player provably lives.
+
+    Why this is the right lever (measured): the far player is tiny (~30-90px tall in a
+    1920px frame). Sliced/upscaled inference is the single most-cited small-object
+    recall lever (no retrain, no GPU, no new dependency): a 2× ROI crop turns a ~40px
+    person into ~80-120px — the pixels-on-target a CNN needs. We already KNOW the
+    location (above-net, central band), so one ROI crop gives the same benefit as
+    full-frame SAHI tiling at a fraction of the cost and with no cross-tile NMS.
+
+    Region is derived from the scene (``net_y`` and frame size), never a clip-specific
+    pixel — zero-hardcoding. The band matches the on-court far gate used below
+    (cy ≥ 0.25·net_y, 0.12 < cx/fw < 0.88) so a recovered box lands where the selector
+    expects it. Returns [(box_fullframe, conf), ...] for boxes whose centre falls in the
+    above-net region, mapped back to full-frame coordinates, or [].
+
+    This is GATED on the far slot being empty, so it is a pure no-op (zero added cost,
+    zero behaviour change) whenever full-frame detection already found the far player —
+    which is every frame on the demo3/felix GT. It only ever ADDS candidates on frames
+    that currently have none, so it cannot regress a clip where detection succeeds; it
+    generalises the fix to harder/future clips where the tiny far player drops out."""
+    y0 = int(max(0.0, 0.20 * net_y))            # top of the above-net court band
+    y1 = int(min(fh, net_y))                     # net line (bottom of the far region)
+    x0 = int(0.10 * fw)
+    x1 = int(0.90 * fw)
+    if y1 - y0 < 16 or x1 - x0 < 16:
+        return []
+    roi = frame[y0:y1, x0:x1]
+    roi_up = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    res = detector(roi_up, conf=conf, imgsz=imgsz, classes=[0], device=device,
+                   verbose=False)
+    out = []
+    if res[0].boxes is None or len(res[0].boxes) == 0:
+        return out
+    rb = res[0].boxes.xyxy.cpu().numpy()
+    rc = (res[0].boxes.conf.cpu().numpy()
+          if res[0].boxes.conf is not None else np.ones(len(rb)))
+    for b, c in zip(rb, rc):
+        # map upscaled-crop coords back to full frame
+        bx1 = x0 + b[0] / scale
+        by1 = y0 + b[1] / scale
+        bx2 = x0 + b[2] / scale
+        by2 = y0 + b[3] / scale
+        cy = (by1 + by2) / 2.0
+        if cy < net_y:                           # keep only above-net (far) boxes
+            out.append((np.array([bx1, by1, bx2, by2], dtype=float), float(c)))
+    return out
 
 
 def _net_y(court_zones, frame_h):
@@ -494,6 +546,41 @@ def estimate_players_pose(detector, pose_model, frame, device,
             return s
         best = max(pool_far, key=_hcv)
         far_player = best[0]
+    # FAR DETECTION SAFETY NET (gated): if the full-frame detector returned NO above-net
+    # box (far_player is None), the tiny far player has dropped below the detector's
+    # recall floor at full-frame scale. Re-detect on an UPSCALED crop of the upper court
+    # band and feed any recovered boxes through the SAME _hcv selection. This is a pure
+    # no-op when full-frame detection already found the far player (every demo3/felix GT
+    # frame), so it cannot regress those clips; it only adds candidates on frames that
+    # otherwise have NONE — generalising the fix to harder clips with a fainter far
+    # player. (Measured on demo3: the far player is detected full-frame on 225/225 GT
+    # frames at conf 0.84 median, so this branch never fires there — it is insurance,
+    # not a demo3 lever.)
+    if far_player is None:
+        roi_cands = _roi_redetect(detector, frame, net_y, fw, fh, device,
+                                  conf=det_conf, imgsz=det_imgsz)
+        far_entries2 = []
+        for rbox, rconf in roi_cands:
+            cx = (rbox[0] + rbox[2]) / 2
+            cy = (rbox[1] + rbox[3]) / 2
+            bh = rbox[3] - rbox[1]
+            if bh < 0.012 * fh:                  # same noise floor as the main path
+                continue
+            oncourt = (cy >= 0.25 * net_y and 0.12 < cx / fw < 0.88)
+            res = pose_on_crop(pose_model, frame, rbox, device, imgsz=pose_imgsz,
+                               conf=0.15)
+            entry = {"box": rbox, "kps_xy": res[0] if res else None,
+                     "kps_conf": res[1] if res else None}
+            valid = is_valid_player(rbox, entry["kps_conf"], fw, fh, court_zones,
+                                    band=band)
+            far_entries2.append((entry, cx, cy, bh, rconf, int(valid), oncourt))
+        pool_far2 = [e for e in far_entries2 if e[6]] or far_entries2
+        if pool_far2:
+            hmax2 = max(e[3] for e in pool_far2) or 1.0
+            best2 = max(pool_far2,
+                        key=lambda e: _hcv_far_score(e[0]["box"], fw, e[4], e[5],
+                                                     hmax2))
+            far_player = best2[0]
     # FAR SKELETON RECOVERY (integrated from far-select B). The hcv pick above fixed
     # the far BOX (hence far-CORRECT); this only affects whether a SKELETON is drawn.
     # The chosen far box was posed in the shared `posed` loop at the uniform crop

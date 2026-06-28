@@ -1563,14 +1563,55 @@ def main():
             hit_by_frame = {h["frame"]: h for h in hits}
             net_y = frame_height * 0.47
             sorted_bounces = sorted(bounce_by_frame.keys())
+            # FH/BH composite for the methodo path. The arbitration above used the RAW
+            # per-frame poses for its HIT votes (unchanged — the firewall owns that),
+            # but the raw FAR pose is sparse and mis-attributes far contacts to the
+            # near side with a mid-flight ball position → the composite abstained on
+            # far shots (the cache-vs-LIVE gap: 8/8 cache, 1/5 live). FIX: source the
+            # FH/BH contact from a SECOND detect_hits run on the DENSE locked tracks
+            # (well-attributed near+far now that the serve gate is player-relative),
+            # and match each arbitrated HIT event to the nearest locked contact. The
+            # contact ball_dx + swing window + handedness vote all read locked_ppf —
+            # the same dense poses the cache is built from, so the cache 8/8
+            # reproduces live. This does NOT touch the arbitration (events) — it only
+            # picks which posed contact the FH/BH label is read from.
+            from vision.shots import (
+                detect_hits as _detect_hits_fhb, estimate_handedness_prior,
+                classify_forehand_backhand)
+            locked_contacts = _detect_hits_fhb(
+                all_ball_centers, locked_ppf, fps, frame_height, frame_width,
+                bounce_frames=bset, wrist_prox_max=1.2, far_aware=True)
+            fhb_handed = estimate_handedness_prior(
+                locked_contacts, locked_ppf, fps, frame_height)
+            fhb_win = int(round(fps * 0.20))  # match a HIT event to a locked contact
+
+            def _nearest_locked_contact(ef):
+                best, bestd = None, fhb_win + 1
+                for lc in locked_contacts:
+                    d = abs(lc["frame"] - ef)
+                    if d < bestd:
+                        bestd, best = d, lc
+                return best
+
             for e in events:
                 if e["label"] != "HIT":
                     continue
                 ef = e["frame"]
                 hm = hit_by_frame.get(ef)
-                if hm is not None:
+                lc = _nearest_locked_contact(ef)
+                if lc is not None:
+                    # well-attributed locked contact → classify FH/BH on it
+                    side = lc["player_side"]
+                    fhb = classify_forehand_backhand(
+                        lc, locked_ppf, players_per_frame_window=locked_ppf,
+                        handedness=fhb_handed, fps=fps, frame_height=frame_height)
+                    sx, sy = (hm["x"], hm["y"]) if hm is not None else (lc["x"], lc["y"])
+                elif hm is not None:
+                    # raw-pose contact only (no locked match) → classify on raw poses
                     side = hm["player_side"]
-                    fhb = classify_forehand_backhand(hm, players_per_frame)
+                    fhb = classify_forehand_backhand(
+                        hm, players_per_frame, players_per_frame_window=locked_ppf,
+                        handedness=fhb_handed, fps=fps, frame_height=frame_height)
                     sx, sy = hm["x"], hm["y"]
                 else:
                     # generic/parity HIT: derive side from ball y vs net; FH/BH
@@ -1598,10 +1639,15 @@ def main():
                 f"firewall guarantees confusion_H->B / B->H == 0")
         else:
             sorted_bounces = sorted(bounce_by_frame.keys())
-            for h in hits:
-                # FH/BH must read the SAME per-frame pose list detect_hits indexed
-                # (h["player_idx"] indexes locked_ppf, not the raw players_per_frame).
-                fhb = classify_forehand_backhand(h, locked_ppf)
+            # FH/BH composite: vote the per-side handedness prior ONCE over ALL hits
+            # (more shots → better vote margin), then classify each with the swing
+            # override + abstention. Reads the SAME locked poses detect_hits indexed
+            # (h["player_idx"] indexes locked_ppf).
+            from vision.shots import classify_shots
+            fhb_labels, fhb_handed = classify_shots(
+                hits, locked_ppf, fps, frame_height,
+                players_per_frame_window=locked_ppf)
+            for h, fhb in zip(hits, fhb_labels):
                 # link to the next bounce after this hit for depth/placement/speed
                 nb = next((b for b in sorted_bounces if b > h["frame"]), None)
                 if nb is not None:

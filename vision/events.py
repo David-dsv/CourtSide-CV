@@ -338,6 +338,29 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             return int(smoothed_centers[fr][0]), int(smoothed_centers[fr][1])
         return None
 
+    def _prox_xy(fr, src, xy):
+        """The xy at which to MEASURE player-proximity for this candidate member.
+
+        Root-cause fix (docs/research/event-rootcause-2026-06-28-CR.md §S1): a
+        `hit` member carries xy = the wrist contact point SELF-REPORTED by
+        detect_hits. Measuring proximity AT that wrist point is CIRCULAR — every
+        wrist-speed peak is then trivially "near a wrist" (dmin~0), so dmin<near
+        always fires, hit_like is always True, and the hit@wrist anchor fires for
+        phantoms the firewall can never suppress. The independent signal is the
+        TRACKED BALL: a real racket contact has the ball genuinely at a wrist; a
+        phantom wrist swing has the ball far away. So for `hit` members we measure
+        proximity at the ball (`_xy_at`), not the wrist. bounce/turn members keep
+        their xy (already ball-derived). Measured separation on the canonical clip:
+        real GT hits have ball-dmin <= 0.51, phantom anchors >= 0.90. The DISPLAY /
+        rep-frame xy is left untouched (still the wrist point) — only the value fed
+        to _nearest_player_dist_norm changes. Falls back to the wrist xy only when
+        the ball is untracked at fr (rare; smoothed_centers is spline-filled)."""
+        if src == "hit":
+            ball = _xy_at(fr)
+            if ball is not None:
+                return ball
+        return xy
+
     def _feat(fr):
         return _direction_features(
             fr, raw_centers, is_real, fps, frame_width, half_frac=half_frac,
@@ -372,8 +395,9 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         turn = any(s == "turn" for _, s, _, _ in members)
         mfeat = {fr: _feat(fr) for fr, _, _, _ in members}
         vy = any(mfeat[fr]["vy_flip"] for fr, _, _, _ in members)
-        dmins = [_nearest_player_dist_norm(fr, xy, players_per_frame)
-                 for fr, _, xy, _ in members]
+        dmins = [_nearest_player_dist_norm(fr, _prox_xy(fr, s, xy),
+                                           players_per_frame)
+                 for fr, s, xy, _ in members]
         dmins = [d for d in dmins if d < 90]   # ignore "ball undetected" sentinel
         dmin = min(dmins) if dmins else float("inf")
         # rep frame = strongest single-class signal (vy > hit@wrist > min-dist)
@@ -383,12 +407,13 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
                 rep = (fr, xy, hm); break
         if rep is None:
             for fr, s, xy, hm in members:
-                dn = _nearest_player_dist_norm(fr, xy, players_per_frame)
+                dn = _nearest_player_dist_norm(
+                    fr, _prox_xy(fr, s, xy), players_per_frame)
                 if s == "hit" and dn < near:
                     rep = (fr, xy, hm); break
         if rep is None:
             best = min(members, key=lambda m: _nearest_player_dist_norm(
-                m[0], m[2], players_per_frame))
+                m[0], _prox_xy(m[0], m[1], m[2]), players_per_frame))
             rep = (best[0], best[2], best[3])
         rep_fr, rep_xy, rep_hm = rep
         feat = dict(mfeat[rep_fr])

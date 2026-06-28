@@ -433,6 +433,27 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         _vxf = feat.get("vx_flip")
         vy_bounce = bool(vy) and not (_vxf is not None and bool(_vxf))
 
+        # ── at-wrist corroboration gate (the vx-gate's sibling for the abstain case).
+        # A vy-flip that is ALSO AT a wrist (dmin < near) is only a GOLD floor bounce
+        # if the ball-only bounce detector ALSO fired (bnc). Rationale: a genuine
+        # floor bounce is either OFF any wrist (dmin >= near) or — when it lands near
+        # a player's feet — is independently seen by detect_bounces_robust (bnc True,
+        # e.g. demo3 f456). A FAR-COURT RACKET HIT whose ball reverses vertically on
+        # the noisier prod track fakes a vy-flip with the ball sitting AT the racket
+        # (dmin < near) and NO bnc; its horizontal motion is foreshortened so the
+        # vx-gate ABSTAINS (vx_flip None) and cannot catch it — it would otherwise
+        # auto-anchor as a MANDATORY pure BOUNCE and bypass the firewall (the live
+        # confusion_H->B at f271 = GT hit @268: dmin=0.29, bnc=0). Demoting vy_bounce
+        # here routes the event back through hit_like (dmin < near makes hit_like True
+        # once vy_bounce is False), so the firewall forbids it from being a bounce and
+        # the alternation places it as the HIT it is. Scale-free: keyed on the
+        # existing near_wrist param + the independent bnc signal; no clip-specific
+        # frame/threshold. Verified: live f271 demotes (H->B 1->0, +0.22 hit F1) while
+        # the real near-feet bounce f456 (bnc=1) and all far vy bounces (dmin >= near)
+        # are PRESERVED — the committed cache is byte-identical (0/0, bF1 0.889).
+        if vy_bounce and dmin < near and not bnc:
+            vy_bounce = False
+
         # ── scores + firewall predicate ──
         # hit_like = ball at a wrist OR a swing, and NO floor rebound. This is the
         # LOGICAL firewall: a hit_like event can never be a bounce. (vy_bounce, not

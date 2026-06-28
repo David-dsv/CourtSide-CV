@@ -10,15 +10,19 @@
 
 ## TL;DR — what shipped
 
-**Dynamic-ROI ball fallback** (`--ball-roi`, default ON, gated to the clean-broadcast density path). When full-frame ball detection finds **no in-gate candidate** on a frame where the Kalman has a prediction (a *gap*), the pipeline crops a wide window around the prediction, upscales it 2×, re-detects the ball inside, and remaps the hit to full-frame coords. The recovered candidate is gated through a **tighter** Kalman gate (0.25× the grown full gate) + a higher conf floor (0.10) before it can update the filter. This is classic **search-region tracking** — we know *where* to look, so the ball is bigger/sharper and off-court parasites are excluded.
+**Dynamic-ROI ball fallback** (`--ball-roi`, default ON, gated to the clean-broadcast density path). When full-frame ball detection finds **no in-gate candidate** on a frame where the Kalman has a prediction (a *gap*) — including a **fully-empty** frame with no full-frame ball at all — the pipeline crops a wide window around the prediction, upscales it 2×, re-detects the ball inside, and remaps the hit to full-frame coords. The recovered candidate is gated through a **tighter** Kalman gate (0.25× the grown full gate) + a higher conf floor (0.10) before it can update the filter. This is classic **search-region tracking** — we know *where* to look, so the ball is bigger/sharper and off-court parasites are excluded.
 
-| metric (demo3, clean) | baseline (no ROI) | **+ dynamic ROI** | Δ |
+**Headline = LIVE, measured on the real `run_pipeline_8s.py` track** (`--dump-ball-track` → `score_live_track.py`), not the tuning cache:
+
+| metric (demo3, clean) | LIVE baseline (no ROI) | **LIVE + dynamic ROI** | Δ |
 |---|---|---|---|
-| coverage (any ball) | 95.5% (297/311) | **96.8% (301/311)** | **+4** |
-| CORRECT (≤38px of GT) | 92.3% (287/311) | **93.2% (290/311)** | **+3** |
-| cold-start CORRECT (first 4s) | 90.8% | (see LIVE table) | |
+| coverage (any ball) | 95.5% (297/311) | **96.1% (299/311)** | **+2** |
+| CORRECT (≤38px of GT) | 92.3% (287/311) | **92.6% (288/311)** | **+1** |
+| cold-start CORRECT (first 4s) | 90.8% (167/184) | 90.8% (167/184) | 0 |
 
-**It is a CLEAN win:** the chosen config recovers 8 gap frames, **all 8 CORRECT, 0 wrong-position, 0 poisoned** (diagnose). Both coverage AND CORRECT go up. Nothing is broken.
+**It is a CLEAN win, confirmed END-TO-END on the live track:** vs the live baseline the ROI **poisons 0 frames** (no correct→wrong flips), heals 1, adds +2 coverage, loses 0. Zero damage — the tight gate + conf floor work in production exactly as in the lab.
+
+> ⚠️ **Cache vs LIVE.** The parameter-selection replay cache (below) showed a larger **+4 cov / +3 CORRECT**; the **LIVE** pipeline reproduces a smaller but honest **+2 / +1** (live full-frame detection yields slightly different candidates than the frozen per-frame cache, so the gap set differs). The cache is the right tool to *choose* params (instant, faithful to the Kalman path) but the LIVE number is the one that ships. This CR reports LIVE as the headline — honoring the project's "caches lied 4×; validate on a LIVE run" lesson, which this session re-learned the hard way (see "The live-firing bug" below).
 
 **Shipped params** (all ratios of frame size / Kalman gate — zero per-video constants):
 - `--ball-roi-half-frac 0.1667` — half-window = 16.67% of frame width (~320px on 1920W). **WIDE** (PM physics: absorb prediction error at a bounce/hit reversal).
@@ -71,6 +75,14 @@ The PM test scored "did the ROI find a point within tol of GT" — a **coverage-
 
 ---
 
+## The live-firing bug (why the cache and live first disagreed)
+
+The first LIVE run reproduced **+0/+0**, not the cache's +4/+3 — the ROI was barely firing (2 frames differed). Root cause: the ROI block was nested inside `if moving:` (full-frame produced ≥1 candidate). But the **most recoverable gaps are the FULLY-EMPTY frames** (no full-frame ball at all — the baseline's `no-ball` misses at 37,38,43-46,141-143…); on those, `moving` is empty, the whole `if moving:` block was skipped, and the ROI never ran. The validated lab `run_kalman` fired the ROI *outside* that guard (whenever initialized + no in-gate match), so the cache measured the right thing while prod silently did less.
+
+**Fix:** hoist the ROI block out of `if moving:` so it runs whenever the Kalman is initialized, has a prediction, and found no full-frame in-gate match — independent of whether full-frame produced candidates. Legacy (ROI-off) path stays byte-equivalent (verified: `--no-ball-roi` LIVE = 95.5%/92.3%, identical to pre-change). After the fix, LIVE fires on 49 frames → the clean +2/+1.
+
+**Lesson (sharpened):** a faithful replay cache is necessary but not sufficient — the *integration point* in prod can diverge from the harness even when the algorithm is identical. Always close the loop with a LIVE `--dump-ball-track` run, not just the cache.
+
 ## Adversarial verification (independent reviewers, every number re-reproduced LIVE)
 
 A 3-reviewer panel + synthesis stress-tested the decision. All three **independently reproduced** the baseline/wide/narrow numbers and the diagnose splits from the cache.
@@ -84,7 +96,8 @@ A 3-reviewer panel + synthesis stress-tested the decision. All three **independe
 ## felix safety — what protects it
 
 - **Default:** felix measures candidate density 6.9 > thr 3.5 → parasite/1280 path → `_clean_path = False` → **ROI OFF**. felix is byte-identical to pre-change.
-- **Regression tests:** `test_bounce_regression` (0.800/0.774), `test_ball_conf_regression`, `test_bounce_wasb_regression` — green (they replay frozen caches; the ROI never enters them, by construction the default path is unchanged). [LIVE TEST RESULTS — filled below]
+- **Regression tests (all green):** `test_bounce_regression` (felix F1 0.800/0.774), `test_ball_conf_regression` (felix 0.750), `test_bounce_wasb_regression` (0.865), `test_event_confusion_regression` (H→B 0 / B→H 0, bounce F1 0.889), `test_far_coverage` (3/3), `test_sharp_turns` (3/3), `test_vx_veto`, plus the new `test_ball_roi_regression` (clean win on the cache). The cache-replay tests are structurally blind to the live ROI, so they certify only the default (felix) path — which is what we want.
+- **Legacy equivalence:** `--no-ball-roi` LIVE on demo3 = 95.5%/92.3%, byte-identical to the pre-change baseline (the ROI hoist did not perturb the off path).
 - **`--ball-roi-all` on felix:** experimental. The `min_conf 0.10` guard is *inert* on felix (its path conf 0.16 > 0.10), so only the tight gate protects it — thin against felix's ball-like parasites. Proof-of-safety command (not a default path):
   ```
   python run_pipeline_8s.py felix.mp4 -s 0 -d 31 --device mps --ball-roi-all \

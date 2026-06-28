@@ -1148,73 +1148,75 @@ def main():
             current_gate = min(kf_gate_max,
                                kf_gate_base + kf_gate_growth * ball_kf.frames_since_update)
 
-            if moving:
-                if not ball_kf.initialized:
-                    # Pick highest confidence moving detection to init
-                    best = max(moving, key=lambda c: c[2])
-                    ball_kf.init_state(best[0], best[1])
-                    ball_center = (best[0], best[1])
-                else:
-                    # Pick the moving detection closest to Kalman prediction
-                    best_det = None
-                    best_dist = float('inf')
-                    for cx, cy, sc in moving:
-                        dist = ball_kf.gating_distance(cx, cy)
-                        if dist < current_gate and dist < best_dist:
+            if moving and not ball_kf.initialized:
+                # Pick highest confidence moving detection to init
+                best = max(moving, key=lambda c: c[2])
+                ball_kf.init_state(best[0], best[1])
+                ball_center = (best[0], best[1])
+            elif ball_kf.initialized:
+                # Pick the moving detection closest to Kalman prediction (if any)
+                best_det = None
+                best_dist = float('inf')
+                for cx, cy, sc in moving:
+                    dist = ball_kf.gating_distance(cx, cy)
+                    if dist < current_gate and dist < best_dist:
+                        best_dist = dist
+                        best_det = (cx, cy)
+
+                # ─── Dynamic-ROI fallback (search-region tracking) ───
+                # Full-frame gave no in-gate candidate on a frame the Kalman can
+                # predict → crop a window around the prediction, upscale, re-detect.
+                # The ball is larger/sharper there and off-court parasites are
+                # excluded. Recovered candidates are gated through the SAME Kalman
+                # gate (TIGHTER, see below), so a spurious crop hit far from the
+                # prediction is rejected exactly like a full-frame parasite. Fires
+                # ONLY on a gap (~32% of frames on a clean clip → ~+15-25% of the
+                # ball pass). Runs whether or not full-frame produced candidates —
+                # the most recoverable gaps are the FULLY-EMPTY frames (no full-frame
+                # ball at all), so it must NOT be nested under `if moving`. See
+                # docs/research/ball-roi-dynamic-CR.md.
+                if (best_det is None and ball_roi_active
+                        and roi_frames is not None and predicted is not None):
+                    # ROI candidate must clear a HIGHER conf bar (crop upscaling
+                    # inflates faint parasites) and a TIGHTER gate (0.25× the grown
+                    # full gate) — an off-target ROI hit poisons the Kalman state.
+                    roi_conf = max(ball_conf_thresh, args.ball_roi_min_conf)
+                    roi_gate = current_gate * args.ball_roi_gate_frac
+                    rcands = detector.detect_ball_roi(
+                        roi_frames[frame_idx], predicted[0], predicted[1],
+                        half=ball_roi_half, zoom=args.ball_roi_zoom,
+                        conf=roi_conf)
+                    for r in rcands:
+                        rcx, rcy = r["cx"], r["cy"]
+                        if is_static(rcx, rcy):
+                            continue
+                        dist = ball_kf.gating_distance(rcx, rcy)
+                        if dist < roi_gate and dist < best_dist:
                             best_dist = dist
-                            best_det = (cx, cy)
+                            best_det = (rcx, rcy)
 
-                    # ─── Dynamic-ROI fallback (search-region tracking) ───
-                    # Full-frame gave no in-gate candidate on a frame the Kalman can
-                    # predict → crop a window around the prediction, upscale, re-detect.
-                    # The ball is larger/sharper there and off-court parasites are
-                    # excluded. Recovered candidates are gated through the SAME Kalman
-                    # gate (TIGHTER, see below), so a spurious crop hit far from the
-                    # prediction is rejected exactly like a full-frame parasite. Fires
-                    # ONLY on this gap (~32% of frames on a clean clip → ~+15-25% of the
-                    # ball pass). See docs/research/ball-roi-dynamic-CR.md.
-                    if (best_det is None and ball_roi_active
-                            and roi_frames is not None and predicted is not None):
-                        # ROI candidate must clear a HIGHER conf bar (crop upscaling
-                        # inflates faint parasites) and a TIGHTER gate (0.25× the grown
-                        # full gate) — an off-target ROI hit poisons the Kalman state.
-                        roi_conf = max(ball_conf_thresh, args.ball_roi_min_conf)
-                        roi_gate = current_gate * args.ball_roi_gate_frac
-                        rcands = detector.detect_ball_roi(
-                            roi_frames[frame_idx], predicted[0], predicted[1],
-                            half=ball_roi_half, zoom=args.ball_roi_zoom,
-                            conf=roi_conf)
-                        for r in rcands:
-                            rcx, rcy = r["cx"], r["cy"]
-                            if is_static(rcx, rcy):
-                                continue
-                            dist = ball_kf.gating_distance(rcx, rcy)
-                            if dist < roi_gate and dist < best_dist:
-                                best_dist = dist
-                                best_det = (rcx, rcy)
-
-                    if best_det is not None:
-                        # Good match — update Kalman
-                        ball_kf.update(best_det[0], best_det[1])
-                        state = ball_kf.kf.statePost
-                        ball_center = (int(state[0][0]), int(state[1][0]))
-                    elif ball_kf.frames_since_update <= kf_max_coast and predicted:
-                        # No match but still coasting — use prediction
-                        ball_center = (int(predicted[0]), int(predicted[1]))
-                    elif last_known_pos is not None:
-                        # Coast expired — only reinit if a detection is near last known pos
-                        nearest = None
-                        nearest_dist = float('inf')
-                        reinit_gate = frame_diag * 0.50
-                        for cx, cy, sc in moving:
-                            d = np.hypot(cx - last_known_pos[0], cy - last_known_pos[1])
-                            if d < reinit_gate and d < nearest_dist:
-                                nearest_dist = d
-                                nearest = (cx, cy)
-                        if nearest is not None:
-                            ball_kf.init_state(nearest[0], nearest[1])
-                            ball_center = nearest
-                        # else: no valid reinit — skip frame
+                if best_det is not None:
+                    # Good match — update Kalman
+                    ball_kf.update(best_det[0], best_det[1])
+                    state = ball_kf.kf.statePost
+                    ball_center = (int(state[0][0]), int(state[1][0]))
+                elif ball_kf.frames_since_update <= kf_max_coast and predicted:
+                    # No match but still coasting — use prediction
+                    ball_center = (int(predicted[0]), int(predicted[1]))
+                elif last_known_pos is not None and moving:
+                    # Coast expired — only reinit if a detection is near last known pos
+                    nearest = None
+                    nearest_dist = float('inf')
+                    reinit_gate = frame_diag * 0.50
+                    for cx, cy, sc in moving:
+                        d = np.hypot(cx - last_known_pos[0], cy - last_known_pos[1])
+                        if d < reinit_gate and d < nearest_dist:
+                            nearest_dist = d
+                            nearest = (cx, cy)
+                    if nearest is not None:
+                        ball_kf.init_state(nearest[0], nearest[1])
+                        ball_center = nearest
+                    # else: no valid reinit — skip frame
 
             if ball_center is None and ball_kf.initialized:
                 if ball_kf.frames_since_update <= kf_max_coast and predicted:

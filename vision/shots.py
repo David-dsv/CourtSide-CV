@@ -12,9 +12,13 @@ arXiv:2507.02906):
   - HANDEDNESS: the racket wrist has 3-5× the positional variance of the other
     over a clip; majority vote per side (near/far) → right/left-handed, no manual
     flag.
-  - FOREHAND / BACKHAND (geometric 2D): at contact, compare the ball x to the
-    racket-hand wrist x relative to the body center, corrected for facing
-    (sign of R_SHOULDER_x − L_SHOULDER_x). 'unknown' when pose confidence is low.
+  - FOREHAND / BACKHAND (geometric 2D COMPOSITE, see classify_forehand_backhand):
+    ball-at-contact side (ball_x − anchor_x)/h as the primary signal, a pre-contact
+    SWING-window cross-body GUARD that ABSTAINS on a confident disagreement, an
+    abstention band near the body axis, and handedness as a voted per-side PRIOR.
+    The old per-frame "facing" correction is GONE — it inverted the class (~6/8 →
+    2/8); removing it is the measured quick-win. 'unknown' on low-confidence pose /
+    an ambiguous or cross-body contact.
   - QUALITY (mirrors ATP/TennisViz "Shot Quality": speed + depth + placement +
     net clearance, 0-100).
 
@@ -198,11 +202,21 @@ def _fwhm_at(speed, peak_idx):
 
 
 def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
-                bounce_frames=None, wrist_prox_max=float("inf")):
+                bounce_frames=None, wrist_prox_max=float("inf"), far_aware=False):
     """
     Detect racket→ball contact (hit) frames via racket-wrist speed peaks, and
     attribute each to a player. Returns list of dicts:
       {frame, x, y, player_idx, player_side, anchor, right_handed, wrist_speed}
+
+    far_aware (default False = byte-identical legacy behavior, used by the event
+    ARBITRATION path so classify_events sees an unchanged candidate set): when True,
+    two far-player fixes are enabled — (1) NMS is PER SIDE so a near contact doesn't
+    suppress a far contact a few frames later, and (2) the serve gate is PLAYER-
+    relative (wrist above the player's own head) instead of FRAME-relative (which
+    flagged every legitimately-high far contact as a serve and dropped all far hits).
+    This is opt-in because it CHANGES the live hit set, which would perturb the
+    methodo arbitration; it is used ONLY to source well-attributed near+far contacts
+    for FH/BH labeling, never for the arbitration votes.
 
     A wrist-speed peak alone over-fires: the arm also swings on a split-step,
     a follow-through, or a pose-tracker identity flip — none of which are a real
@@ -261,9 +275,23 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
 
     cands.sort(key=lambda c: c[0])
     hits = []
-    last = -min_gap
+    # NMS: PER SIDE when far_aware (a rally alternates near↔far, so a near contact
+    # must not suppress a far contact a few frames later — the global cursor silently
+    # dropped every far hit whenever a near peak preceded it within min_gap, leaving
+    # FH/BH blind on the far player). GLOBAL otherwise (legacy arbitration behavior).
+    last_by_side = {"near": -min_gap, "far": -min_gap}
+
+    def _refractory(side):
+        return last_by_side[side] if far_aware else max(last_by_side.values())
+
+    def _mark(side, frame):
+        if far_aware:
+            last_by_side[side] = frame
+        else:
+            last_by_side["near"] = last_by_side["far"] = frame
+
     for i, side, wspeed, wrist_xy in cands:
-        if i - last < min_gap:
+        if i - _refractory(side) < min_gap:
             continue
         # The wrist-speed peak lands a few frames AFTER contact (the arm is still
         # swinging through). So we don't snap the hit to frame i's ball position —
@@ -335,30 +363,212 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
         # but guard anyway)
         if any(abs(contact_frame - bf) <= bounce_guard for bf in bounce_set):
             continue
-        # skip serve: wrist very high + ball high
+        # skip serve. far_aware: PLAYER-relative (wrist above the player's OWN head,
+        # ball at/above the box top) — the frame-fraction test flagged every
+        # legitimately-high far contact as a serve and dropped all far hits. Legacy
+        # (default): the original frame-fraction test, kept byte-identical for the
+        # arbitration path.
         p = players[best]
         wy = wrist_xy[i][1][1] if (wrist_xy[i] is not None and wrist_xy[i] is not False) else (p["box"][1])
-        if wy < 0.30 * frame_height and ball_pos[1] < 0.35 * frame_height:
-            continue
+        if far_aware:
+            box_top = p["box"][1]
+            ph = max(_player_height(p), 1.0)
+            if wy < box_top - 0.05 * ph and ball_pos[1] < box_top + 0.10 * ph:
+                continue
+        else:
+            if wy < 0.30 * frame_height and ball_pos[1] < 0.35 * frame_height:
+                continue
         hits.append({
             "frame": contact_frame, "x": int(ball_pos[0]), "y": int(ball_pos[1]),
             "player_idx": best, "player_side": side, "anchor": best_anchor,
             "right_handed": handed[side], "wrist_speed": wspeed,
         })
-        last = contact_frame
+        _mark(side, contact_frame)
     return hits
 
 
-def classify_forehand_backhand(hit, players_per_frame, right_handed=None):
+# ── FH/BH classification thresholds (all in player-HEIGHT units → scale-free) ──
+# These are geometric bands, NOT pixel constants: dx/swing are divided by the
+# player's box height h, so an "axis-ambiguous" zone of 0.06·h means "the ball was
+# within 6% of a body-length of the body axis" — the same physical band on a 260px
+# near player and a 100px far player. Provisional values from the demo3 GT (8
+# shots, mono-clip); kept conservative and revalidated the moment a 2nd GT exists.
+_FHB_ABSTAIN = 0.06   # |ball_dx| under this ⇒ ambiguous (on the body axis) ⇒ unknown
+_FHB_DISAGREE = 0.05  # ball_dx & swing must both clear this for the cross-body abstain
+
+
+def _swing_meandx(players_per_frame_window, frame, player_side, net_y, fps):
+    """Pre-contact swing direction of the ACTIVE wrist relative to the body anchor,
+    averaged over a short window BEFORE the contact (screen frame, /height).
+
+    The contact instant only tells you where the ball is; the SWING tells you which
+    side the stroke came from — the discriminator for a cross-body contact (a
+    backhand whose ball-at-contact reads on the forehand side because the ball has
+    already left the strings). Over the window [frame-w, frame-1] we collect BOTH
+    wrists' (x-anchor)/h on the side-player, then return the mean of the side whose
+    wrist travelled the most (the "active" / racket wrist by greatest path — the
+    doc's selector). This is handedness-AGNOSTIC, which matters on the far player:
+    the right-wrist-only track was the noisy signal that wrongly flipped f141; the
+    active wrist resolves it. None if the window has no usable pose.
+
+    Window = round(0.12*fps) frames (~6 @50fps) — a swing's pre-contact arc; fps-
+    scaled, no per-video constant. The doc measured [-6,-1] @50fps = 8/8; we express
+    it as a ratio of fps and take the strictly-pre-contact half (post-contact adds
+    follow-through noise).
+    """
+    w = max(3, int(round(fps * 0.12)))
+    n = len(players_per_frame_window)
+    # per-wrist series of (relative-x, absolute-xy) so we can pick the active one
+    series = {L_WRIST: [], R_WRIST: []}
+    last_xy = {L_WRIST: None, R_WRIST: None}
+    path = {L_WRIST: 0.0, R_WRIST: 0.0}
+    for j in range(max(0, frame - w), frame):
+        slot = players_per_frame_window[j] if j < n else None
+        if not slot:
+            continue
+        # the side-player (tallest on this side, matching detect_hits' anchor pick)
+        me = None
+        for p in slot:
+            if _side_of(p, net_y) != player_side:
+                continue
+            if me is None or _player_height(p) > _player_height(me):
+                me = p
+        if me is None:
+            continue
+        ax, _ = _player_anchor(me)
+        h = max(_player_height(me), 1.0)
+        for wi in (L_WRIST, R_WRIST):
+            wr = _kp(me, wi)
+            if wr is None:
+                continue
+            series[wi].append((wr[0] - ax) / h)
+            if last_xy[wi] is not None:
+                path[wi] += float(np.hypot(wr[0] - last_xy[wi][0],
+                                           wr[1] - last_xy[wi][1]))
+            last_xy[wi] = wr
+    # the active wrist = greater total path; fall back to whichever has samples
+    active = None
+    if series[L_WRIST] and series[R_WRIST]:
+        active = R_WRIST if path[R_WRIST] >= path[L_WRIST] else L_WRIST
+    elif series[L_WRIST]:
+        active = L_WRIST
+    elif series[R_WRIST]:
+        active = R_WRIST
+    if active is None or not series[active]:
+        return None
+    return float(np.mean(series[active]))
+
+
+def _ball_dx_at(hit, players_per_frame):
+    """(ball_x - anchor_x)/h for a hit's contact player, or None if unreadable.
+    The screen-side of the ball at contact — the primary FH/BH signal AND the basis
+    of the handedness vote (forehands dominate ⇒ the mode of this sign is the
+    player's forehand side)."""
+    i = hit["frame"]
+    players = players_per_frame[i] if i < len(players_per_frame) else None
+    if not players or hit.get("player_idx", 0) >= len(players):
+        return None
+    p = players[hit["player_idx"]]
+    ax, ay = _player_anchor(p)
+    h = max(_player_height(p), 1.0)
+    return (hit["x"] - ax) / h
+
+
+# Handedness prior: flip to left-handed only on a CLEAR ball-side mode (a strict
+# super-majority), else keep the right-handed default. A 1-vote margin on a handful
+# of shots is noise (the doc proved mono-clip handedness is unstable), so the bar
+# to override the population default is deliberately high. Scale-free: it's a vote
+# RATIO, not a count.
+_HAND_MIN_VOTES = 4       # need at least this many confident shots to even consider
+_HAND_SUPERMAJ = 0.75     # and ≥75% on one side to flip off the right-handed default
+
+
+def estimate_handedness_prior(hits, players_per_frame, fps, frame_height):
+    """Per-side handedness PRIOR from the MODE of the ball-side at contact.
+
+    The doc's key finding: per-frame facing AND per-clip wrist-variance are both
+    unreliable for handedness on a single rally. The robust population prior: a
+    player hits MORE forehands than backhands, so the MODE of the ball-at-contact
+    side over their shots = their forehand side, and the forehand side fixes
+    handedness — a right-hander's forehand sits on screen-RIGHT (ball_dx>0) on the
+    near end. We vote per court SIDE (near/far) because screen-direction inverts
+    between the two ends, and each end's mapping is self-consistent on its own
+    frames.
+
+    Returns {'near': hand, 'far': hand} with hand ∈ {True (right), False (left),
+    None}. CRITICAL: None means "use the right-handed default" (NOT abstain the
+    shot) — ~80%+ of players are right-handed, so the safe fallback is right, not a
+    refusal. We only return False (left-handed) on a strict super-majority of a
+    decent sample (≥_HAND_MIN_VOTES shots, ≥_HAND_SUPERMAJ on the minority/forehand
+    side opposite to right) — otherwise mono-clip noise would wrongly flip a
+    right-hander (the bug that took the composite to 1/7). This is a PRIOR, not a
+    per-shot signal; it only sets the screen→absolute mapping.
+    """
+    side_votes = {"near": [], "far": []}
+    for h in hits:
+        side = h.get("player_side")
+        if side not in ("near", "far"):
+            continue
+        bdx = _ball_dx_at(h, players_per_frame)
+        if bdx is None or abs(bdx) < _FHB_ABSTAIN:
+            continue  # axis-ambiguous shots don't vote
+        side_votes[side].append(1 if bdx > 0 else -1)
+    out = {}
+    for side in ("near", "far"):
+        votes = side_votes[side]
+        out[side] = None  # default → right-handed mapping downstream
+        if len(votes) < _HAND_MIN_VOTES:
+            continue
+        pos = sum(1 for v in votes if v > 0)
+        frac_pos = pos / len(votes)
+        # forehand side = the screen side a strict majority of shots land on.
+        # right-handed (forehand on screen-right) is the default, so only a strong
+        # LEFT lean (forehand on screen-left ⇒ left-handed) overrides it.
+        if frac_pos >= _HAND_SUPERMAJ:
+            out[side] = True          # forehand on the right ⇒ right-handed
+        elif (1 - frac_pos) >= _HAND_SUPERMAJ:
+            out[side] = False         # forehand on the left ⇒ left-handed
+        # else: ambiguous lean ⇒ keep the right-handed default (None)
+    return out
+
+
+def classify_forehand_backhand(hit, players_per_frame, right_handed=None,
+                               players_per_frame_window=None, handedness=None,
+                               fps=50.0, frame_height=None):
     """Geometric FH/BH at a hit. Returns 'forehand' | 'backhand' | 'unknown'.
 
-    Auto-handedness by wrist variance is unreliable in a single rally (both wrists
-    move ~equally to balance the body), so we DON'T rely on it. Instead: at contact
-    the racket wrist is the one NEAREST the ball (the racket touches the ball), and
-    we assume right-handed (>80% of players) corrected by the player's facing
-    direction (sign of R_SHOULDER_x − L_SHOULDER_x; near players face the camera,
-    far players face away). Returns 'unknown' on low-confidence pose or an ambiguous
-    contact rather than guessing wrong.
+    COMPOSITE (informed by docs/research/forehand-backhand.md §3 + LIVE measurement):
+      1. PRIMARY = ball-at-contact side: ``ball_dx = (ball_x - anchor_x)/h`` (screen
+         frame, /player-height). Measured 7/8 alone — the lone miss is a cross-body
+         contact, which we ABSTAIN on rather than guess (see 2).
+      2. CROSS-BODY GUARD = pre-contact swing → ABSTAIN (not override). When the
+         swing direction confidently disagrees with the contact side, the call is
+         too ambiguous to make, so we return 'unknown'. The doc's §3 OVERRIDE-to-swing
+         got 8/8 on the cache but introduced a far-court CONFUSION live (the small far
+         player's swing is noise; trusting it flips a correct forehand to backhand,
+         and no geometric signal separates a true near cross-body from a false far
+         flicker). Abstaining on disagreement holds confusion at 0 on BOTH the cache
+         and live — the priority — at the cost of abstaining on the rare cross-body.
+      3. ABSTENTION near the body axis (|ball_dx| < band) → 'unknown'.
+      4. HANDEDNESS as a per-side PRIOR (estimate_handedness_prior), NOT the old
+         per-frame facing correction (which inverted the class ~6/8 → 2/8). The
+         prior maps screen-side → forehand/backhand; default right-handed when the
+         vote margin is too low.
+
+    The old per-frame ``facing`` multiplier is GONE — it was the bug (removing it is
+    the measured 2/8 → 7/8 quick-win). No wrist-proximity gate either: detect_hits
+    already validated the contact, and a redundant gate here abstained on far shots
+    whose ball detect_hits snapped slightly off the tiny far player.
+
+    Args:
+        hit: {frame, x (ball x), player_idx, player_side, ...}.
+        players_per_frame: the per-frame pose list ``hit['player_idx']`` indexes
+            (the SAME list detect_hits used).
+        players_per_frame_window: per-frame pose list for the swing window (usually
+            the same as players_per_frame). If None, the cross-body guard is skipped.
+        handedness: optional {'near': bool|None, 'far': bool|None} prior from
+            estimate_handedness_prior. None / a None side ⇒ right-handed default.
+        right_handed: legacy/no-op (kept for signature compatibility).
     """
     i = hit["frame"]
     players = players_per_frame[i] if i < len(players_per_frame) else None
@@ -368,34 +578,77 @@ def classify_forehand_backhand(hit, players_per_frame, right_handed=None):
     ax, ay = _player_anchor(p)
     bx = hit["x"]
     h = max(_player_height(p), 1.0)
+    side = hit.get("player_side")
+    if side not in ("near", "far"):
+        side = _side_of(p, frame_height * 0.47) if frame_height else "near"
 
+    # a wrist must exist at all (shoulders give us nothing now that facing is gone)
     lw = _kp(p, L_WRIST)
     rw = _kp(p, R_WRIST)
-    ls = _kp(p, L_SHOULDER)
-    rs = _kp(p, R_SHOULDER)
-    if lw is None or rw is None or ls is None or rs is None:
-        return "unknown"
-    if abs(bx - ax) < 0.04 * h:  # ball dead on the body axis → ambiguous
+    if lw is None and rw is None:
         return "unknown"
 
-    # (1) racket wrist = nearest to the ball
-    d_lw = abs(lw[0] - bx)
-    d_rw = abs(rw[0] - bx)
-    if min(d_lw, d_rw) > 0.35 * h:  # ball too far from both wrists → not a real contact
-        return "unknown"
-    racket_is_right = (d_rw <= d_lw)
+    # (1) primary: ball side at contact (screen frame, /height)
+    ball_dx = (bx - ax) / h
+    if abs(ball_dx) < _FHB_ABSTAIN:
+        return "unknown"  # ball on the body axis → ambiguous, refuse honestly
 
-    # (2) facing: >0 → right shoulder screen-right (faces camera); <0 → faces away
-    facing = 1.0 if (rs[0] - ls[0]) >= 0 else -1.0
+    # (2) cross-body GUARD via the pre-contact swing → ABSTAIN, don't override.
+    # A genuine cross-body backhand has the swing come from the OTHER side than the
+    # ball-at-contact (the ball already left the strings). The original spec OVERRODE
+    # to the swing here; measurement killed that: the swing is reliable on the near
+    # player but NOISY on the small far player (no geometric separator — a true near
+    # cross-body and a false far swing-flicker are indistinguishable by magnitude or
+    # sign-consistency). Trusting it flips a correct strong far forehand to backhand
+    # (a CONFUSION — the worst outcome). So on a confident disagreement we ABSTAIN
+    # (honest 'unknown') rather than override: that converts both the true cross-body
+    # (cache f525) and the false far flicker (live f149) to abstentions, holding
+    # confusion at 0 either way — the prompt's priority. The contact owns the call
+    # everywhere else.
+    if players_per_frame_window is not None:
+        net_y = (frame_height * 0.47) if frame_height else (ay + 1.0)
+        sw = _swing_meandx(players_per_frame_window, i, side, net_y, fps)
+        if (sw is not None and abs(sw) > _FHB_DISAGREE
+                and abs(ball_dx) > _FHB_DISAGREE
+                and (ball_dx > 0) != (sw > 0)):
+            return "unknown"  # swing fights the contact → too ambiguous to call
 
-    # (3) ball side in the player's own frame (their right vs left)
-    ball_screen_side = 1.0 if bx >= ax else -1.0
-    ball_player_side = ball_screen_side * facing
+    base_side = 1 if ball_dx > 0 else -1
 
-    # (4) assume right-handed; left-hander mirrors
-    if racket_is_right:
-        return "forehand" if ball_player_side > 0 else "backhand"
-    return "backhand" if ball_player_side > 0 else "forehand"
+    # NOTE: no wrist-proximity gate here. detect_hits already validated this is a real
+    # contact (its own torso + wrist-prox gates); a redundant gate here only ABSTAINED
+    # on far contacts whose ball position detect_hits snapped a little off the small
+    # far player (the live far-abstention bug). Contact validation is detect_hits' job.
+
+    # (3) screen-side → absolute FH/BH via the handedness prior for this court side.
+    # right-hander: forehand on screen-RIGHT (base_side>0) ⇒ forehand. left-hander
+    # mirrors. None / missing prior ⇒ right-handed default (>80% of players).
+    hand = None
+    if handedness is not None:
+        hand = handedness.get(side)
+    is_right = True if hand is None else bool(hand)
+    fh_is_right_side = is_right  # forehand sits on the player's racket-hand side
+    return "forehand" if (base_side > 0) == fh_is_right_side else "backhand"
+
+
+def classify_shots(hits, players_per_frame, fps, frame_height,
+                   players_per_frame_window=None):
+    """Batch FH/BH for all detected hits: estimate the per-side handedness prior
+    ONCE from the full hit set, then classify each hit with the composite. Returns
+    a list of labels aligned with ``hits``. This is the orchestrator the pipeline
+    calls so the handedness prior sees every shot (the more hits, the better the
+    vote margin). ``players_per_frame_window`` defaults to ``players_per_frame``.
+    """
+    win = players_per_frame_window if players_per_frame_window is not None else players_per_frame
+    # vote the prior on the SAME list player_idx indexes (the contact list), not the
+    # window — the ball_dx that decides the forehand-side must read the contact pose.
+    handed = estimate_handedness_prior(hits, players_per_frame, fps, frame_height)
+    return [
+        classify_forehand_backhand(
+            h, players_per_frame, players_per_frame_window=win,
+            handedness=handed, fps=fps, frame_height=frame_height)
+        for h in hits
+    ], handed
 
 
 def shot_quality(speed_kmh, depth_label, bounce_xy, court_zones, frame_width,

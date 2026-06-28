@@ -297,3 +297,45 @@ class TennisYOLODetector:
     ) -> List[Dict]:
         """Run detection on a batch of frames."""
         return [self.detect(frame, classes) for frame in frames]
+
+    def probe_ball_density(
+        self,
+        frames: List[np.ndarray],
+        probe_conf: float = 0.05,
+        probe_imgsz: int = 1280,
+        subsample: int = 10,
+    ) -> float:
+        """Mean ball-candidate count per probed frame — a footage-cleanliness
+        metric used to choose the ball detection resolution (no GT, no per-video
+        constant).
+
+        WHY: the tiny/far ball wins big from a high-res pass (imgsz 1920 +
+        low conf) on CLEAN broadcast — but the SAME high-res/low-conf floods a
+        parasite-heavy oblique/amateur clip with false candidates the tracker
+        then locks onto (measured: demo3 ~2 cand/frame, felix ~7). The candidate
+        DENSITY at a low probe floor separates the two robustly (a ~3.4x gap,
+        stable across probe conf and subsample), so it can gate the resolution
+        choice: clean -> 1920/low-conf, parasite -> 1280/safe-conf. See
+        docs/research/s1-ball-sota-CR.md.
+
+        Runs the ball model at a LOW probe conf on every `subsample`-th frame and
+        returns the mean number of candidates per probed frame. Cheap: ~1/10th of
+        a full pass. Measured stable down to subsample=10.
+        """
+        probe = frames[::max(1, subsample)]
+        if not probe:
+            return 0.0
+        counts = []
+        for frame in probe:
+            res = self.custom_model(
+                frame,
+                conf=probe_conf,
+                iou=self.iou_threshold,
+                device=self.device,
+                imgsz=probe_imgsz,
+                classes=[0] if self.is_yolo26_ball else [1],
+                verbose=False,
+            )
+            b = res[0].boxes
+            counts.append(0 if b is None else len(b))
+        return float(np.mean(counts)) if counts else 0.0

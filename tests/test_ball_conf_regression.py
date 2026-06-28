@@ -35,14 +35,24 @@ F1_FLOOR = 0.72  # same floor as test_bounce_regression
 
 
 def shipped_ball_conf():
-    """Read the LIVE --ball-conf default straight from run_pipeline_8s.py's parser
-    so this test can never drift from what the pipeline actually ships."""
+    """Read the LIVE ball-conf that felix-style PARASITE clips actually ship with,
+    straight from run_pipeline_8s.py, so this test can never drift from prod.
+
+    felix is a parasite-heavy oblique clip (mean ~7 candidates/frame), so under the
+    density-adaptive default (--ball-auto) it takes the PARASITE path conf, not the
+    clean-broadcast 0.05. We read that parasite-path conf (the felix-relevant one)
+    from the auto block: `auto_conf = 0.05 if clean else 0.16`. If --ball-conf has
+    a literal numeric default (auto disabled / pinned), prefer that instead."""
     src = (ROOT / "run_pipeline_8s.py").read_text()
-    # the arg is declared as: parser.add_argument("--ball-conf", type=float, default=X,
     import re
     m = re.search(r'--ball-conf"[^)]*?default=([0-9.]+)', src, re.S)
+    if m:
+        return float(m.group(1))
+    # density-adaptive default: the parasite-path conf is what felix receives.
+    m = re.search(r'auto_conf\s*=\s*[0-9.]+\s*if\s*clean\s*else\s*([0-9.]+)', src)
     if not m:
-        raise AssertionError("could not find --ball-conf default in run_pipeline_8s.py")
+        raise AssertionError("could not find ball-conf default / parasite auto_conf "
+                             "in run_pipeline_8s.py")
     return float(m.group(1))
 
 

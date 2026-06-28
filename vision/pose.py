@@ -91,16 +91,24 @@ def _roi_redetect(detector, frame, net_y, fw, fh, device, conf, imgsz, scale=2.0
 
     Why this is the right lever (measured): the far player is tiny (~30-90px tall in a
     1920px frame). Sliced/upscaled inference is the single most-cited small-object
-    recall lever (no retrain, no GPU, no new dependency): a 2× ROI crop turns a ~40px
-    person into ~80-120px — the pixels-on-target a CNN needs. We already KNOW the
-    location (above-net, central band), so one ROI crop gives the same benefit as
-    full-frame SAHI tiling at a fraction of the cost and with no cross-tile NMS.
+    recall lever (no retrain, no GPU, no new dependency): cropping the above-net band
+    and feeding it to the detector at a HIGHER effective resolution puts more
+    pixels-on-target on the tiny far player than the full-frame pass, which letterboxes
+    the whole 1920px frame down to ``imgsz``. The crop is ~0.8·W × ~0.3·H, so a 2×
+    upscale only helps if the detector is then run at an ``imgsz`` matching the upscaled
+    crop — otherwise YOLO's internal letterbox undoes the upscale (a real subtlety: a
+    2× crop fed at imgsz 1280 nets only ~1.25× pixels-on-target). We therefore size the
+    inference ``imgsz`` to the upscaled crop's longer side (multiple of 32, capped), so
+    the upscale actually delivers. We already KNOW the location (above-net, central
+    band), so one ROI crop gives SAHI's per-object resolution at a fraction of the cost
+    and with no cross-tile NMS.
 
     Region is derived from the scene (``net_y`` and frame size), never a clip-specific
     pixel — zero-hardcoding. The band matches the on-court far gate used below
     (cy ≥ 0.25·net_y, 0.12 < cx/fw < 0.88) so a recovered box lands where the selector
-    expects it. Returns [(box_fullframe, conf), ...] for boxes whose centre falls in the
-    above-net region, mapped back to full-frame coordinates, or [].
+    expects it. ``imgsz`` here is an UPPER CAP on the auto-derived crop imgsz, not a
+    fixed inference size. Returns [(box_fullframe, conf), ...] for boxes whose centre
+    falls in the above-net region, mapped back to full-frame coordinates, or [].
 
     This is GATED on the far slot being empty, so it is a pure no-op (zero added cost,
     zero behaviour change) whenever full-frame detection already found the far player —
@@ -115,7 +123,13 @@ def _roi_redetect(detector, frame, net_y, fw, fh, device, conf, imgsz, scale=2.0
         return []
     roi = frame[y0:y1, x0:x1]
     roi_up = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    res = detector(roi_up, conf=conf, imgsz=imgsz, classes=[0], device=device,
+    # Size inference to the upscaled crop's longer side (else YOLO's letterbox undoes
+    # the upscale). Round up to a multiple of 32 (YOLO stride), cap at ``imgsz`` (the
+    # full-frame imgsz) as the floor and at 1.5× it as the ceiling so the ROI pass is
+    # never SMALLER than the full-frame pass nor unboundedly large.
+    long_side = max(roi_up.shape[0], roi_up.shape[1])
+    roi_imgsz = int(min(max(imgsz, ((long_side + 31) // 32) * 32), int(1.5 * imgsz)))
+    res = detector(roi_up, conf=conf, imgsz=roi_imgsz, classes=[0], device=device,
                    verbose=False)
     out = []
     if res[0].boxes is None or len(res[0].boxes) == 0:

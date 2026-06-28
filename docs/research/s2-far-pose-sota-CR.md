@@ -87,8 +87,14 @@ All in `vision/pose.py` + the far thermometer fixture/floor.
 When full-frame detection returns **no above-net box** (`far_player is None` after the
 normal `_hcv` selection), crop the upper-central court band (region derived from `net_y`
 and frame size — zero-hardcoding), 2× upscale (`cv2.resize`, INTER_CUBIC), re-run the
-**same** person detector, map boxes back, pose each, and run the **same `_hcv` selection**
-over the recovered candidates.
+**same** person detector **at an `imgsz` sized to the upscaled crop's longer side**
+(multiple of 32, floored at the full-frame imgsz, capped at 1.5×), map boxes back, pose
+each, and run the **same `_hcv` selection** over the recovered candidates.
+
+> Subtlety (caught in adversarial review): naively calling the detector at the
+> full-frame `imgsz=1280` on a 2× crop lets YOLO's internal letterbox shrink the crop
+> back down, undoing most of the upscale (~1.25× net pixels-on-target instead of 2×).
+> Sizing `imgsz` to the upscaled crop is what makes the upscale actually deliver.
 
 **Why it cannot regress demo3/felix:** it is a pure no-op whenever full-frame detection
 already found the far player — which is **every** demo3 GT frame (live 225/225) and every
@@ -162,10 +168,21 @@ clip that genuinely needs it.
 | Test | Result |
 |---|---|
 | `test_far_coverage` (rebuilt cache, floor 0.95) | **PASS** (100%) |
+| `test_roi_redetect` (NEW — coord round-trip, above-net filter, imgsz, degenerate) | **PASS** |
 | `test_bounce_regression` | PASS (F1 0.800) |
 | `test_vx_veto` | PASS |
 | `test_event_confusion_regression` | PASS (H→B 0, B→H 0, bounce F1 0.889) |
 | `test_sharp_turns` | PASS |
+
+### Adversarial review (independent agent, post-commit)
+
+An independent skeptic reviewed the change and **could not refute** the safety claims:
+coordinate mapping exact (round-trip verified), the gated call a true no-op when the far
+slot is filled, all variables in scope, the P1-far/P2-near contract preserved, degenerate
+ROI / empty detection guarded, `import cv2` safe. It raised two fair non-functional points,
+both now fixed in this branch: (1) the docstring overstated the upscale benefit because the
+detector was called at the full-frame `imgsz` → now `imgsz` is sized to the upscaled crop;
+(2) the safety-net shipped without a committed test → added `tests/test_roi_redetect.py`.
 
 ---
 

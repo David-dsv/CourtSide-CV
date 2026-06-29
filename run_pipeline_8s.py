@@ -184,12 +184,21 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
     chain_gap = max(2, int(round(chain_gap_frac * fps)))
 
     def grow_frozen_run(s):
-        """Length + centroid of the maximal frozen run starting at index s."""
-        sx, sy, cnt = float(centers[s][0]), float(centers[s][1]), 1
+        """Length + centroid of the maximal frozen run starting at index s.
+
+        Each point must stay within freeze_r of the run ANCHOR (the first point),
+        NOT a running mean. A running mean LAGS a steady slow drift, so a real ball
+        creeping ~5-7px/frame would keep the mean-distance under freeze_r and read
+        as "frozen" indefinitely (adversarial FINDING 2). Anchoring on the first
+        point bounds the whole run to a fixed freeze_r ball: a real drifting ball
+        leaves it after ~freeze_r/step frames and the run ends, so only a genuinely
+        pinned cluster reaches min_run.
+        """
+        ax, ay = float(centers[s][0]), float(centers[s][1])
+        sx, sy, cnt = ax, ay, 1
         j = s + 1
         while j < n and centers[j] is not None:
-            mx, my = sx / cnt, sy / cnt
-            if np.hypot(centers[j][0] - mx, centers[j][1] - my) <= freeze_r:
+            if np.hypot(centers[j][0] - ax, centers[j][1] - ay) <= freeze_r:
                 sx += centers[j][0]
                 sy += centers[j][1]
                 cnt += 1
@@ -198,12 +207,21 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
                 break
         return cnt, (sx / cnt, sy / cnt)
 
-    def exit_jump_from(centroid, end_idx):
-        """Jump from a frozen-run centroid to the next real center after end_idx."""
+    def adjacent_exit_jump(centroid, end_idx):
+        """Jump from a frozen-run centroid to the IMMEDIATELY ADJACENT next center.
+
+        Returns None if the run is the end of the track OR a gap (None) follows it.
+        The cold-start rule needs the exit to be ADJACENT (no intervening gap): a
+        static FP is ABANDONED by a clean single-frame teleport (the track jumps
+        straight from the frozen FP to the real ball on the very next frame — the
+        live (538,473) FP exits at f52, adjacent to f51). A real toss/apex that is
+        OCCLUDED at contact has a None gap before the struck ball re-appears far
+        away — the jump across that gap is ambiguous (the ball moved while
+        occluded), so we ABSTAIN (return None ⇒ no cold reject) and keep the real
+        ball. This closes the serve-toss false-delete found in adversarial review.
+        """
         j = end_idx + 1
-        while j < n and centers[j] is None:
-            j += 1
-        if j >= n:
+        if j >= n or centers[j] is None:
             return None
         return np.hypot(centers[j][0] - centroid[0], centers[j][1] - centroid[1])
 
@@ -213,6 +231,7 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
     last_real = None
     last_real_idx = None
     seen_real = False  # has the track locked a real (kept) point yet? (cold-start)
+    cold_done = False  # the one-shot cold-start slot has been used
     while i < n:
         c = centers[i]
         if c is None:
@@ -242,12 +261,19 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
         reject = is_frozen and (is_hard_teleport or (is_teleport and is_healthy_before))
 
         # COLD-START: the FIRST real lock has no teleport-entry to test. Reject it
-        # iff it is a LONG freeze (>= cold_min_run) that is EXITED by a teleport (a
-        # real cold-start apex/toss leaves on a smooth arc → small exit jump).
+        # iff it is a LONG freeze (>= cold_min_run) ABANDONED by an ADJACENT
+        # teleport (a real cold-start apex/toss leaves on a smooth arc → small exit
+        # jump; an occluded real apex has a None gap before re-acquisition → abstain).
+        # The cold rule may fire only ONCE — for the genuine first lock (last_real
+        # is None) AND before any earlier cold reject (cold_done). After a cold
+        # reject last_real is still None (the FP is not "real"), so without
+        # cold_done a SECOND frozen run — possibly a REAL occluded apex — could be
+        # re-cold-rejected (adversarial FINDING 1). cold_done closes that.
         exit_jump = None
         is_cold_start = False
-        if not reject and not seen_real and run_len >= cold_min_run:
-            exit_jump = exit_jump_from(centroid, i + run_len - 1)
+        if (not reject and last_real is None and not cold_done
+                and run_len >= cold_min_run):
+            exit_jump = adjacent_exit_jump(centroid, i + run_len - 1)
             if exit_jump is not None and exit_jump > jump_t:
                 reject = True
                 is_cold_start = True
@@ -267,6 +293,8 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
                          else (1 if is_hard_teleport else 2)),
             })
             # the deleted blob is not "real" — keep last_real at the pre-blob ball
+            if is_cold_start:
+                cold_done = True  # one-shot: never cold-reject again this track
             anchor = last_real
             i = i + run_len
             # EPISODE CHAINING: absorb trailing SHORT frozen sub-blobs that are
@@ -1507,25 +1535,25 @@ def main():
                                 f" ·diag, {b['tier']})"
                                 for b in _s6_deleted))
 
-        # ─── S6: reject OFF-FRAME coast predictions (determinism) ───
-        # When the ball leaves the frame (or the Kalman prediction diverges) the
-        # tracker coasts the prediction OFF the frame edge (measured: f150-153 coast
-        # to y=-62..-359, hundreds of px above the top edge, then re-acquires the
-        # real ball). A real ball is ALWAYS within [0,W)×[0,H) — GT confirms every
-        # verified ball point is in-frame — so an off-frame center can never be
-        # correct and only feeds a fake direction reversal → a phantom BOUNCE
-        # (B@152 on the canonical clip). Null them: 0 GT points lost by
-        # construction. Clean-path gated for symmetry with the blob reject (the
-        # felix bounce track is validated separately and must stay byte-identical).
-        _s6_off = 0
-        for _f in range(len(raw_ball_centers)):
-            _c = raw_ball_centers[_f]
-            if _c is not None and (_c[0] < 0 or _c[1] < 0
-                                   or _c[0] >= frame_width or _c[1] >= frame_height):
-                raw_ball_centers[_f] = None
-                _s6_off += 1
-        if _s6_off:
-            logger.info(f"S6 off-frame reject: nulled {_s6_off} off-frame coast point(s)")
+            # ─── S6: reject OFF-FRAME coast predictions (determinism) ───
+            # When the ball leaves the frame (or the Kalman prediction diverges) the
+            # tracker coasts the prediction OFF the frame edge (measured: f150-153
+            # coast to y=-62..-359, hundreds of px above the top edge, then
+            # re-acquires the real ball). A real ball is ALWAYS within [0,W)×[0,H) —
+            # GT confirms every verified ball point is in-frame — so an off-frame
+            # center can never be correct and only feeds a fake direction reversal →
+            # a phantom BOUNCE (B@152 on the canonical clip). Null them: 0 GT points
+            # lost by construction. Clean-path gated (same block as the blob reject)
+            # so the felix bounce track stays byte-identical.
+            _s6_off = 0
+            for _f in range(len(raw_ball_centers)):
+                _c = raw_ball_centers[_f]
+                if _c is not None and (_c[0] < 0 or _c[1] < 0
+                                       or _c[0] >= frame_width or _c[1] >= frame_height):
+                    raw_ball_centers[_f] = None
+                    _s6_off += 1
+            if _s6_off:
+                logger.info(f"S6 off-frame reject: nulled {_s6_off} off-frame coast point(s)")
 
     # ─── CHANTIER 0: pre-spline real/interpolated mask (for the vx-flip veto) ───
     # The vx-flip bounce-vs-hit veto MUST read direction on the RAW tracker

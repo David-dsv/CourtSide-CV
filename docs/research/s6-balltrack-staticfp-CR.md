@@ -170,12 +170,31 @@ teleport-frozen blobs in a `--dump-ball-track` dump; `--json` for scripting).
   floor 0.72), `test_bounce_wasb_regression` (0.865), `test_vx_veto`,
   `test_event_confusion_regression` (0/0, bounce F1 0.889), `test_ball_conf_regression`
   (felix 0.750), `test_ball_roi_regression`, `test_roi_redetect`, `test_far_coverage`.
-- **New deterministic test GREEN:** `tests/test_static_fp_reject.py` — 10/10
-  (4 reject flavours + 5 keep-traps incl. redirect-after-occlusion & real-toss &
-  real-ball-preceding-FP + 2 scale-free 2× invariance). Discriminating: with the
-  reject disabled (no-op) the corner-blob assertion FAILS.
-- **felix safe:** the reject is gated out of felix; the felix tests use their own
-  ported tracker/cache and are unaffected.
+- **New deterministic test GREEN:** `tests/test_static_fp_reject.py` — 13/13
+  (4 reject flavours + 8 keep-traps + 2 scale-free 2× invariance). Discriminating:
+  with the reject disabled (no-op) the corner-blob assertion FAILS.
+- **felix safe:** the reject (AND the off-frame nulling) is gated out of felix; the
+  felix tests use their own ported tracker/cache and are unaffected.
+
+### Adversarial self-review — 3 findings found and FIXED (before merge)
+A 4-agent adversarial review (correctness / safety / hardcoding) of the diff found
+three issues, all now closed with the live behaviour preserved (still 4 segments +
+10 off-frame removed, 0 GT lost, F1 0.556):
+1. **Cold-start could false-delete a real serve toss** (occluded at contact, struck
+   ball re-acquired far away). FIX: the cold-start exit must be measured to the
+   IMMEDIATELY ADJACENT frame (`adjacent_exit_jump`); a None gap before the exit ⇒
+   abstain ⇒ keep. A static FP is abandoned by a clean adjacent teleport (the live
+   (538,473) FP exits at f52, adjacent to f51); a real occluded apex has a gap. New
+   test `keep_serve_toss_first_lock_occluded_then_far_reacq`.
+2. **Double-cold via stale flag** — the cold rule could fire twice and delete a 2nd
+   (real) apex. FIX: a one-shot `cold_done` flag; the cold rule fires at most once.
+   New test `cold_start_fires_at_most_once`.
+3. **Running-mean freeze test accepted a slow-drifting real ball as frozen.** FIX:
+   the freeze test now anchors on the run's FIRST point (a fixed freeze_r ball), so a
+   ~5px/f drift leaves it and the run ends. New test
+   `keep_slow_drifting_real_ball_after_teleport`.
+Also fixed: the off-frame loop was outside the `_clean_path` block (code ≠ comment);
+it is now correctly nested so felix stays byte-identical.
 
 ---
 

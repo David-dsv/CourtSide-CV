@@ -101,6 +101,234 @@ class BallKalmanFilter:
         return float(np.hypot(x - pred[0][0], y - pred[1][0]))
 
 
+def reject_teleport_frozen_blobs(centers, frame_diag, fps,
+                                 jump_frac=0.15, hard_jump_frac=0.30,
+                                 freeze_frac=0.012, min_run_frac=0.16,
+                                 premotion_k=5, premotion_floor_frac=0.0008,
+                                 chain_gap_frac=0.10, chain_min_run=3,
+                                 cold_min_run_frac=0.30):
+    """Delete "teleport-then-frozen" static-FP blobs from a raw ball track.
+
+    The ball track can lock onto a static false positive (a corner blob / logo /
+    court mark): the trajectory ENTERS the cluster by a large single-frame jump
+    from the last valid ball position, then STAYS FROZEN there for many frames.
+    Such a frozen blob, read by vision/events.py `_direction_features`, fabricates
+    a `vy_flip` → a MANDATORY (un-skippable) BOUNCE anchor that floods the
+    alternation DP, so the event F1 swings run-to-run (the S6 "phantom bounces
+    that come and go"). Deleting the blob AT THE SOURCE fixes every downstream
+    consumer at once (events, bounce, speed, minimap) and is DETERMINISTIC.
+
+    THE TRAP (do not destroy real tracking): a REAL ball at an arc apex / serve
+    toss is ALSO near-frozen (it decelerates at the top of the arc — the ball GT
+    confirms ±5px frozen runs at apexes). A "frozen" reject ALONE would delete the
+    real ball. So a run is rejected only on a CONJUNCTION, never on frozenness:
+
+      FROZEN: >= min_run consecutive non-None centers within freeze_radius
+              (= freeze_frac*diag) of the running centroid, AND
+      one of:
+        (Tier 1) HARD TELEPORT: entry jump > hard_jump_frac*diag — a
+                 physically-impossible single-frame jump (no real ball covers
+                 30% of the frame diagonal in one frame); OR
+        (Tier 2) SOFT TELEPORT (entry jump > jump_frac*diag) AND the track was
+                 HEALTHILY MOVING just before the jump (mean inter-frame step of
+                 the premotion_k real centers ending at the entry >= a small
+                 motion floor). A real ball re-acquired AFTER A COAST enters from
+                 a near-frozen (decayed-prediction) state and is KEPT; only a
+                 healthy lock that suddenly teleports into a freeze is an FP.
+
+    A redirected real ball (occluded at contact, reappears travelling the other
+    way) is also kept: it KEEPS MOVING after re-acquisition, so it never forms a
+    >= min_run frozen run (the frozen requirement is the ultimate safety net).
+
+    EPISODE CHAINING: one FP capture is often a *compound* excursion — the track
+    teleports into a corner blob, freezes, then briefly latches a SECOND, shorter
+    frozen FP on the way back before re-acquiring the real ball (measured: the
+    f399-414 corner blob is followed by a 5-frame frozen FP @ (711,517) the base
+    rule misses for run_len < min_run). Leaving that short sub-blob lets the spline
+    reconnect through it and the phantom BOUNCE anchor simply MOVES to the episode
+    edge instead of vanishing. So after a core blob is deleted we keep absorbing
+    immediately-following SHORT frozen runs (>= chain_min_run, separated by <=
+    chain_gap frames) that are still TELEPORTS from the pre-episode real anchor,
+    until a run appears that is NOT a teleport from the anchor — a genuine
+    ballistic re-acquisition, which ends the episode and is kept.
+
+    COLD-START case (the dominant live FP): the track's VERY FIRST lock can be an
+    FP — there is no prior real point, so the teleport-ENTRY test cannot fire
+    (entry_jump is undefined). Measured live: the track latches a mid-court blob
+    @ (538,473) for 35 frames at clip start while the real ball is at the top of
+    frame (GT ~700px away), faking a cold-start BOUNCE and tanking cold-start
+    CORRECT. The separator vs a real cold-start apex/toss (which IS frozen too) is
+    the EXIT: a real ball LEAVES the frozen apex on a smooth arc (small exit jump),
+    while an FP is ABANDONED by a teleport when the track finally finds the real
+    ball elsewhere. So the FIRST real lock (no prior real point), frozen for a LONG
+    run (>= cold_min_run, longer than the normal floor — a real toss apex is
+    short), and EXITED by a teleport (> jump_frac*diag from the centroid to the
+    next real center) is rejected. The exit test is causal-safe here because this
+    is a buffered post-pass over the fully-built raw track. Restricted to the first
+    lock so a mid-clip real ball that merely PRECEDES an FP (its own teleport-out
+    is caused by the *next* segment) is never falsely deleted.
+
+    All thresholds are fractions of the frame diagonal / fps — no clip pixels.
+    Returns (cleaned_centers, deleted_blobs) where each blob is a dict for logging.
+    """
+    n = len(centers)
+    if n == 0:
+        return centers, []
+    jump_t = jump_frac * frame_diag
+    hard_jump_t = hard_jump_frac * frame_diag
+    freeze_r = freeze_frac * frame_diag
+    min_run = max(8, int(round(min_run_frac * fps)))
+    cold_min_run = max(min_run, int(round(cold_min_run_frac * fps)))
+    premotion_floor = premotion_floor_frac * frame_diag
+
+    chain_gap = max(2, int(round(chain_gap_frac * fps)))
+
+    def grow_frozen_run(s):
+        """Length + centroid of the maximal frozen run starting at index s.
+
+        Each point must stay within freeze_r of the run ANCHOR (the first point),
+        NOT a running mean. A running mean LAGS a steady slow drift, so a real ball
+        creeping ~5-7px/frame would keep the mean-distance under freeze_r and read
+        as "frozen" indefinitely (adversarial FINDING 2). Anchoring on the first
+        point bounds the whole run to a fixed freeze_r ball: a real drifting ball
+        leaves it after ~freeze_r/step frames and the run ends, so only a genuinely
+        pinned cluster reaches min_run.
+        """
+        ax, ay = float(centers[s][0]), float(centers[s][1])
+        sx, sy, cnt = ax, ay, 1
+        j = s + 1
+        while j < n and centers[j] is not None:
+            if np.hypot(centers[j][0] - ax, centers[j][1] - ay) <= freeze_r:
+                sx += centers[j][0]
+                sy += centers[j][1]
+                cnt += 1
+                j += 1
+            else:
+                break
+        return cnt, (sx / cnt, sy / cnt)
+
+    def adjacent_exit_jump(centroid, end_idx):
+        """Jump from a frozen-run centroid to the IMMEDIATELY ADJACENT next center.
+
+        Returns None if the run is the end of the track OR a gap (None) follows it.
+        The cold-start rule needs the exit to be ADJACENT (no intervening gap): a
+        static FP is ABANDONED by a clean single-frame teleport (the track jumps
+        straight from the frozen FP to the real ball on the very next frame — the
+        live (538,473) FP exits at f52, adjacent to f51). A real toss/apex that is
+        OCCLUDED at contact has a None gap before the struck ball re-appears far
+        away — the jump across that gap is ambiguous (the ball moved while
+        occluded), so we ABSTAIN (return None ⇒ no cold reject) and keep the real
+        ball. This closes the serve-toss false-delete found in adversarial review.
+        """
+        j = end_idx + 1
+        if j >= n or centers[j] is None:
+            return None
+        return np.hypot(centers[j][0] - centroid[0], centers[j][1] - centroid[1])
+
+    out = list(centers)
+    deleted = []
+    i = 0
+    last_real = None
+    last_real_idx = None
+    seen_real = False  # has the track locked a real (kept) point yet? (cold-start)
+    cold_done = False  # the one-shot cold-start slot has been used
+    while i < n:
+        c = centers[i]
+        if c is None:
+            i += 1
+            continue
+        run_len, centroid = grow_frozen_run(i)
+        entry_jump = (np.hypot(c[0] - last_real[0], c[1] - last_real[1])
+                      if last_real is not None else None)
+        # premotion = mean inter-frame step of the real centers ending at the
+        # entry point (a coast re-acquisition has a near-zero decayed step).
+        premotion = None
+        if last_real_idx is not None:
+            seq, k = [], last_real_idx
+            while k >= 0 and centers[k] is not None and len(seq) < premotion_k + 1:
+                seq.append(centers[k])
+                k -= 1
+            seq = seq[::-1]
+            if len(seq) >= 2:
+                steps = [np.hypot(seq[m + 1][0] - seq[m][0], seq[m + 1][1] - seq[m][1])
+                         for m in range(len(seq) - 1)]
+                premotion = float(np.mean(steps))
+
+        is_frozen = run_len >= min_run
+        is_teleport = entry_jump is not None and entry_jump > jump_t
+        is_hard_teleport = entry_jump is not None and entry_jump > hard_jump_t
+        is_healthy_before = premotion is not None and premotion >= premotion_floor
+        reject = is_frozen and (is_hard_teleport or (is_teleport and is_healthy_before))
+
+        # COLD-START: the FIRST real lock has no teleport-entry to test. Reject it
+        # iff it is a LONG freeze (>= cold_min_run) ABANDONED by an ADJACENT
+        # teleport (a real cold-start apex/toss leaves on a smooth arc → small exit
+        # jump; an occluded real apex has a None gap before re-acquisition → abstain).
+        # The cold rule may fire only ONCE — for the genuine first lock (last_real
+        # is None) AND before any earlier cold reject (cold_done). After a cold
+        # reject last_real is still None (the FP is not "real"), so without
+        # cold_done a SECOND frozen run — possibly a REAL occluded apex — could be
+        # re-cold-rejected (adversarial FINDING 1). cold_done closes that.
+        exit_jump = None
+        is_cold_start = False
+        if (not reject and last_real is None and not cold_done
+                and run_len >= cold_min_run):
+            exit_jump = adjacent_exit_jump(centroid, i + run_len - 1)
+            if exit_jump is not None and exit_jump > jump_t:
+                reject = True
+                is_cold_start = True
+
+        if reject:
+            for f in range(i, i + run_len):
+                out[f] = None
+            deleted.append({
+                "start": i, "end": i + run_len - 1, "len": run_len,
+                "centroid": (round(centroid[0], 1), round(centroid[1], 1)),
+                "entry_jump_frac": (None if entry_jump is None
+                                    else round(float(entry_jump) / frame_diag, 3)),
+                "exit_jump_frac": (None if exit_jump is None
+                                   else round(float(exit_jump) / frame_diag, 3)),
+                "premotion_px": None if premotion is None else round(premotion, 2),
+                "tier": ("cold" if is_cold_start
+                         else (1 if is_hard_teleport else 2)),
+            })
+            # the deleted blob is not "real" — keep last_real at the pre-blob ball
+            if is_cold_start:
+                cold_done = True  # one-shot: never cold-reject again this track
+            anchor = last_real
+            i = i + run_len
+            # EPISODE CHAINING: absorb trailing SHORT frozen sub-blobs that are
+            # still teleports from the pre-episode anchor (the same FP capture
+            # bouncing through more than one frozen spot before re-acquiring).
+            while i < n and anchor is not None:
+                g = 0
+                while i < n and centers[i] is None and g < chain_gap:
+                    i += 1
+                    g += 1
+                if i >= n or centers[i] is None:
+                    break
+                c2_len, c2_centroid = grow_frozen_run(i)
+                ej2 = np.hypot(centers[i][0] - anchor[0], centers[i][1] - anchor[1])
+                if c2_len >= chain_min_run and ej2 > jump_t:
+                    for f in range(i, i + c2_len):
+                        out[f] = None
+                    deleted.append({
+                        "start": i, "end": i + c2_len - 1, "len": c2_len,
+                        "centroid": (round(c2_centroid[0], 1), round(c2_centroid[1], 1)),
+                        "entry_jump_frac": round(float(ej2) / frame_diag, 3),
+                        "premotion_px": None, "tier": "chain",
+                    })
+                    i = i + c2_len
+                else:
+                    break  # ballistic re-acquisition — episode over
+        else:
+            last_real = c
+            last_real_idx = i
+            seen_real = True
+            i += 1
+    return out, deleted
+
+
 # Player identity is now handled by vision.player_track.TwoPlayerTracker (Pass 1.5):
 # persistent P1(far)/P2(near) lock + gap-fill + smoothing. The old 2-slot IoU
 # PlayerTracker was replaced by it.
@@ -1277,6 +1505,55 @@ def main():
         # frame would otherwise scale memory with clip length (~6 MB/frame at 1080p);
         # releasing here caps the peak to the detection pass, not the whole run.
         roi_frames = None
+
+        # ─── S6: reject "teleport-then-frozen" static-FP blobs (determinism) ───
+        # A transient corner/field FP the track can lock onto: the trajectory
+        # teleports into a frozen cluster (>0.15·diag jump → ≥0.16s frozen). Read
+        # by vision/events.py it fabricates a vy_flip → a MANDATORY BOUNCE anchor
+        # that floods the alternation DP and makes the event F1 swing run-to-run
+        # ("phantom bounces that come and go"). We delete it from the RAW track
+        # here, BEFORE the spline / is_real mask / dump / events consume it, so the
+        # fix is deterministic and reaches every downstream consumer. The reject is
+        # a strict conjunction (teleport-entry + frozen + healthy-moving-before),
+        # never "frozen alone" — a real apex/toss is also near-frozen but enters
+        # from a coast (low pre-jump motion) and is kept (see the function doc +
+        # tests/test_reinit_frozen_fp.py). GATED to the CLEAN-broadcast density
+        # path (like the ROI fallback): on a parasite-heavy oblique clip (felix)
+        # the far-court ball genuinely hovers near the baseline and a big apparent
+        # jump is real perspective motion, so the reject must not run there (it
+        # would delete real far-apex bounces — measured: 11 felix deletions incl.
+        # GT bounce f53). See docs/research/s6-balltrack-staticfp-CR.md.
+        if _clean_path:
+            raw_ball_centers, _s6_deleted = reject_teleport_frozen_blobs(
+                raw_ball_centers, frame_diag, fps)
+            if _s6_deleted:
+                logger.info(
+                    f"S6 static-FP reject: removed {len(_s6_deleted)} "
+                    f"teleport-then-frozen blob(s) "
+                    + ", ".join(f"f{b['start']}-{b['end']}@{b['centroid']}"
+                                f"(in {b['entry_jump_frac']} out {b.get('exit_jump_frac')}"
+                                f" ·diag, {b['tier']})"
+                                for b in _s6_deleted))
+
+            # ─── S6: reject OFF-FRAME coast predictions (determinism) ───
+            # When the ball leaves the frame (or the Kalman prediction diverges) the
+            # tracker coasts the prediction OFF the frame edge (measured: f150-153
+            # coast to y=-62..-359, hundreds of px above the top edge, then
+            # re-acquires the real ball). A real ball is ALWAYS within [0,W)×[0,H) —
+            # GT confirms every verified ball point is in-frame — so an off-frame
+            # center can never be correct and only feeds a fake direction reversal →
+            # a phantom BOUNCE (B@152 on the canonical clip). Null them: 0 GT points
+            # lost by construction. Clean-path gated (same block as the blob reject)
+            # so the felix bounce track stays byte-identical.
+            _s6_off = 0
+            for _f in range(len(raw_ball_centers)):
+                _c = raw_ball_centers[_f]
+                if _c is not None and (_c[0] < 0 or _c[1] < 0
+                                       or _c[0] >= frame_width or _c[1] >= frame_height):
+                    raw_ball_centers[_f] = None
+                    _s6_off += 1
+            if _s6_off:
+                logger.info(f"S6 off-frame reject: nulled {_s6_off} off-frame coast point(s)")
 
     # ─── CHANTIER 0: pre-spline real/interpolated mask (for the vx-flip veto) ───
     # The vx-flip bounce-vs-hit veto MUST read direction on the RAW tracker

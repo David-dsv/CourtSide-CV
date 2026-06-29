@@ -105,7 +105,8 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
                                  jump_frac=0.15, hard_jump_frac=0.30,
                                  freeze_frac=0.012, min_run_frac=0.16,
                                  premotion_k=5, premotion_floor_frac=0.0008,
-                                 chain_gap_frac=0.10, chain_min_run=3):
+                                 chain_gap_frac=0.10, chain_min_run=3,
+                                 cold_min_run_frac=0.30):
     """Delete "teleport-then-frozen" static-FP blobs from a raw ball track.
 
     The ball track can lock onto a static false positive (a corner blob / logo /
@@ -151,6 +152,22 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
     until a run appears that is NOT a teleport from the anchor — a genuine
     ballistic re-acquisition, which ends the episode and is kept.
 
+    COLD-START case (the dominant live FP): the track's VERY FIRST lock can be an
+    FP — there is no prior real point, so the teleport-ENTRY test cannot fire
+    (entry_jump is undefined). Measured live: the track latches a mid-court blob
+    @ (538,473) for 35 frames at clip start while the real ball is at the top of
+    frame (GT ~700px away), faking a cold-start BOUNCE and tanking cold-start
+    CORRECT. The separator vs a real cold-start apex/toss (which IS frozen too) is
+    the EXIT: a real ball LEAVES the frozen apex on a smooth arc (small exit jump),
+    while an FP is ABANDONED by a teleport when the track finally finds the real
+    ball elsewhere. So the FIRST real lock (no prior real point), frozen for a LONG
+    run (>= cold_min_run, longer than the normal floor — a real toss apex is
+    short), and EXITED by a teleport (> jump_frac*diag from the centroid to the
+    next real center) is rejected. The exit test is causal-safe here because this
+    is a buffered post-pass over the fully-built raw track. Restricted to the first
+    lock so a mid-clip real ball that merely PRECEDES an FP (its own teleport-out
+    is caused by the *next* segment) is never falsely deleted.
+
     All thresholds are fractions of the frame diagonal / fps — no clip pixels.
     Returns (cleaned_centers, deleted_blobs) where each blob is a dict for logging.
     """
@@ -161,6 +178,7 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
     hard_jump_t = hard_jump_frac * frame_diag
     freeze_r = freeze_frac * frame_diag
     min_run = max(8, int(round(min_run_frac * fps)))
+    cold_min_run = max(min_run, int(round(cold_min_run_frac * fps)))
     premotion_floor = premotion_floor_frac * frame_diag
 
     chain_gap = max(2, int(round(chain_gap_frac * fps)))
@@ -180,11 +198,21 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
                 break
         return cnt, (sx / cnt, sy / cnt)
 
+    def exit_jump_from(centroid, end_idx):
+        """Jump from a frozen-run centroid to the next real center after end_idx."""
+        j = end_idx + 1
+        while j < n and centers[j] is None:
+            j += 1
+        if j >= n:
+            return None
+        return np.hypot(centers[j][0] - centroid[0], centers[j][1] - centroid[1])
+
     out = list(centers)
     deleted = []
     i = 0
     last_real = None
     last_real_idx = None
+    seen_real = False  # has the track locked a real (kept) point yet? (cold-start)
     while i < n:
         c = centers[i]
         if c is None:
@@ -213,15 +241,30 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
         is_healthy_before = premotion is not None and premotion >= premotion_floor
         reject = is_frozen and (is_hard_teleport or (is_teleport and is_healthy_before))
 
+        # COLD-START: the FIRST real lock has no teleport-entry to test. Reject it
+        # iff it is a LONG freeze (>= cold_min_run) that is EXITED by a teleport (a
+        # real cold-start apex/toss leaves on a smooth arc → small exit jump).
+        exit_jump = None
+        is_cold_start = False
+        if not reject and not seen_real and run_len >= cold_min_run:
+            exit_jump = exit_jump_from(centroid, i + run_len - 1)
+            if exit_jump is not None and exit_jump > jump_t:
+                reject = True
+                is_cold_start = True
+
         if reject:
             for f in range(i, i + run_len):
                 out[f] = None
             deleted.append({
                 "start": i, "end": i + run_len - 1, "len": run_len,
                 "centroid": (round(centroid[0], 1), round(centroid[1], 1)),
-                "entry_jump_frac": round(float(entry_jump) / frame_diag, 3),
+                "entry_jump_frac": (None if entry_jump is None
+                                    else round(float(entry_jump) / frame_diag, 3)),
+                "exit_jump_frac": (None if exit_jump is None
+                                   else round(float(exit_jump) / frame_diag, 3)),
                 "premotion_px": None if premotion is None else round(premotion, 2),
-                "tier": 1 if is_hard_teleport else 2,
+                "tier": ("cold" if is_cold_start
+                         else (1 if is_hard_teleport else 2)),
             })
             # the deleted blob is not "real" — keep last_real at the pre-blob ball
             anchor = last_real
@@ -253,6 +296,7 @@ def reject_teleport_frozen_blobs(centers, frame_diag, fps,
         else:
             last_real = c
             last_real_idx = i
+            seen_real = True
             i += 1
     return out, deleted
 
@@ -1459,7 +1503,8 @@ def main():
                     f"S6 static-FP reject: removed {len(_s6_deleted)} "
                     f"teleport-then-frozen blob(s) "
                     + ", ".join(f"f{b['start']}-{b['end']}@{b['centroid']}"
-                                f"(jump {b['entry_jump_frac']}·diag, T{b['tier']})"
+                                f"(in {b['entry_jump_frac']} out {b.get('exit_jump_frac')}"
+                                f" ·diag, {b['tier']})"
                                 for b in _s6_deleted))
 
         # ─── S6: reject OFF-FRAME coast predictions (determinism) ───

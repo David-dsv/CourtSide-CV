@@ -1952,11 +1952,18 @@ def main():
             # spline track (tracker-independent, matching the cache recipe).
             from vision.bounce import detect_bounces_robust
             from vision.events import (
-                classify_events, detect_turning_points, detect_sharp_turns)
+                classify_events, detect_turning_points, detect_sharp_turns,
+                detect_near_court_knees)
             b_cands, _re, _nd = detect_bounces_robust(
                 all_ball_centers, ball_speeds_px, fps, frame_height, frame_width)
             turns = set(detect_turning_points(all_ball_centers, fps, frame_height))
             turns |= set(detect_sharp_turns(
+                raw_ball_centers, ball_is_real, fps, frame_width, frame_height))
+            # near-court grazing-bounce knees (S7): vy descends then settles without
+            # flipping — no y-extremum and no vy-flip, so the detectors above miss it
+            # (e.g. b174/b308). Gated to y>net_y; feeds turning_frames, the firewall
+            # still arbitrates BOUNCE vs HIT. See docs/research/s7-near-court-bounce-CR.md.
+            turns |= set(detect_near_court_knees(
                 raw_ball_centers, ball_is_real, fps, frame_width, frame_height))
             # PROXIMITY SOURCE = the LOCKED, gap-filled P1/P2 tracks (player_tracks),
             # reshaped per-frame to [near, far] — NOT the raw per-frame poses. This

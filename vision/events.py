@@ -131,6 +131,107 @@ def detect_sharp_turns(raw_centers, is_real, fps, frame_width, frame_height,
     pk, _ = find_peaks(ang, height=angle_deg, distance=dist)
     return sorted(int(f) for f in pk)
 
+
+def detect_near_court_knees(raw_centers, is_real, fps, frame_width, frame_height,
+                            net_y_frac=0.47, win_frac=0.06,
+                            desc_min_frac=0.012, settle_max_frac=0.010,
+                            drop_frac=0.6, min_gap_frac=0.12,
+                            teleport_frac=0.08):
+    """Candidate events from the NEAR-COURT vy 'knee' (grazing-bounce signature).
+
+    The measured generation gap (docs/research/s7-near-court-bounce-CR.md): the
+    near-court bounces b174 (38deg)/b308 (55deg) get NO candidate from any existing
+    generator. They are GRAZING bounces — the ball descends fast, the floor barely
+    redirects it, so its image-y keeps INCREASING (it never rises) → no y-extremum
+    (detect_turning_points blind) and no vy SIGN FLIP (detect_bounces_robust /
+    _direction_features blind). The velocity-vector turn angle is real but too soft
+    (38-55deg < the 70deg sharp-turn floor) AND, near the bottom of the frame, the
+    angle series is flat so find_peaks won't surface it as a prominent local peak
+    (measured: dropping detect_sharp_turns' angle floor alone recovers only 1/3 and
+    starts flooding the far court).
+
+    The signature that DOES separate them cleanly is the vy KNEE: vertical velocity
+    is strongly POSITIVE (descending) before the contact and SETTLES toward ~0 just
+    after, without a STRONG inversion (a clear floor-bounce flip lands outside the
+    settle band and is caught by the y-extremum / direction detectors). A mid-flight
+    ball has roughly constant vy (no knee). The settle band admits the grazing knee
+    plus the occasional mild-flip bounce — both real events; the firewall arbitrates
+    the label. We detect that directly and ONLY in the near court
+    (y > net_y, where the ball is large/sharp and this read is trustworthy), so we
+    never perturb the far court. Measured on the canonical clip: this fires exactly
+    on the 8 GT events present in the near court (incl. both targets b174/b308) with
+    ZERO spurious frames, and is stable across desc 0.008-0.015 / settle 0.008-0.012.
+
+    Reads the RAW pre-spline track + is_real mask (the same safety invariant as
+    detect_sharp_turns / the veto): each side's slope rests on a REAL detection, so
+    no knee is fabricated across an interpolated gap. A TELEPORT GUARD (below)
+    rejects a knee whose window contains a physically-impossible 1-frame jump — a
+    track glitch that would otherwise fake a descend-then-settle slope (the S3
+    anti-jitter lesson; measured to remove an off-GT live candidate at f291 while
+    keeping every real target). All thresholds are ratios of fps / frame_height —
+    no per-video constants. This FEEDS turning_frames; the firewall in
+    classify_events still decides BOUNCE vs HIT for each (a near-court racket
+    contact also decelerates the ball, so a knee is NOT auto-labeled bounce).
+
+    Returns a sorted list of candidate frame indices.
+    """
+    n = len(raw_centers)
+    if n < 7:
+        return []
+    k = max(2, round(fps * win_frac))
+    net_y = frame_height * net_y_frac
+    desc_min = desc_min_frac * frame_height      # clearly descending (vy>0)
+    settle_max = settle_max_frac * frame_height  # ~flat just after contact
+    min_drop = desc_min * drop_frac              # genuine deceleration, not slow-throughout
+    teleport = teleport_frac * frame_height      # impossible 1-frame ball jump = a glitch
+    cands = []
+    for f in range(k, n - k):
+        if not (is_real[f - k] and is_real[f] and is_real[f + k]):
+            continue
+        c0, c1, c2 = raw_centers[f - k], raw_centers[f], raw_centers[f + k]
+        if c0 is None or c1 is None or c2 is None:
+            continue
+        if c1[1] <= net_y:                       # NEAR-court only
+            continue
+        # TELEPORT GUARD (the S3 anti-jitter lesson, applied to the knee): a single
+        # frame whose vertical step is physically impossible (>teleport_frac of the
+        # frame height) is a track reinit / FP-blob jump, not a ball — its slope
+        # read fakes a descend-then-settle. Reject when ANY single-frame |dy| in the
+        # window exceeds the bound (real grazing knees stay <~4.5% fh; glitches
+        # measured >=17% fh — a 4x margin). Scale-free, no per-clip constant.
+        # Measured over CONSECUTIVE REAL (i, i+1) pairs only — NOT gated on a
+        # gap-free window: a track reinit is frequently flanked by missed detections
+        # (gaps), and gating the guard on an all-real window would silently disengage
+        # it exactly when a teleport is most likely (adversarial-review finding). A
+        # real consecutive pair across a teleport still exposes the impossible step.
+        max_step = 0.0
+        for i in range(f - k, f + k):
+            if (is_real[i] and is_real[i + 1]
+                    and raw_centers[i] is not None and raw_centers[i + 1] is not None):
+                step = abs(raw_centers[i + 1][1] - raw_centers[i][1])
+                if step > max_step:
+                    max_step = step
+        if max_step > teleport:
+            continue
+        vy_pre = (c1[1] - c0[1]) / k
+        vy_post = (c2[1] - c1[1]) / k
+        # descending fast, then settled near zero, NOT strongly inverted (a clear
+        # flip lands OUTSIDE the settle band — |vy_post| > settle_max — and is
+        # handled by the y-extremum / direction detectors; a mild residual descent
+        # or tiny over-shoot inside the band is admitted and the firewall arbitrates
+        # its BOUNCE/HIT label), and a genuine deceleration (drop magnitude floor).
+        if (vy_pre >= desc_min and abs(vy_post) <= settle_max
+                and (vy_pre - vy_post) >= min_drop):
+            cands.append(f)
+    # collapse adjacent firings (one physical contact) keeping the earliest
+    dist = max(1, int(fps * min_gap_frac))
+    ded = []
+    for f in cands:
+        if ded and f - ded[-1] <= dist:
+            continue
+        ded.append(f)
+    return ded
+
 # COCO wrist indices (racket hand is either; we take the nearer-to-ball one).
 _L_WRIST, _R_WRIST = 9, 10
 _KP_CONF = 0.30

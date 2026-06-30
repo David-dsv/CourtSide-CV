@@ -263,6 +263,7 @@ def _direction_features(f, raw_centers, is_real, fps, frame_width,
     min_netdx = min_netdx_frac * frame_width
 
     out = {"vx_flip": None, "vy_flip": None, "vx_pre": None, "vx_post": None,
+           "vy_pre": None, "vy_post": None, "airborne_apex": False,
            "speed_scale": 0.0}
 
     # gap guard per side
@@ -302,8 +303,23 @@ def _direction_features(f, raw_centers, is_real, fps, frame_width,
 
     vy_pre = _veto_slope(pre, 2)
     vy_post = _veto_slope(post, 2)
+    out["vy_pre"], out["vy_post"] = vy_pre, vy_post
     out["vy_flip"] = (vy_pre is not None and vy_post is not None
                       and vy_pre > 0 and vy_post < 0)
+    # AIRBORNE APEX = the y-MAX twin of vy_flip's y-MIN. A floor bounce is a y-MIN
+    # ("creux"): the ball DESCENDS into the floor (vy_pre>0, image-y increases
+    # downward) then ASCENDS (vy_post<0) — that's vy_flip above. An apex in flight
+    # is the opposite y-MAX ("sommet"): the ball RISES into the candidate (vy_pre<0)
+    # then comes back DOWN / settles (vy_post>=0). The ball never went down-then-up,
+    # so it is NOT a floor contact — it is the top of its parabolic arc. This is the
+    # sign-mirror of vy_flip (same half-window / gap / teleport guards), so it is
+    # scale-free: a y-MAX is a y-MAX at any resolution, no pixel threshold. vy_post
+    # admits 0 (a post-apex plateau on a noisy track reads ~0 under the Theil-Sen
+    # slope) — the discriminant is vy_pre<0 (the ball was unambiguously rising IN),
+    # which no real floor bounce shows (verified 0/9 GT bounces). classify_events
+    # uses this to forbid an airborne apex from being labeled BOUNCE.
+    out["airborne_apex"] = (vy_pre is not None and vy_post is not None
+                            and vy_pre < 0 and vy_post >= 0)
     return out
 
 
@@ -520,6 +536,44 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         feat = dict(mfeat[rep_fr])
         feat["dist_norm"] = dmin if dmin != float("inf") else 99.0
 
+        # ── AIRBORNE-APEX gate (S8): an apex IN FLIGHT (a y-MAX, the ball rises into
+        # the candidate then comes back down) is NOT a floor bounce — it's the top of
+        # the ball's arc. The phantom "rebond en haut / deep out compté" (hero f231:
+        # vy_pre=-5.7, vy_post~=0) is exactly this: a sharp-turn candidate at the arc
+        # apex that the alternation DP then parity-filled as a BOUNCE. It is the
+        # sign-MIRROR of the vy_flip floor bounce (a y-MIN, descend-then-ascend), read
+        # on the SAME half-window / gap / teleport guards as _direction_features, so
+        # it's scale-free (a y-MAX is a y-MAX at any resolution; no pixel threshold).
+        #
+        # CLUSTER-LEVEL, not rep-frame-level (the robustness fix). A frame in the
+        # RISING-OUT leg just AFTER a real floor bounce also reads apex (vy_pre<0 on
+        # the ascending leg, vy_post~=0 as it crests) — measured within ±8f of 4/9 GT
+        # bounces on both fixtures. The clean separator is the WHOLE cluster: a real
+        # floor-bounce cluster ALWAYS contains floor evidence — a vy_flip member
+        # (descend-then-ascend) OR a DESCENDING-IN member (vy_pre>0, the ball coming
+        # down to the contact). A pure airborne apex (the @231/cache-f288 phantom) has
+        # NEITHER: every readable member only rises-in then crests. So we gate the
+        # apex on (rep is apex) AND (no member of the cluster shows floor evidence).
+        # This survives the rep frame landing on the rising-out leg of a real bounce
+        # (that cluster still has its descending-in / vy_flip member → preserved). All
+        # sign-based; no magnitude threshold. Verified: fires on the hero f231 phantom
+        # + cache f288 phantom and on 0/9 GT bounces (every GT cluster has floor
+        # evidence). When an apex is confirmed we (1) force vy_bounce False so it can
+        # never auto-anchor as a MANDATORY pure BOUNCE (this MUST run before the vy
+        # anchor below, or the un-skippable anchor would corrupt the DP parity), and
+        # (2) strip its BOUNCE turn-evidence (turn_b) so the firewall's "need positive
+        # B evidence" gate (_reward) forbids BOUNCE structurally. A real near/far
+        # racket HIT at this apex still keeps its hit evidence and is placed as a HIT.
+        rep_apex = bool(feat.get("airborne_apex"))
+        cluster_floor_evidence = any(
+            mfeat[fr]["vy_flip"]
+            or (mfeat[fr]["vy_pre"] is not None and mfeat[fr]["vy_pre"] > 0)
+            for fr, _, _, _ in members)
+        airborne_apex = rep_apex and not cluster_floor_evidence
+        # `turn` for BOUNCE-evidence purposes: an airborne apex contributes NO bounce
+        # evidence (it is not a floor contact). It may still be a HIT (kept below).
+        turn_b = turn and not airborne_apex
+
         # ── vx-gate: a vy-flip that ALSO reverses HORIZONTAL direction is a racket
         # REDIRECT (a HIT), not a floor bounce. A clean floor bounce preserves vx
         # sign (vx_flip False/None) and only reverses vy; a struck ball reverses
@@ -532,7 +586,13 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         # track exposes it → confusion_H->B leaks. vx_flip is a numpy bool, so test
         # truthiness explicitly (np.True_ is True == False).
         _vxf = feat.get("vx_flip")
-        vy_bounce = bool(vy) and not (_vxf is not None and bool(_vxf))
+        # `and not airborne_apex`: a rep frame read as BOTH a vy-flip AND an arc apex
+        # is contradictory physics (descend-then-ascend vs rise-then-descend); the
+        # apex read (a clear rising-IN, vy_pre<0) wins — a real floor bounce never
+        # rises into the contact. This places the apex demotion BEFORE the vy anchor
+        # so the DP can skip it (a mandatory un-skippable anchor here would cascade).
+        vy_bounce = (bool(vy) and not (_vxf is not None and bool(_vxf))
+                     and not airborne_apex)
 
         # ── at-wrist corroboration gate (the vx-gate's sibling for the abstain case).
         # A vy-flip that is ALSO AT a wrist (dmin < near) is only a GOLD floor bounce
@@ -559,8 +619,14 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         # hit_like = ball at a wrist OR a swing, and NO floor rebound. This is the
         # LOGICAL firewall: a hit_like event can never be a bounce. (vy_bounce, not
         # raw vy: a redirect vy-flip no longer shields a hit from the firewall.)
+        # turn_b (apex-gated) replaces raw turn for ALL bounce-positive evidence:
+        # the firewall's "need positive B evidence" gate (_reward via e["turn"]) and
+        # the bscore turn term. An airborne apex therefore supplies ZERO bounce
+        # evidence — if it also has no bnc/vy, _reward(BOUNCE) returns None and the
+        # apex can NEVER be a bounce (the phantom @231 is dropped). It keeps its hit
+        # evidence (hit / dmin) so a real racket contact at an apex is still a HIT.
         hit_like = (hit or dmin < near) and not vy_bounce
-        bscore = (1.0 * vy_bounce + 0.6 * bnc + 0.6 * (turn and dmin >= near))
+        bscore = (1.0 * vy_bounce + 0.6 * bnc + 0.6 * (turn_b and dmin >= near))
         hscore = (1.0 * hit + 1.0 * (dmin < near) + 0.4 * (near <= dmin < far))
         anchor = None
         if vy_bounce:
@@ -571,7 +637,8 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
             "frame": rep_fr, "x": rep_xy[0], "y": rep_xy[1],
             "src": sorted(set(s for _, s, _, _ in members)),
             "hit_meta": rep_hm, "features": feat,
-            "hit": hit, "bnc": bnc, "turn": turn, "vy": vy_bounce, "dmin": dmin,
+            "hit": hit, "bnc": bnc, "turn": turn_b, "vy": vy_bounce, "dmin": dmin,
+            "apex": airborne_apex,
             "hit_like": hit_like, "bscore": bscore, "hscore": hscore,
             "anchor": anchor, "label": None,
         })

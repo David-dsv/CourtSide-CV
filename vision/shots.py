@@ -311,13 +311,13 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
         anchor = _player_anchor(me)
         # search the window for the ball position nearest the player's box center
         lo, hi = max(0, i - ball_win), min(n, i + ball_win + 1)
-        best_j, best_d = None, float("inf")
+        best_j, best_d, best_fr = None, float("inf"), None
         for j in range(lo, hi):
             if ball_centers[j] is None:
                 continue
             d = np.hypot(ball_centers[j][0] - anchor[0], ball_centers[j][1] - anchor[1])
             if d < best_d:
-                best_d, best_j = d, ball_centers[j]
+                best_d, best_j, best_fr = d, ball_centers[j], j
         if best_j is None:
             continue
         h = max(_player_height(me), 1.0)
@@ -332,7 +332,7 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
         # search above already located the contact; this gate only filters phantom
         # swings (split-step / follow-through / a tracker identity flip) where the
         # ball never came near the racket.
-        wmin = float("inf")
+        wmin, wmin_fr = float("inf"), None
         for j in range(lo, hi):
             if ball_centers[j] is None:
                 continue
@@ -342,11 +342,21 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
             wpos = wj[1]
             dw = np.hypot(ball_centers[j][0] - wpos[0], ball_centers[j][1] - wpos[1])
             if dw < wmin:
-                wmin = dw
+                wmin, wmin_fr = dw, j
         if wmin != float("inf") and wmin / h > wrist_prox_max:
             continue  # ball never reached the racket wrist → phantom swing, not a hit
-        contact_frame = j
-        ball_pos = best_j
+        # CONTACT FRAME = the argmin of the ball↔wrist search (the frame where the
+        # ball actually reaches the racket), falling back to the ball↔torso argmin
+        # when no wrist was readable in the window. This was `contact_frame = j`
+        # before — the leftover loop variable, i.e. the LAST frame of the window
+        # (~+0.2s after the peak, itself already lagging contact): every hit
+        # candidate carried a systematic ~10-15 frame LATE bias. That bias is why
+        # placed hits shadowed the true contacts (pred @487 for the GT hit @468,
+        # pred @65 for a swing whose ball-closest frame is ~15f earlier) — the
+        # events DP then had to choose between a mistimed candidate and none.
+        contact_frame = wmin_fr if wmin_fr is not None else best_fr
+        ball_pos = (ball_centers[contact_frame]
+                    if ball_centers[contact_frame] is not None else best_j)
         # re-attribute at the contact frame (player pose there is what we classify on)
         players = players_per_frame[contact_frame] if contact_frame < len(players_per_frame) else players_at_i
         best, bestd, best_anchor = None, float("inf"), anchor

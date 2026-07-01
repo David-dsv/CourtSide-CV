@@ -615,30 +615,71 @@ def classify_events(bounce_cands, hit_cands, raw_centers, is_real,
         if vy_bounce and dmin < near and not bnc:
             vy_bounce = False
 
+        # ── contact-corroborated swing: a swing is only HIT evidence if the ball
+        # corroborates a CONTACT. detect_hits self-reports wrist-speed peaks;
+        # _prox_xy already measures proximity at the TRACKED BALL (the independent
+        # signal). A real racket contact has the ball AT the wrist (dmin < near,
+        # in box-heights — measured: every real GT hit cluster reads <= 0.49); a
+        # swing whose measured ball never comes closer than `near` is NOT a
+        # contact — it is a practice/preparation swing, a follow-through, or pose
+        # noise whose ball-closest frame often lands ON a nearby floor bounce
+        # (the ball approaches the waiting player, bounces ~0.5-1.5 box-heights
+        # away, and only THEN gets struck): crediting that swing flips the bounce
+        # cluster hit_like and kills the real bounce (live b174/b308/b569). So
+        # contact geometry (< near_wrist), not mere vicinity, is what makes a
+        # swing count. When the ball is untracked at every member (dmin
+        # unmeasured = inf) we conservatively keep the swing (absence of evidence
+        # is not evidence of absence — sparse-track cold starts keep their hits).
+        hit_eff = hit and (dmin == float("inf") or dmin < near)
+
+        # ── airborne apex carries NO contact evidence either (the HIT twin of the
+        # S8 bounce gate): a confirmed apex is the crest of an UNDISTURBED ballistic
+        # arc — a racket contact would have broken the arc, and the ball would sit
+        # AT a wrist. So an apex cluster whose ball is off every wrist (dmin >=
+        # near_wrist) supplies zero hit evidence (a real smash AT the apex keeps
+        # dmin < near and stays a HIT). Kills the outgoing-arc shadow ~0.3-0.4s
+        # after a real far hit (e.g. f411, the shadow of the GT hit @394) that the
+        # k-flexible decoder below could otherwise adopt as a spurious HIT.
+        if airborne_apex and dmin >= near:
+            hit_eff = False
+
         # ── scores + firewall predicate ──
-        # hit_like = ball at a wrist OR a swing, and NO floor rebound. This is the
-        # LOGICAL firewall: a hit_like event can never be a bounce. (vy_bounce, not
-        # raw vy: a redirect vy-flip no longer shields a hit from the firewall.)
-        # turn_b (apex-gated) replaces raw turn for ALL bounce-positive evidence:
-        # the firewall's "need positive B evidence" gate (_reward via e["turn"]) and
-        # the bscore turn term. An airborne apex therefore supplies ZERO bounce
-        # evidence — if it also has no bnc/vy, _reward(BOUNCE) returns None and the
-        # apex can NEVER be a bounce (the phantom @231 is dropped). It keeps its hit
-        # evidence (hit / dmin) so a real racket contact at an apex is still a HIT.
-        hit_like = (hit or dmin < near) and not vy_bounce
+        # hit_like = ball at a wrist OR a corroborated swing, and NO floor rebound.
+        # This is the LOGICAL firewall: a hit_like event can never be a bounce.
+        # (vy_bounce, not raw vy: a redirect vy-flip no longer shields a hit from
+        # the firewall.) turn_b (apex-gated) replaces raw turn for ALL bounce-
+        # positive evidence: the firewall's "need positive B evidence" gate
+        # (_reward via e["turn"]) and the bscore turn term. An airborne apex
+        # therefore supplies ZERO bounce evidence — if it also has no bnc/vy,
+        # _reward(BOUNCE) returns None and the apex can NEVER be a bounce (the
+        # phantom @231 is dropped). hit_eff (ball-corroborated) replaces raw hit
+        # everywhere: a discredited swing supplies zero HIT evidence too, so the
+        # phantom-swing clusters (ball measured far) can no longer soak up the
+        # alternation DP's hit slots and displace the real contacts — that
+        # displacement was the whole left-chain corruption (pred HIT@65 while the
+        # real GT hit @81 sat in an unlabelable cluster).
+        hit_like = (hit_eff or dmin < near) and not vy_bounce
         bscore = (1.0 * vy_bounce + 0.6 * bnc + 0.6 * (turn_b and dmin >= near))
-        hscore = (1.0 * hit + 1.0 * (dmin < near) + 0.4 * (near <= dmin < far))
+        hscore = (1.0 * hit_eff + 1.0 * (dmin < near) + 0.4 * (near <= dmin < far))
+        # redirect = the ball's horizontal direction REVERSES at a wrist. vx-flip
+        # at a racket is HIT physics (the felix-proven vx_flip_veto: a floor bounce
+        # PRESERVES vx sign); _reward uses it to unlock HIT for a bounce-candidate
+        # cluster that is really a contact (the bounce detector often fires on the
+        # sharp direction change a racket induces, e.g. the GT hit @81).
+        _vxf_r = feat.get("vx_flip")
+        redirect = (_vxf_r is not None and bool(_vxf_r) and dmin < near)
         anchor = None
         if vy_bounce:
             anchor = BOUNCE                       # vy-flip (vx preserved) = floor bounce
-        elif hit and dmin < near:
+        elif hit_eff and dmin < near:
             anchor = HIT                          # swing WITH ball at racket
         evs.append({
             "frame": rep_fr, "x": rep_xy[0], "y": rep_xy[1],
             "src": sorted(set(s for _, s, _, _ in members)),
             "hit_meta": rep_hm, "features": feat,
-            "hit": hit, "bnc": bnc, "turn": turn_b, "vy": vy_bounce, "dmin": dmin,
-            "apex": airborne_apex,
+            "hit": hit_eff, "bnc": bnc, "turn": turn_b, "vy": vy_bounce, "dmin": dmin,
+            "apex": airborne_apex, "redirect": redirect,
+            "at_wrist": dmin < near,
             "hit_like": hit_like, "bscore": bscore, "hscore": hscore,
             "anchor": anchor, "label": None,
         })
@@ -702,8 +743,25 @@ def _reward(e, lab, keep):
             return None                                   # need positive B evidence
         return keep + e["bscore"]
     else:  # HIT
-        if e["vy"] or (e["bnc"] and not e["hit"]):
+        # redirect exception: a bounce-candidate WITHOUT a swing normally forbids
+        # HIT (a clear bounce), but when the ball's horizontal direction REVERSES
+        # at a wrist (redirect) the "bounce" candidate is really the sharp turn a
+        # RACKET induced — a floor bounce preserves vx (felix-proven vx physics),
+        # so vx-flip + ball-at-wrist is hit evidence, not bounce evidence. Without
+        # this, the real contact cluster is unlabelable (hit_like forbids BOUNCE,
+        # bnc-without-swing forbids HIT) and the DP is forced to place the hit on
+        # a nearby phantom instead (the GT hit @81 / pred @65 failure).
+        if e["vy"] or (e["bnc"] and not e["hit"] and not e["redirect"]):
             return None                                   # FIREWALL (B->H guard)
+        # positive H evidence = contact geometry (ball AT a wrist, < near_wrist)
+        # or a ball-corroborated swing. The weak mid-band proximity term (0.4,
+        # near<=dmin<far = "nearby-ish") can STRENGTHEN a hit but never CREATE
+        # one — standalone it is just the ball passing within ~a body length of
+        # a player (every rally does this constantly), and with the k-flexible
+        # parity it would let cold-start ghosts (f12) and outgoing-arc apex
+        # shadows (f411) be adopted as spurious HITs.
+        if not (e["hit"] or e["at_wrist"]):
+            return None                                   # need positive H evidence
         return keep + e["hscore"]
 
 
@@ -742,22 +800,37 @@ def _global_alternation_decode(evs, step, keep, lam, miss_cost, anchor_bonus=3.0
                 if r is None:
                     continue
                 if ll is None:
-                    add, ok = r, True
+                    add = r
                 else:
                     gap = e["frame"] - lf
-                    k = max(1, round(gap / step))
-                    flip = (k % 2 == 1)
+                    # The beat count k is an ESTIMATE from a noisy cadence prior,
+                    # not a measurement — real rally gaps range ~0.5-2.3 beats
+                    # (a half-volley 12f after the bounce; a slow cross-court
+                    # flight of 62f). Quantizing to the single nearest integer
+                    # makes parity a knife-edge: a true consecutive pair (k=1)
+                    # whose gap reads 1.56 beats gets rounded to k=2 and its
+                    # correct label FORBIDDEN (the GT hit@468 lost to the phantom
+                    # @487; H@81->B@120 illegal once the phantom glue @108 died).
+                    # So consider BOTH bracketing beat counts and keep the best
+                    # parity-legal one — the timing penalty |gap-k*step| still
+                    # prices how far the chosen k strays, so well-timed chains
+                    # keep winning; this only stops the rounding itself from
+                    # hard-forbidding the truth. Alternation stays enforced.
                     same = (lab == ll)
-                    if same and k == 1:
-                        ok = False           # immediate repeat: forbidden
-                    elif (not same) == flip:
-                        ok = True
-                    else:
-                        ok = False           # parity violated
-                    if not ok:
-                        continue
-                    pen = lam * abs(gap - k * step) / step + miss_cost * (k - 1)
-                    add = r - pen
+                    k_lo = max(1, int(gap // step))
+                    k_hi = max(1, int(-((-gap) // step)))
+                    add = None
+                    for k in sorted({k_lo, k_hi}):
+                        if same and k == 1:
+                            continue         # immediate repeat: forbidden
+                        if (not same) != (k % 2 == 1):
+                            continue         # parity violated for this k
+                        pen = (lam * abs(gap - k * step) / step
+                               + miss_cost * (k - 1))
+                        if add is None or r - pen > add:
+                            add = r - pen
+                    if add is None:
+                        continue             # no parity-legal beat count
                 key = (lab, e["frame"])
                 val = sc + add
                 cur = nstates.get(key)

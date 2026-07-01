@@ -26,7 +26,8 @@ sys.path.insert(0, str(ROOT))
 from vision.bounce import smooth_ball_trajectory, detect_bounces_robust  # noqa: E402
 from vision.shots import detect_hits  # noqa: E402
 from vision.events import (  # noqa: E402
-    classify_events, detect_turning_points, detect_sharp_turns)
+    classify_events, detect_turning_points, detect_sharp_turns,
+    detect_near_court_knees)
 from tools.event_eval.event_eval import match_events, scores  # noqa: E402
 
 CACHE = ROOT / "tests" / "fixtures" / "cache" / "demo3_event.json"
@@ -35,15 +36,22 @@ GT_S = ROOT / "tests" / "fixtures" / "shots" / "tennis_demo3.shots.json"
 
 # Floors locked at the measured methodology numbers with a small noise margin.
 # confusion_H->B is a HARD 0 (the user's bug, non-negotiable) and confusion_B->H
-# is also held at 0. The far-court apex-bounce candidate generator
-# (detect_sharp_turns, feat/ball-tracking-density) recovers GT bounces 120 & 369
-# into the pool, lifting bounce recall 4/9 -> 8/9: bounce F1 0.533 -> 0.842, hit
-# F1 0.667 -> 0.632 (3 pre-existing tail wrist-peak hit-candidates promoted by the
-# shifted alternation cadence; net strongly positive). Firewall H->B/B->H stay 0.
+# is also held at 0.
+#
+# 2026-07-01 — cache REBUILT from a live canonical dump (scripts/
+# rebuild_demo3_event_cache_from_dump.py): the old freeze predated farselect +
+# ball-density and put real contacts 2+ box-heights from the ball, so it
+# punished any rule that trusts the proximity measurement while live improved
+# (the "cache lies" trap, docs/PM-HANDOFF.md §4). On the rebuilt cache the
+# replay equals the measured LIVE run (score_stats.py on runs E/F): bounce F1
+# 0.941 (P=1.0), hit F1 0.857 (P=1.0), confusion 0/0, 0 spurious — the
+# contact-corroborated hit evidence + redirect exception + k-flexible parity
+# (vision/events.py) and the argmin contact-frame fix + locked-pose hits
+# (vision/shots.py, run_pipeline_8s.py). Floors raised to lock the gain.
 CONF_HtoB_MAX = 0
 CONF_BtoH_MAX = 0
-BOUNCE_F1_FLOOR = 0.80
-HIT_F1_FLOOR = 0.60
+BOUNCE_F1_FLOOR = 0.90
+HIT_F1_FLOOR = 0.80
 
 
 def evaluate():
@@ -64,7 +72,10 @@ def evaluate():
     # far-court apex bounces (no y-extremum but a sharp velocity-vector turn),
     # read on the RAW pre-spline track + is_real mask:
     sharp = detect_sharp_turns(kal, kal_real, fps, fw, fh)
-    turns = sorted(set(turns) | set(sharp))
+    # near-court grazing-bounce knees (S7) — prod derives these too; the test
+    # mirrors run_pipeline_8s.py's candidate pool exactly.
+    knees = detect_near_court_knees(kal, kal_real, fps, fw, fh)
+    turns = sorted(set(turns) | set(sharp) | set(knees))
     hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=[])
     events, report = classify_events(
         b_cands, hits, kal, kal_real, ppf, fps, fw, fh,

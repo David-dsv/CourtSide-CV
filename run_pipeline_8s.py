@@ -1928,7 +1928,27 @@ def main():
         # path keeps using the RAW per-frame poses + an un-gated candidate set
         # (unchanged from before this branch).
         if event_methodo:
-            hits = detect_hits(all_ball_centers, players_per_frame, fps,
+            # HIT candidates from the LOCKED, gap-filled P1/P2 tracks — the same
+            # source classify_events uses for proximity (see methodo_ppf below).
+            # The RAW per-frame poses were kept here for compatibility with the
+            # pre-farselect world, but the far player's raw wrists are too sparse/
+            # noisy to time far-court swings: on the demo3 GT the raw-pose swing
+            # for the far hit @394 lands at dmin 0.71 (discredited) while the
+            # locked-track swing lands @396 at contact-grade dmin (< near_wrist).
+            # Locked tracks are denser AND better localized (far-select 0.9%→100%),
+            # so the candidate generator and the arbitration finally read the same
+            # players.
+            methodo_ppf = []
+            for i in range(max_frames):
+                near = player_tracks[2][i] if i < len(player_tracks[2]) else None
+                far = player_tracks[1][i] if i < len(player_tracks[1]) else None
+                slot = []
+                if near is not None:
+                    slot.append(near)
+                if far is not None:
+                    slot.append(far)
+                methodo_ppf.append(slot)
+            hits = detect_hits(all_ball_centers, methodo_ppf, fps,
                                frame_height, frame_width, bounce_frames=bset)
         else:
             hits = detect_hits(all_ball_centers, locked_ppf, fps,
@@ -1973,16 +1993,7 @@ def main():
             # pose to exist, and gap-fill is what bridges the tiny far player's
             # missed frames (raw far coverage is far lower). Feeding raw poses here
             # starves the firewall and lets far-court hits leak to BOUNCE.
-            methodo_ppf = []
-            for i in range(max_frames):
-                near = player_tracks[2][i] if i < len(player_tracks[2]) else None
-                far = player_tracks[1][i] if i < len(player_tracks[1]) else None
-                slot = []
-                if near is not None:
-                    slot.append(near)
-                if far is not None:
-                    slot.append(far)
-                methodo_ppf.append(slot)
+            # (methodo_ppf itself is built above, where detect_hits consumes it.)
             # DIAGNOSTIC (inert unless COURTSIDE_DUMP_METHODO_INPUTS is set): dump
             # the EXACT live classify_events inputs so the prod-vs-cache event
             # divergence can be replayed offline candidate-by-candidate. No behavior
@@ -2021,6 +2032,12 @@ def main():
                               "y": int(h["y"]), "player_side": h.get("player_side")}
                              for h in hits],
                     "methodo_ppf": _ser_ppf(methodo_ppf),
+                    # replay completeness: detect_hits' exact inputs (the legacy
+                    # bounce set feeding its bounce_guard + the RAW per-frame
+                    # poses it consumes) so offline replays can recompute the
+                    # hit candidates prod-faithfully after a shots.py change.
+                    "hits_bset": sorted(int(b) for b in (bset or [])),
+                    "raw_ppf": _ser_ppf(players_per_frame),
                 }
                 Path(_dump_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(_dump_path, "w") as _mf:

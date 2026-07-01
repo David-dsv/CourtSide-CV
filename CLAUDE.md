@@ -40,11 +40,11 @@ Each feature of the canonical pipeline (`run_pipeline_8s.py`) and its current st
 | **Cinematic FX** | ✅ Done | `vision/fx.py`: additive bloom, comet trail, glassmorphism HUD/panels, shockwave (bounce), broadcast speed gauge, live stat card, INFERNO placement heatmap, glow marker. Wired into Pass 2 (`--no-fx` to disable). Pure cv2+numpy+PIL, no GPU. |
 | **2D minimap (COURT RADAR)** | ✅ Done | `vision/minimap.py`: premium glassmorphism top-down radar — glow ball trajectory, depth-coded bounce dots + placement heat, P1/P2 player pucks, metric-exact vs `~` approximate flag. Projects via the (calibration) homography. `--no-minimap` to disable. |
 | Ball tracking (WASB heatmap) | ✅ Done (broadcast) | `--ball-tracker wasb`: WASB heatmap-temporal tracker (`models/wasb_ball_tracker.py`, MIT). Dense trajectory (84% coverage vs Kalman's collapse). **Needs ImageNet normalization** in preprocessing. Default stays `kalman`. |
-| **Bounce detection** | ✅ Done (broadcast) | Two detectors in `vision/bounce.py`: curve-fit (kalman path) + robust (WASB path: despike + IRLS + energy hit/bounce test). felix GT F1 **0.83 end-to-end (WASB) / 0.67 (Kalman)**, was 0.30. Both regression-tested. |
-| **Unified event arbitration** | 🔧 Wired, gated OFF | `--event-methodo`: replaces the two independent detectors with `vision/events.py` `classify_events` (merge candidates → score-free firewall → rally-alternation DP) inserted after Pass 1.5. **OFF (default) = legacy path byte-identical** (proven vs pre-wiring HEAD). On the demo3 cache it gives bounce F1 0.84 + confusion 0/0, but **in prod the gain does NOT fully reproduce**: the firewall needs dense FAR-player pose (cache 78% vs prod's TwoPlayerTracker 23.4%), so far-court hits leak to BOUNCE (confusion ≠ 0). Keep OFF until far-pose density improves (tracker far-slot, not the pose backend — RTMW tested, no change). See `docs/research/wire-event-methodo-CR.md`. |
-| Bounce depth classification | 🔧 In progress | deep/mid/short — accurate via homography meters when available; geometric fallback otherwise. |
-| Shot quality score | ⏸️ Later | Q = speed_norm + depth_norm — revisit after bounce detection is solid |
-| Forehand/backhand classification | ⏸️ Later | Geometric detector exists but rudimentary, ML model not trained |
+| **Bounce detection** | ✅ Done (broadcast) | Two detectors in `vision/bounce.py`: curve-fit (kalman path) + robust (WASB path: despike + IRLS + energy hit/bounce test). felix GT end-to-end F1 **0.865, recall 16/16 (WASB) / 0.65 (Kalman)**. Both regression-tested. |
+| **Unified event arbitration** | ✅ Done (default ON) | `--event-methodo` (default): `vision/events.py` `classify_events` — candidate merge → contact-corroborated evidence (a swing counts only with the ball at a wrist) → score-free firewall → k-flexible rally-alternation DP. **demo3 LIVE: 17/17 events (bounce F1 0.947, hit F1 0.941, both R=1.000), confusion 0/0, zero phantom markers**; even detects the (un-annotated) serve. `--no-event-methodo` = legacy. See `docs/research/accuracy-overhaul-CR.md`. |
+| Bounce depth classification | ✅ Done (with H) | deep/mid/short — metric via homography meters when available; geometric fallback otherwise. `_stats.json` now also emits `homography_H` (image→court-meters, minimap convention) for the front. |
+| Shot quality score | ✅ Done | Q = 0.4·speed_norm + 0.6·depth_norm per bounce/shot, surfaced in HUD + stats + web. |
+| Forehand/backhand classification | ✅ Done (geometric) | S5 composite (ball_dx + voted handedness + cross-body abstain): confusion FH↔BH 0, abstains honestly (`unknown`). ML model still not needed. |
 
 ### Current Priority
 **Oblique/amateur angles now have a metric path via semi-auto calibration.** The oblique-angle homography gap is closed pragmatically: `models/court_calibrator.py` + `tools/calibrate_court.py` let a static-camera clip be calibrated ONCE (click the court corners) → exact metric homography for every frame, unblocking the minimap, real km/h and bounce depth on felix-style angles. This is the deployable SaaS path (the amateur films on a tripod).
@@ -82,11 +82,17 @@ python tools/bounce_eval/eval_bounces.py --pred preds.json --truth tests/fixture
 ### Tests
 
 ```bash
-# Fast bounce-accuracy regression (no GPU / no video decode; ~seconds)
-python tests/test_bounce_regression.py        # asserts felix bounce F1 >= 0.72
+# Full fast suite (no GPU / no video decode; cache-replay fixtures)
+for t in tests/test_*.py; do venv/bin/python -B $t || echo "FAIL $t"; done
+# Key guardrails: test_bounce_regression (felix kalman >= 0.72),
+# test_bounce_wasb_regression (>= 0.80), test_event_confusion_regression
+# (confusion 0/0 HARD + bounce F1 >= 0.90 / hit >= 0.80 on the live-rebuilt
+# demo3 cache), test_shots_regression, test_far_coverage, ...
 ```
 
-There are no automated tests in this repository.
+⚠️ The demo3 caches must be REBUILT from a live dump after any pose/tracking/
+candidate change (`scripts/rebuild_demo3_event_cache_from_dump.py`) — a frozen
+cache diverges from the live track and lies in both directions.
 
 ## Architecture (run_pipeline_8s.py)
 

@@ -111,3 +111,7 @@ venv
 # Pose-GT annotator: extracted frames (regenerable) + editor backups
 tests/fixtures/pose_gt/frames_demo3/
 tests/fixtures/pose_gt/*.bak
+
+# Ball-GT annotator: extracted frames (regenerable) + editor backups
+tests/fixtures/ball_gt/frames_demo3/
+tests/fixtures/ball_gt/*.bak

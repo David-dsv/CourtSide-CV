@@ -2619,7 +2619,6 @@ def main():
             if cur_idx != hud_rally_idx:
                 hud_rally_idx = cur_idx
                 peak_speed = 0.0        # RESET: new échange → fresh peak
-            peak_speed = max(peak_speed, current_speed if bc is not None else 0.0)
 
             rally_live = False          # is the current rally still in progress?
             if hud_rally_idx is not None and hud_rally_idx < len(rallies_rel):
@@ -2634,6 +2633,19 @@ def main():
                            if r_start <= f <= frame_idx and shot_by_frame[f]["fhb"] == "backhand")
                 n_strikes = sum(1 for f in r["shot_frames"] if r_start <= f <= frame_idx)
                 n_bounce = sum(1 for f in r["bounce_frames"] if r_start <= f <= frame_idx)
+                # "Balle max" = the fastest EVENT speed of this rally so far
+                # (shot/bounce speeds are already windowed averages — the same
+                # numbers the _stats.json and the web read). The raw per-frame
+                # series max was spiky even under a short display median (a
+                # 3-frame homography-amplified jitter printed 194-224 km/h on a
+                # ~105 km/h rally); event speeds are robust by construction and
+                # keep the card consistent with every other surface.
+                ev_speeds = (
+                    [shot_by_frame[f]["speed"] for f in r["shot_frames"]
+                     if r_start <= f <= frame_idx and f in shot_by_frame]
+                    + [bounce_by_frame[f][3] for f in r["bounce_frames"]
+                       if r_start <= f <= frame_idx and f in bounce_by_frame])
+                peak_speed = max([s for s in ev_speeds if s], default=0.0)
                 rally_no = hud_rally_idx + 1
                 # outcome only once the point is OVER (don't reveal mid-rally)
                 rally_live = frame_idx < r["end_frame"]

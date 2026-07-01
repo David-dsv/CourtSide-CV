@@ -257,7 +257,30 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
     cands = []  # (frame, side, wrist_speed, player_idx, anchor, wrist_y)
     amp_floor = _adaptive_threshold(None, frame_height, fps)
     fwhm_min = max(3, int(fps * 0.06))  # ~3 frames @50fps = min real-swing width
+    # Per-side amplitude floor, scaled by the side's APPARENT player size.
+    # Wrist speeds are measured in pixels, and pixels scale with the player's
+    # projected size: the far player's whole swing spans about half the pixels
+    # of the near player's (measured demo3: far median wrist speed 3.6 px/f vs
+    # near 7.4). A single frame-scaled floor is therefore blind to the far
+    # player — the far GT swing @141 peaks at 7.57 px/f with FWHM 19 (an
+    # unambiguous bio-mechanical swing) UNDER the 8.64 floor. Scaling the floor
+    # by (side's median box height / tallest side's median box height) keeps
+    # the LARGEST player's floor byte-identical (near behavior unchanged) and
+    # lowers the smaller player's floor by pure perspective proportionality —
+    # no new constant. Jitter stays rejected by the FWHM gate (a 1-2 frame
+    # spike can't be 3+ frames wide), which was always the real discriminator.
+    med_box_h = {}
     for side in ("near", "far"):
+        hs = []
+        for slot in players_per_frame:
+            for p in (slot or []):
+                if p is not None and _side_of(p, net_y) == side:
+                    hs.append(_player_height(p))
+        med_box_h[side] = float(np.median(hs)) if hs else 0.0
+    tallest = max(med_box_h.values()) or 1.0
+    for side in ("near", "far"):
+        scale = (med_box_h[side] / tallest) if med_box_h[side] > 0 else 1.0
+        side_floor = amp_floor * scale
         speed, wrist_xy = _wrist_speed_series(
             players_per_frame, side, handed[side], net_y, fps)
         # local maxima: low amplitude floor (sub-pixel noise) + FWHM gate (a real
@@ -265,7 +288,7 @@ def detect_hits(ball_centers, players_per_frame, fps, frame_height, frame_width,
         # swap ~2 — both rejected here even at huge amplitude)
         i = 1
         while i < n - 1:
-            if (not np.isnan(speed[i]) and speed[i] >= amp_floor
+            if (not np.isnan(speed[i]) and speed[i] >= side_floor
                     and speed[i] >= speed[i - 1] and speed[i] > speed[i + 1]
                     and _fwhm_at(speed, i) >= fwhm_min):
                 cands.append((i, side, float(speed[i]), wrist_xy))

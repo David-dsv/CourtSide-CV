@@ -450,18 +450,24 @@ def estimate_players_pose(detector, pose_model, frame, device,
     if track_state is not None:
         above_net = [((b[0] + b[2]) / 2.0, b[3]) for b in pboxes if b[3] < net_y]
         _observe_static_spots(track_state, above_net, fw)
-    # Adaptive court band when court_zones are unavailable (the keypoint detector
-    # misses some broadcast framings): derive the vertical court extent from the
-    # detected person boxes themselves rather than a magic 0.32*H threshold. The
-    # far player's feet set the top, the near player's feet set the bottom. The
-    # pre-filter already dropped extreme-margin/over-wide boxes, so the remaining
-    # feet_y span is a good proxy for the court surface band. (Zero-hardcoding:
-    # derived from the scene, not a fixed frame fraction.)
+    # Adaptive court band — ALWAYS derived from the detected person boxes (the
+    # far player's feet set the top, the near player's feet set the bottom; the
+    # pre-filter already dropped extreme-margin/over-wide boxes). Zero-
+    # hardcoding: the band is the scene's own playable extent.
+    #
+    # It deliberately takes precedence over a court_zones-derived band too: the
+    # zones rectangle is the ITF COURT ONLY, which ends AT the baselines — but
+    # players legally play from the RUN-OFF behind them. With a precise
+    # homography (--homography / calibration) the projected court box is so
+    # exact that "feet inside court + 4% frame" REJECTED the real near player
+    # standing 1-2 m behind the baseline (feet y=997 vs court bottom 810+43 on
+    # the hero clip) — every near candidate failed is_valid_player and the
+    # locked near track came out empty (no near hits, events starved). Zones
+    # keep providing net_y (the side split); the BAND comes from the scene.
     band = None
-    if not court_zones:
-        feet = [pboxes[i][3] for _, i in cand] + [pboxes[i][3] for i, _, _ in far_cand]
-        if feet:
-            band = (min(feet) - 0.04 * fh, max(feet) + 0.04 * fh)
+    feet = [pboxes[i][3] for _, i in cand] + [pboxes[i][3] for i, _, _ in far_cand]
+    if feet:
+        band = (min(feet) - 0.04 * fh, max(feet) + 0.04 * fh)
     # Pose every pooled candidate, then SELECT ONE PER SIDE. The two sides have
     # opposite failure modes, so they need opposite gates:
     #

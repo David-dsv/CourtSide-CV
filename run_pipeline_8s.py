@@ -1948,8 +1948,22 @@ def main():
                 if far is not None:
                     slot.append(far)
                 methodo_ppf.append(slot)
+            # far_aware: the frame-fraction serve gate (wy < 0.30*fh) is
+            # structurally TRUE for every far-court contact — with it, no far
+            # swing can ever produce a candidate and the far GT hits @141/@525
+            # are undetectable. far_aware makes the serve gate PLAYER-relative
+            # and the NMS per-side (a near peak no longer suppresses a far
+            # contact 0.3s later). Its historical over-fire is now owned by the
+            # events evidence rules (contact-corroborated swings + firewall):
+            # measured on the live canonical clip, far_aware=True + the
+            # side-scaled amplitude floor recovers ALL 8 GT hits + all 9 GT
+            # bounces (F1 0.941/0.947, confusion 0/0) and even the un-annotated
+            # SERVE (@44) — the two extra markers at clip start are the far
+            # player's real pre-serve ritual (ball-dribble + serve contact),
+            # verified frame-by-frame.
             hits = detect_hits(all_ball_centers, methodo_ppf, fps,
-                               frame_height, frame_width, bounce_frames=bset)
+                               frame_height, frame_width, bounce_frames=bset,
+                               far_aware=True)
         else:
             hits = detect_hits(all_ball_centers, locked_ppf, fps,
                                frame_height, frame_width, bounce_frames=bset,
@@ -2330,6 +2344,22 @@ def main():
     peak_speed = 0.0          # current-rally peak (resets on rally change)
     hud_rally_idx = None      # which rally the card is currently showing
 
+    # DISPLAY speed series — rolling MEDIAN of the per-frame km/h (window
+    # ~0.10 s, the same time constant as the direction half-window). The raw
+    # series carries 1-2-frame spikes at spline junctions / re-detections; the
+    # summary and bounce speeds average them out, but the HUD gauge and the
+    # per-rally "Balle max" read the series directly, so one spiked frame
+    # printed absurd peaks (224 km/h on a ~100 km/h rally). A short median
+    # kills isolated spikes and preserves real plateaus; analytics/stats keep
+    # using the raw series (this is presentation-only).
+    _disp_win = max(3, int(round(fps * 0.10)) | 1)
+    _half_w = _disp_win // 2
+    display_speeds_kmh = [
+        float(np.median([s for s in ball_speeds_kmh[max(0, i - _half_w):i + _half_w + 1]]))
+        if len(ball_speeds_kmh) else 0.0
+        for i, s in enumerate(ball_speeds_kmh)
+    ]
+
     # Event-overlay geometry (constant per clip — resolution-derived, no hardcoding).
     # U: base shape unit. GAP: label clearance + inter-row pitch around an impact.
     EV_U = max(6, int(frame_height * 0.018))
@@ -2408,7 +2438,8 @@ def main():
             draw_ball_trail(out, list(ball_trail))
 
         # 4b. Current ball speed (HUD drawn later, after overlays, as a gauge/card)
-        current_speed = ball_speeds_kmh[frame_idx] if frame_idx < len(ball_speeds_kmh) else 0.0
+        current_speed = (display_speeds_kmh[frame_idx]
+                         if frame_idx < len(display_speeds_kmh) else 0.0)
 
         # 5. BOUNCE markers — "ground-mark + shockwave". The shockwave ring blooms
         # OUTWARD (energy) while a FLAT, planted squashed-ellipse + diamond stake
@@ -2808,6 +2839,14 @@ def main():
                       if match_mode else None),
             "homography_confidence": (court_homography.get("confidence")
                                       if court_homography else "none"),
+            # 3x3 image-px -> court-meters homography (row-major; origin at the
+            # court CENTER, +Y toward the far baseline — the exact convention
+            # vision/minimap.py and the web front's projection.ts share). The
+            # front no longer needs to synthesize an approximate H: when this is
+            # present the minimap/placement views are metric-exact.
+            "homography_H": (np.asarray(court_homography["H"]).tolist()
+                             if court_homography and court_homography.get("H") is not None
+                             else None),
             "summary": {
                 "total_bounces": n,
                 "depth": {"deep": deep_n, "mid": mid_n, "short": short_n},

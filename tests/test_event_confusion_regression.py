@@ -76,7 +76,8 @@ def evaluate():
     # mirrors run_pipeline_8s.py's candidate pool exactly.
     knees = detect_near_court_knees(kal, kal_real, fps, fw, fh)
     turns = sorted(set(turns) | set(sharp) | set(knees))
-    hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=[])
+    hits = detect_hits(all_centers, ppf, fps, fh, fw, bounce_frames=[],
+                       far_aware=True)
     events, report = classify_events(
         b_cands, hits, kal, kal_real, ppf, fps, fw, fh,
         turning_frames=turns, smoothed_centers=all_centers,

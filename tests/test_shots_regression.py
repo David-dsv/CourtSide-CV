@@ -27,22 +27,21 @@ CACHE = ROOT / "tests" / "fixtures" / "cache" / "demo3_pose.json"
 GT = ROOT / "data" / "output" / "tennis_demo3_annotations.json"
 
 # Floor below which the test fails.
-# 2026-07-01 — cache rebuilt from a live canonical dump (locked poses, spline
-# ball, bounce_frames=[] = prod-exact for the methodo path) and detect_hits'
+# 2026-07-02 — cache rebuilt from a live canonical dump (locked poses, spline
+# ball, bounce_frames=[] = prod-exact for the methodo path); detect_hits'
 # contact frame fixed to the ball↔wrist argmin (it was the last frame of the
-# search window, a systematic +0.2s bias). Measured on the rebuilt cache:
-# 5/8 strikes matched by the DETECTOR alone (the far player's two remaining
-# swings sit under the frame-scaled amplitude floor — see far-swing recall in
-# docs/research/accuracy-overhaul-CR.md); the events arbitration recovers one
-# more via turn+at-wrist (live hit F1 0.857, P=1.0). 20 candidates on a 13s
-# rally is the measured post-fix count: the detector is now deliberately
-# high-recall (no bounce_guard in the methodo path) and vision/events.py owns
-# the precision (contact-corroborated evidence + firewall) — phantom candidates
-# no longer reach the overlay, so the anti-noise cap guards the CANDIDATE
-# generator, not the final markers.
-RECALL_FLOOR = 5      # of 8 GT strikes matched within ±0.30s (detector alone)
-FHB_FLOOR = 3         # of the matched non-unknown strikes, correctly classified
-MAX_HITS = 24         # anti-noise: candidate count on a 13s rally (measured 20)
+# search window, a systematic +0.2s bias); far_aware mirrored from prod
+# (player-relative serve gate + per-side NMS) + the side-scaled amplitude
+# floor. Measured on the rebuilt cache: 8/8 GT strikes matched by the DETECTOR
+# alone, FH/BH 7 correct / 0 wrong / 1 unknown. 34 candidates on a 13s rally
+# is the measured post-far_aware count: the detector is deliberately
+# high-recall and vision/events.py owns the precision (contact-corroborated
+# evidence + firewall + alternation DP — live final markers: P=1.0, confusion
+# 0/0), so the anti-noise cap guards the CANDIDATE generator against
+# explosion, not the final markers.
+RECALL_FLOOR = 7      # of 8 GT strikes matched within ±0.30s (detector alone)
+FHB_FLOOR = 6         # of the matched non-unknown strikes, correctly classified
+MAX_HITS = 40         # anti-noise: candidate count on a 13s rally (measured 34)
 
 
 def _match(pred_frames, truth_frames, tol):
@@ -67,7 +66,10 @@ def evaluate():
     ppf = cache["players_per_frame"]
     bounce_frames = set(cache.get("bounce_frames", []))
 
-    hits = detect_hits(bc, ppf, fps, fh, fw, bounce_frames=bounce_frames)
+    # far_aware mirrors the production methodo path (player-relative serve gate
+    # + per-side NMS) — without it no far-court contact can ever candidate.
+    hits = detect_hits(bc, ppf, fps, fh, fw, bounce_frames=bounce_frames,
+                       far_aware=True)
     gt_strikes = gt["strikes"]
     tol = round(0.30 * fps)
 

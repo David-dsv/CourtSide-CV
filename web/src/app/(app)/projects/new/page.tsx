@@ -56,7 +56,8 @@ export default function NewProjectPage() {
   }
 
   if (state === "ready") {
-    // pick the felix-sota project (homography(low), the "calibrated" demo)
+    // land on acapulco-hero: the flagship homography(high) demo (real metric H,
+    // 17/17 events vs the human GT — the best face of the product)
     return (
       <div className="mx-auto max-w-xl px-4 py-16">
         <GlassCard strong glow="green" className="text-center">
@@ -66,11 +67,11 @@ export default function NewProjectPage() {
             {filename} a été analysé. Voici le résultat.
           </p>
           <div className="mt-4 flex justify-center">
-            <ConfidenceBadge source="homography(low)" />
+            <ConfidenceBadge source="homography(high)" />
           </div>
           <Button
             className="mt-6 bg-ball text-primary-foreground hover:bg-ball/90"
-            onClick={() => router.push("/projects/felix-sota/overview")}
+            onClick={() => router.push("/projects/acapulco-hero/overview")}
           >
             Ouvrir le dashboard
           </Button>

@@ -1,0 +1,292 @@
+{
+ "video": "tennis.mp4",
+ "fps": 50.0,
+ "frame_range": [
+  3650,
+  4300
+ ],
+ "speed_source": "homography(high)",
+ "match_mode": true,
+ "match": {
+  "side_swaps": [],
+  "n_swaps": 0
+ },
+ "homography_confidence": "high",
+ "homography_H": [
+  [
+   0.02845842078687122,
+   -0.0003716267757337908,
+   -24.626487513394405
+  ],
+  [
+   -0.000198146878632604,
+   -0.11093406578055798,
+   48.49213898638702
+  ],
+  [
+   -4.944579020847651e-05,
+   0.003066785076303981,
+   1.0
+  ]
+ ],
+ "summary": {
+  "total_bounces": 10,
+  "depth": {
+   "deep": 6,
+   "mid": 4,
+   "short": 0
+  },
+  "speed_kmh": {
+   "avg": 75.60632181114836,
+   "max": 101.49582689607678,
+   "min": 46.02061749097502
+  },
+  "quality": {
+   "avg": 67.2,
+   "max": 84,
+   "high_count": 6
+  },
+  "strokes": {
+   "forehand": 4,
+   "backhand": 3
+  }
+ },
+ "shot_guard": {
+  "enabled": true,
+  "court_frames": 650,
+  "total_frames": 650,
+  "cut_frames": 0,
+  "non_court_ratio": 0.0,
+  "non_court_spans": []
+ },
+ "bounces": [
+  {
+   "frame": 3661,
+   "x": 826,
+   "y": 26,
+   "depth": "mid",
+   "speed_kmh": 46.0,
+   "quality": 41,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 3718,
+   "x": 998,
+   "y": 590,
+   "depth": "mid",
+   "speed_kmh": 101.5,
+   "quality": 56,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 3763,
+   "x": 883,
+   "y": 335,
+   "depth": "deep",
+   "speed_kmh": 54.8,
+   "quality": 74,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 3822,
+   "x": 1075,
+   "y": 601,
+   "depth": "deep",
+   "speed_kmh": 96.0,
+   "quality": 84,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 3903,
+   "x": 712,
+   "y": 274,
+   "depth": "deep",
+   "speed_kmh": 53.4,
+   "quality": 73,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 3957,
+   "x": 1048,
+   "y": 581,
+   "depth": "mid",
+   "speed_kmh": 89.1,
+   "quality": 53,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 4019,
+   "x": 1040,
+   "y": 310,
+   "depth": "deep",
+   "speed_kmh": 76.9,
+   "quality": 80,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 4105,
+   "x": 562,
+   "y": 739,
+   "depth": "deep",
+   "speed_kmh": 92.4,
+   "quality": 84,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 4160,
+   "x": 919,
+   "y": 287,
+   "depth": "deep",
+   "speed_kmh": 63.7,
+   "quality": 76,
+   "direction_state": "unconfirmed"
+  },
+  {
+   "frame": 4220,
+   "x": 1409,
+   "y": 726,
+   "depth": "mid",
+   "speed_kmh": 82.3,
+   "quality": 51,
+   "direction_state": "unconfirmed"
+  }
+ ],
+ "shots": [
+  {
+   "frame": 3694,
+   "x": 848,
+   "y": 129,
+   "player_side": "far",
+   "stroke": "forehand",
+   "quality": 51,
+   "speed_kmh": 101.5,
+   "human_id": "P1"
+  },
+  {
+   "frame": 3729,
+   "x": 1064,
+   "y": 745,
+   "player_side": "near",
+   "stroke": "backhand",
+   "quality": 52,
+   "speed_kmh": 54.8,
+   "human_id": "P2"
+  },
+  {
+   "frame": 3794,
+   "x": 808,
+   "y": 139,
+   "player_side": "far",
+   "stroke": "unknown",
+   "quality": 74,
+   "speed_kmh": 96.0,
+   "human_id": "P1"
+  },
+  {
+   "frame": 3843,
+   "x": 1224,
+   "y": 769,
+   "player_side": "near",
+   "stroke": "forehand",
+   "quality": 68,
+   "speed_kmh": 53.4,
+   "human_id": "P2"
+  },
+  {
+   "frame": 3926,
+   "x": 730,
+   "y": 183,
+   "player_side": "far",
+   "stroke": "unknown",
+   "quality": 53,
+   "speed_kmh": 89.1,
+   "human_id": "P1"
+  },
+  {
+   "frame": 3981,
+   "x": 1253,
+   "y": 711,
+   "player_side": "near",
+   "stroke": "forehand",
+   "quality": 74,
+   "speed_kmh": 76.9,
+   "human_id": "P2"
+  },
+  {
+   "frame": 4046,
+   "x": 996,
+   "y": 159,
+   "player_side": "far",
+   "stroke": "forehand",
+   "quality": 78,
+   "speed_kmh": 92.4,
+   "human_id": "P1"
+  },
+  {
+   "frame": 4118,
+   "x": 518,
+   "y": 735,
+   "player_side": "near",
+   "stroke": "backhand",
+   "quality": 58,
+   "speed_kmh": 63.7,
+   "human_id": "P2"
+  },
+  {
+   "frame": 4177,
+   "x": 967,
+   "y": 187,
+   "player_side": "far",
+   "stroke": "backhand",
+   "quality": 68,
+   "speed_kmh": 82.3,
+   "human_id": "P1"
+  }
+ ],
+ "rallies": [
+  {
+   "start_frame": 3694,
+   "end_frame": 4220,
+   "shot_frames": [
+    3694,
+    3729,
+    3794,
+    3843,
+    3926,
+    3981,
+    4046,
+    4118,
+    4177
+   ],
+   "bounce_frames": [
+    3718,
+    3763,
+    3822,
+    3903,
+    3957,
+    4019,
+    4105,
+    4160,
+    4220
+   ],
+   "n_shots": 9,
+   "outcome": {
+    "outcome": "neutral",
+    "defining_frame": 4177,
+    "reason": "no decisive geometric signal (rally ended without a clear winner/error signature)"
+   },
+   "human_id": "P1"
+  }
+ ],
+ "fatigue": {
+  "slope_kmh_per_min": 0.0,
+  "slope_quality_per_min": 0.0,
+  "first_third_avg_speed": 0.0,
+  "last_third_avg_speed": 0.0,
+  "drop_pct": 0.0,
+  "fatigued": false,
+  "confidence": "none",
+  "sample_frame": null,
+  "n_near_shots": 4
+ }
+}

@@ -165,6 +165,19 @@
   --svg-outline: #1d5a37;         /* dot/puck outline = deep grass (reads on the green court) */
   --svg-track: rgba(0, 0, 0, 0.06);
   --bar-neutral: #b8b0a4;         /* momentum neutral bar on light */
+
+  /* ---- dataviz series (per-theme steps, VALIDATED — see web/README dataviz
+     note: lightness band + chroma floor + CVD ΔE + 3:1 contrast vs surface,
+     checked with the palette validator on #f4efe6 / #131210). Status hues for
+     rally outcomes (never reused as generic series), entity hues for strokes
+     (same families as strokeHex glyphs, snapped to passing steps). ---- */
+  --viz-outcome-winner: #2f7d4f;   /* gagnant  = grass green (status: good) */
+  --viz-outcome-neutral: #3d78bd;  /* neutre   = slate blue (informational) */
+  --viz-outcome-forced: #a8720e;   /* err. forcée = bronze (status: warning) */
+  --viz-outcome-unforced: #ab2f14; /* err. non forcée = brick (status: serious) */
+  --viz-stroke-fh: #0e7fb3;        /* coup droit — cyan family, dark step */
+  --viz-stroke-bh: #7c5ce0;        /* revers — violet family, dark step */
+  --viz-bar-track: oklch(0 0 0 / 7%);
 }
 
 /* Dark "Broadcast Clay" theme. shadcn tokens remapped to clay palette. */
@@ -228,6 +241,18 @@
   --svg-outline: #0b0a08;
   --svg-track: rgba(255, 255, 255, 0.06);
   --bar-neutral: #5b6b6e;
+
+  /* ---- dataviz series — dark "Broadcast Clay" steps (validated on #131210;
+     deutan ΔE 10.6 on the amber↔clay pair sits in the 8-12 floor band, which
+     is legal ONLY with secondary encoding — outcome segments always ship with
+     icon+label+count chips and 2px surface gaps). ---- */
+  --viz-outcome-winner: #3f9e6b;
+  --viz-outcome-neutral: #5f8fd6;
+  --viz-outcome-forced: #c07f12;
+  --viz-outcome-unforced: #e2603a;
+  --viz-stroke-fh: #189bd6;
+  --viz-stroke-bh: #8f6cf2;
+  --viz-bar-track: oklch(1 0 0 / 8%);
 }
 
 @layer base {

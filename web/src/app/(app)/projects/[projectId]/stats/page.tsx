@@ -4,6 +4,9 @@ import { GlassCard } from "@/components/core/glass-card";
 import { SectionHeading } from "@/components/core/section-heading";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
 import { SpeedGauge, DepthDonut, StrokesBar, QualitySparkline } from "@/components/charts/charts";
+import { StrokeCompare } from "@/components/analysis/stroke-compare";
+import { OutcomeBar } from "@/components/analysis/outcome-bar";
+import { FatigueCard } from "@/components/analysis/fatigue-card";
 import { BarChart3, Gauge, CircleDot, Target, TrendingUp } from "lucide-react";
 
 export default async function StatsPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -44,6 +47,13 @@ export default async function StatsPage({ params }: { params: Promise<{ projectI
           <SectionHeading title="Qualité dans le temps" icon={<TrendingUp className="h-4 w-4" />} className="mb-4" />
           <QualitySparkline bounces={bounces} />
         </GlassCard>
+      </div>
+
+      {/* the actionable layer: stroke-speed comparison, rally outcomes, fatigue */}
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+        <StrokeCompare stats={project.stats} />
+        <OutcomeBar rallies={project.stats.rallies} />
+        <FatigueCard fatigue={project.stats.fatigue} />
       </div>
 
       <GlassCard>

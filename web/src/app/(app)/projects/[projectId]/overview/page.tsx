@@ -11,6 +11,10 @@ import { HighlightCard } from "@/components/analysis/highlight-card";
 import { EventGlyph } from "@/components/analysis/event-glyph";
 import { MatchModeNotice } from "@/components/core/match-mode-notice";
 import { MomentumChart } from "@/components/analysis/momentum-chart";
+import { KeyInsights } from "@/components/analysis/key-insights";
+import { OutcomeBar } from "@/components/analysis/outcome-bar";
+import { FatigueCard } from "@/components/analysis/fatigue-card";
+import { SwapTimeline } from "@/components/analysis/swap-timeline";
 import { deriveHighlights, deriveMomentum } from "@/lib/analysis/highlights";
 import { depthColorClass, depthLabel, fmtKmh, strokeLabel } from "@/lib/format";
 import { Gauge, Target, CircleDot, Activity, Zap, Map, TrendingUp, Sparkles } from "lucide-react";
@@ -91,6 +95,9 @@ export default async function OverviewPage({
         />
       </div>
 
+      {/* Coach strip — ranked, data-grounded findings (frame-as-truth) */}
+      <KeyInsights stats={project.stats} />
+
       {/* Momentum timeline */}
       <GlassCard>
         <SectionHeading
@@ -101,6 +108,21 @@ export default async function OverviewPage({
         />
         <MomentumChart buckets={momentum} fps={project.stats.fps} />
       </GlassCard>
+
+      {/* Outcomes + fatigue — the two pipeline blocks that were computed but
+          never surfaced (rally-outcome aggregate, vision/fatigue.py). */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <OutcomeBar rallies={project.stats.rallies} />
+        <FatigueCard fatigue={project.stats.fatigue} />
+      </div>
+
+      {project.stats.match_mode && (
+        <SwapTimeline
+          match={project.stats.match}
+          frameRange={project.stats.frame_range}
+          fps={project.stats.fps}
+        />
+      )}
 
       {/* Highlights — best/worst points, longest rallies, winners */}
       {highlights.length > 0 && (

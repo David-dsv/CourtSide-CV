@@ -6,7 +6,7 @@ import { FrameJumpLink } from "@/components/core/frame-jump-link";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
 import { LiveCourtMinimap } from "@/components/court/live-court-minimap";
 import { EventGlyph } from "@/components/analysis/event-glyph";
-import { fmtKmh, depthColorClass, depthLabel } from "@/lib/format";
+import { fmtKmh, depthColorClass, depthHex, depthLabel } from "@/lib/format";
 import { CircleDot, Zap, Map } from "lucide-react";
 import type { Bounce } from "@/lib/types";
 
@@ -59,19 +59,26 @@ export default async function BouncesPage({ params }: { params: Promise<{ projec
             <div className="relative h-full w-full">
               {bounces.map((b) => {
                 const pct = ((b.frame - f0) / span) * 100;
-                const color = b.depth === "deep" ? "#ff5252" : b.depth === "mid" ? "#fdcb6e" : "#00b894";
                 return (
-                  <FrameJumpLink
+                  <span
                     key={b.frame}
-                    frame={b.frame}
-                    title={`f${b.frame} · ${depthLabel(b.depth)} · ${fmtKmh(b.speed_kmh)} km/h`}
-                    className="absolute top-1/2 -translate-y-1/2"
+                    className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+                    style={{ left: `clamp(6px, ${pct}%, calc(100% - 6px))` }}
                   >
-                    <span
-                      className="block h-3 w-3 rounded-full ring-2 ring-black/40 transition-transform hover:scale-150"
-                      style={{ background: color, left: `calc(${pct}% - 6px)` }}
-                    />
-                  </FrameJumpLink>
+                    <FrameJumpLink
+                      frame={b.frame}
+                      title={`f${b.frame} · ${depthLabel(b.depth)} · ${fmtKmh(b.speed_kmh)} km/h`}
+                    >
+                      <span
+                        className="block h-3 w-3 rounded-full ring-2 transition-transform hover:scale-150"
+                        style={{
+                          background: depthHex(b.depth),
+                          // theme-aware outline so the dot reads on both surfaces
+                          ["--tw-ring-color" as string]: "var(--svg-outline)",
+                        }}
+                      />
+                    </FrameJumpLink>
+                  </span>
                 );
               })}
             </div>

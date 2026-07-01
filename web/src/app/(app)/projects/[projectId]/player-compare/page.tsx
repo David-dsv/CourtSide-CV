@@ -5,6 +5,7 @@ import { SectionHeading } from "@/components/core/section-heading";
 import { CourtMinimap } from "@/components/court/court-minimap";
 import { FrameAwareFrame } from "@/components/video/frame-aware-frame";
 import { Users } from "lucide-react";
+import { PLAYER_HEX } from "@/lib/court/court-geometry";
 import type { Bounce, Shot } from "@/lib/types";
 
 export default async function PlayerComparePage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -16,8 +17,11 @@ export default async function PlayerComparePage({ params }: { params: Promise<{ 
   const near = shots.filter((s: Shot) => s.player_side === "near");
   const far = shots.filter((s: Shot) => s.player_side === "far");
 
-  const nearBounces = nearBouncesForSide(project.stats.bounces, near);
-  const farBounces = farBouncesForSide(project.stats.bounces, far);
+  const { near: nearBounces, far: farBounces } = attributeBounces(
+    project.stats.bounces,
+    shots,
+    project.stats.fps,
+  );
 
   const avgQ = (arr: Shot[]) => (arr.length ? arr.reduce((a, s) => a + s.quality, 0) / arr.length : 0);
   const avgSpd = (arr: Shot[]) => (arr.length ? arr.reduce((a, s) => a + s.speed_kmh, 0) / arr.length : 0);
@@ -59,8 +63,8 @@ export default async function PlayerComparePage({ params }: { params: Promise<{ 
         actions={<FrameAwareFrame />}
       />
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-        {card("P1 — Proche", "#00bfff", near, nearBounces)}
-        {card("P2 — Lointain", "#ff9c32", far, farBounces)}
+        {card("P1 — Proche", PLAYER_HEX[1], near, nearBounces)}
+        {card("P2 — Lointain", PLAYER_HEX[2], far, farBounces)}
       </div>
     </div>
   );
@@ -78,12 +82,30 @@ function Stat({ label, value, unit }: { label: string; value: string; unit?: str
   );
 }
 
-// naive attribution: alternate bounces to the side that last hit
-function nearBouncesForSide(bounces: Bounce[], nearShots: Shot[]): Bounce[] {
-  if (!nearShots.length) return bounces.filter((_, i) => i % 2 === 0);
-  return bounces.filter((_, i) => i % 2 === 0);
-}
-function farBouncesForSide(bounces: Bounce[], farShots: Shot[]): Bounce[] {
-  if (!farShots.length) return bounces.filter((_, i) => i % 2 === 1);
-  return bounces.filter((_, i) => i % 2 === 1);
+/**
+ * Real attribution: a bounce is the landing of the LAST shot struck before it
+ * (same shot→next-bounce pairing as `shotsWithResults` on the shots page), so
+ * each player's map shows where THEIR balls landed. A bounce with no shot in
+ * the preceding 3 s (serve landings at clip start, stray segments) stays
+ * unattributed rather than guessed — replaces the old `i % 2` placeholder.
+ */
+function attributeBounces(
+  bounces: Bounce[],
+  shots: Shot[],
+  fps: number,
+): { near: Bounce[]; far: Bounce[] } {
+  const sorted = [...shots].sort((a, b) => a.frame - b.frame);
+  const maxGap = 3 * fps;
+  const near: Bounce[] = [];
+  const far: Bounce[] = [];
+  for (const b of bounces) {
+    let striker: Shot | null = null;
+    for (const s of sorted) {
+      if (s.frame >= b.frame) break;
+      striker = s;
+    }
+    if (!striker || b.frame - striker.frame > maxGap) continue;
+    (striker.player_side === "near" ? near : far).push(b);
+  }
+  return { near, far };
 }

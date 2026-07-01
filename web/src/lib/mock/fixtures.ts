@@ -10,10 +10,12 @@ import felixRaw from "./raw/felix.json";
 import tennisRaw from "./raw/tennis.json";
 import sotaRaw from "./raw/sota.json";
 import tennisFullRaw from "./raw/tennis-full.json";
+import heroRaw from "./raw/hero.json";
 
 const felixStats = felixRaw as unknown as PipelineStats;
 const tennisStats = tennisRaw as unknown as PipelineStats;
 const sotaStats = sotaRaw as unknown as PipelineStats;
+const heroStats = heroRaw as unknown as PipelineStats;
 
 /** Build a synthetic ball trajectory (px) interpolating between bounces. */
 function synthTrajectory(stats: PipelineStats): TrajectoryPoint[] {
@@ -214,4 +216,30 @@ export const tennisFullProject: Project = {
   posterFrame: tennisFullStats.bounces[0]?.frame ?? 0,
 };
 
-export const mockProjects: Project[] = [tennisProject, tennisFullProject, sotaProject, felixProject];
+/**
+ * acapulco-hero — LE cas vitrine : la fixture `homography(high)` avec un H
+ * PROJECTIF RÉEL. Stats 100 % réelles émises par
+ * `run_pipeline_8s.py tennis.mp4 -s 73 -d 13 --match-mode --homography`
+ * (post feat/accuracy-overhaul : rappel événements 17/17 mesuré vs la GT
+ * humaine, confusion rebond/frappe 0/0, vitesses métriques perspective-
+ * corrigées, y compris le SERVICE détecté). `homography_H` vient du modèle de
+ * keypoints court (14/14, rms 3.5 px) sur la première frame du clip — aucune
+ * matrice synthétique : le minimap est métrique-exact de bout en bout.
+ */
+export const heroProject: Project = {
+  id: "acapulco-hero",
+  name: "Acapulco — démo métrique",
+  video: "tennis.mp4",
+  createdAt: "2026-07-02T00:30:00Z",
+  status: "ready",
+  matchType: "match",
+  stats: heroStats,
+  trajectory: synthTrajectory(heroStats),
+  players: synthPlayers(heroStats),
+  // the REAL image→meters homography emitted by the pipeline (fall back to the
+  // broadcast affine only if a legacy hero.json without H is ever dropped in).
+  H: heroStats.homography_H ?? H_standard(),
+  posterFrame: heroStats.bounces[0]?.frame ?? 0,
+};
+
+export const mockProjects: Project[] = [heroProject, tennisProject, tennisFullProject, sotaProject, felixProject];

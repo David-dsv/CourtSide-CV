@@ -154,14 +154,26 @@ export interface MatchInfo {
 }
 
 /**
- * Per-player fatigue flag (vision/fatigue.py). The label is keyed on SPEED
+ * Per-player fatigue block (vision/fatigue.py). The label is keyed on SPEED
  * decay only (not shot quality) — see memory courtside-fatigue-rally-outcome.
- * Shape kept permissive: the front-end only surfaces it when present and reads
- * the human-readable `note`.
+ * Typed 1:1 on the pipeline JSON (`stats_fatigue` in run_pipeline_8s.py);
+ * unknown extra fields stay tolerated for forward-compat.
  */
 export interface FatigueInfo {
-  flagged?: boolean;
-  note?: string;
+  /** near-player shot-speed trend over the clip, km/h per minute (negative = slowing). */
+  slope_kmh_per_min?: number;
+  slope_quality_per_min?: number;
+  /** average shot speed over the first / last third of the clip (km/h). */
+  first_third_avg_speed?: number;
+  last_third_avg_speed?: number;
+  /** relative speed drop first→last third (0.12 = −12 %). Negative = got faster. */
+  drop_pct?: number;
+  fatigued?: boolean;
+  /** sample-size confidence emitted by the pipeline ("none" = too few shots). */
+  confidence?: string;
+  /** representative late-match frame (jump target for "voir le moment"). */
+  sample_frame?: number;
+  n_near_shots?: number;
   [k: string]: unknown;
 }
 
@@ -171,6 +183,14 @@ export interface PipelineStats {
   frame_range: [number, number];
   speed_source: SpeedSource;
   homography_confidence: HomographyConfidence;
+  /**
+   * 3x3 image-px → court-meters homography (row-major; origin at court CENTER,
+   * +Y toward the far baseline — the exact convention projection.ts applies).
+   * Emitted by run_pipeline_8s.py when a court homography/calibration exists;
+   * null/absent otherwise. When present the minimap is metric-exact and no
+   * synthetic H is needed.
+   */
+  homography_H?: number[][] | null;
   summary: Summary;
   bounces: Bounce[];
   shots: Shot[];

@@ -2252,8 +2252,13 @@ def main():
     writer = VideoWriter(output_path, fps=fps)
     ball_trail = deque(maxlen=trail_length)
 
-    # Bounce display duration: 0.5s worth of frames
-    bounce_display_frames = int(fps * 0.5)
+    # Bounce display duration: the ground-mark + shockwave lingers this long after
+    # the bounce. 0.5s was too long — at 50fps the SHORT/DEEP ring stayed planted
+    # mid-court for 25 frames while the ball had already travelled on, reading as a
+    # phantom second bounce (user feedback). 0.3s (~15f @50fps) is still clearly
+    # visible at contact (Hawk-Eye markers are brief) but clears before the ball
+    # moves far. Display-only — touches no event/stat.
+    bounce_display_frames = int(fps * 0.3)
 
     # Build legend items
     legend_items = {"Ball": BALL_COLOR}
